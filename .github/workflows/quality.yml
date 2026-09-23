@@ -22,8 +22,10 @@ jobs:
         shell: pwsh
         run: |
           $matches = git grep -n -I -E '(BEGIN (RSA|OPENSSH|EC) PRIVATE KEY|AKIA[0-9A-Z]{16}|gh[pousr]_[A-Za-z0-9_]{20,})' -- ':!pnpm-lock.yaml'
-          if ($LASTEXITCODE -eq 0) { Write-Error "Potential secret detected:`n$matches" }
-          if ($LASTEXITCODE -gt 1) { exit $LASTEXITCODE }
+          $grepExitCode = $LASTEXITCODE
+          if ($grepExitCode -eq 0) { Write-Error "Potential secret detected:`n$matches"; exit 1 }
+          if ($grepExitCode -gt 1) { exit $grepExitCode }
+          exit 0
       - name: Run shared local gate
         run: cargo xtask check
       - name: Audit frontend dependencies
