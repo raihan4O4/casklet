@@ -1,0 +1,22 @@
+[package]
+name = "casklet-desktop"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[lib]
+name = "casklet_desktop_lib"
+crate-type = ["lib", "cdylib", "staticlib"]
+
+[build-dependencies]
+tauri-build = { version = "=2.5.6", features = [] }
+
+[dependencies]
+casklet-application = { path = "../../../crates/casklet-application" }
+casklet-contracts = { path = "../../../crates/casklet-contracts" }
+casklet-infrastructure = { path = "../../../crates/casklet-infrastructure" }
+tauri = { version = "=2.11.1", features = [] }
+
+[lints]
+workspace = true

@@ -1,0 +1,13 @@
+[package]
+name = "casklet-cli"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+casklet-application = { path = "../casklet-application" }
+casklet-infrastructure = { path = "../casklet-infrastructure" }
+
+[lints]
+workspace = true

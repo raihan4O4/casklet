@@ -1,0 +1,1176 @@
+# Phase 3: Domain Model and State Transitions
+
+This phase defines Casklet’s conceptual language and rules. We are still not choosing database tables or writing code.
+
+A useful distinction:
+
+- The **domain model** describes what Casklet believes exists.
+- The **database model** describes how that information is persisted.
+- The **UI model** describes how it is displayed.
+
+They should correspond, but they should not be the same object reused everywhere.
+
+## 1. Domain structure
+
+Casklet’s core domain consists of six major concepts:
+
+```text
+Cask
+├── Resource Associations
+│       └── Resources
+├── Application Associations
+│       └── Installations
+├── Categories
+├── Operations
+└── Removal Plans
+```
+
+More completely:
+
+```text
+                         Cask
+                           │
+              ┌────────────┴────────────┐
+              │                         │
+     Resource Association      Installation Association
+              │                         │
+          Resource                 Installation
+              │                         │
+       Physical content              Application
+              │                         │
+     File / Folder / URL          Provider identity
+```
+
+The association objects are important because one resource or application installation may belong to several Casks.
+
+# 2. Entity identity
+
+Every important entity receives a stable machine-generated ID.
+
+Use UUIDs:
+
+```text
+cask_id
+resource_id
+application_id
+installation_id
+association_id
+operation_id
+removal_plan_id
+```
+
+Names and paths are not identities:
+
+- Casks can be renamed.
+- Files can be moved.
+- Two applications can have the same display name.
+- Path casing varies on Windows.
+- A resource may temporarily be missing.
+
+Externally visible commands can accept short ID prefixes later, but the stored identity remains the complete UUID.
+
+# 3. Cask aggregate
+
+An **aggregate** is a consistency boundary: a group of domain information that must remain valid whenever it changes.
+
+The Cask is the main lifecycle aggregate.
+
+## Cask fields
+
+```text
+Cask
+────────────────────────
+id
+name
+slug
+description
+state
+managed_storage_root
+created_at
+updated_at
+archived_at
+destroyed_at
+revision
+```
+
+### `name`
+
+Human-readable and editable:
+
+```text
+My Streaming Setup
+```
+
+### `slug`
+
+Filesystem-safe identifier:
+
+```text
+my-streaming-setup
+```
+
+The name can change without automatically changing the storage path. Renaming storage directories creates unnecessary risk and broken external references.
+
+### `revision`
+
+An increasing number used for optimistic concurrency:
+
+```text
+revision: 7
+```
+
+If both CLI and GUI try to update revision 7, only the first can succeed. The second must reload current state.
+
+## Cask states
+
+```text
+CREATING
+ACTIVE
+ARCHIVED
+DESTROYING
+PARTIALLY_DESTROYED
+DESTROYED
+RECOVERY_REQUIRED
+```
+
+Transitions:
+
+```text
+             ┌──────────┐
+             │ CREATING │
+             └────┬─────┘
+                  │ success
+                  ▼
+              ┌────────┐
+       ┌─────►│ ACTIVE │◄──────────┐
+       │      └───┬────┘           │
+       │          │ archive        │ restore
+       │          ▼                │
+       │      ┌──────────┐         │
+       │      │ ARCHIVED │─────────┘
+       │      └──────────┘
+       │
+       │ recovery succeeds
+       │
+┌──────┴────────────┐
+│ RECOVERY_REQUIRED │
+└────────▲──────────┘
+         │ failure/interruption
+         │
+    ┌────┴───────┐
+    │ DESTROYING │
+    └────┬───────┘
+         │
+    ┌────┴──────────────────┐
+    │                       │
+    ▼                       ▼
+DESTROYED          PARTIALLY_DESTROYED
+```
+
+A partially destroyed Cask remains inspectable. Its historical record should not disappear merely because cleanup was incomplete.
+
+## Cask rules
+
+- Names must be non-empty.
+- Names do not need to be globally unique, but duplicate names should trigger a warning.
+- Slugs/storage paths must be unique.
+- Destroyed Casks cannot accept new resources.
+- Archived Casks are read-only until restored.
+- Only one destructive operation can run against a Cask at a time.
+- A Cask cannot become `DESTROYED` while unresolved owned resources remain.
+- Deleting the Cask record is different from destroying its resources.
+
+For v0.1, retain a lightweight tombstone after destruction:
+
+```text
+Streaming
+Destroyed: 2026-09-12
+Reclaimed: 21.4 GB
+Warnings: 1 retained external application
+```
+
+The user can later purge history explicitly.
+
+# 4. Resource aggregate
+
+A Resource represents a file-like thing Casklet can locate and inspect.
+
+Examples:
+
+- file
+- directory
+- download
+- project directory
+- portable application
+- installer artifact
+- archive
+
+An installed system application is not just a Resource; it uses the Application and Installation model described later.
+
+## Resource fields
+
+```text
+Resource
+────────────────────────
+id
+kind
+display_name
+physical_location
+containment
+management
+provenance
+availability
+size
+size_accuracy
+content_identity
+source
+created_at
+observed_at
+modified_at
+revision
+```
+
+## Resource kinds
+
+```text
+FILE
+DIRECTORY
+DOWNLOAD
+PROJECT
+PORTABLE_APPLICATION
+INSTALLER_ARTIFACT
+ARCHIVE
+GENERATED_OUTPUT
+OTHER
+```
+
+A resource’s MIME/file category is separate from its structural kind.
+
+For example:
+
+```text
+Resource kind: FILE
+Cask category: Images
+Detected media type: image/png
+```
+
+## Containment
+
+```text
+INTERNAL
+EXTERNAL
+```
+
+`INTERNAL` means inside a verified Cask-managed storage boundary.
+
+`EXTERNAL` means anywhere else.
+
+Containment should be calculated and verified from the physical path, not accepted solely from stored metadata.
+
+## Management
+
+```text
+MANAGED
+REFERENCED
+DISCOVERED
+```
+
+## Provenance
+
+```text
+CREATED_BY_CASKLET
+COPIED_BY_CASKLET
+MOVED_BY_CASKLET
+DOWNLOADED_BY_CASKLET
+EXTRACTED_BY_CASKLET
+INSTALLED_BY_CASKLET
+ADOPTED_EXISTING
+LINKED_EXISTING
+DETECTED
+UNKNOWN
+```
+
+Some provenance values apply primarily to applications, but a shared vocabulary simplifies reporting.
+
+## Availability
+
+```text
+PENDING
+PRESENT
+MISSING
+CHANGED
+INACCESSIBLE
+UNKNOWN
+```
+
+- `CHANGED` means identity-relevant metadata no longer matches the last observation.
+- `INACCESSIBLE` means the path exists or probably exists, but Casklet cannot inspect it.
+- `MISSING` means it was expected but cannot be found.
+
+## Size representation
+
+Do not store only a number:
+
+```text
+ResourceSize
+────────────────────────
+bytes
+measurement
+measured_at
+```
+
+Measurement:
+
+```text
+EXACT
+CALCULATED
+ESTIMATED
+UNKNOWN
+```
+
+For directories, “calculated” means Casklet enumerated accessible contents. It may still exclude inaccessible or skipped entries.
+
+# 5. Resource association
+
+A Resource does not directly contain `cask_id`. Instead, a ResourceAssociation links them.
+
+```text
+ResourceAssociation
+────────────────────────
+id
+cask_id
+resource_id
+category_id
+role
+relationship
+removal_policy
+added_at
+added_by_operation_id
+notes
+```
+
+## Relationship
+
+```text
+OWNED
+REFERENCED
+DISCOVERED
+```
+
+This may appear similar to resource management, but it answers a different question:
+
+- Resource management: how Casklet manages the physical object generally.
+- Association relationship: how this particular Cask relates to it.
+
+For example, an internally managed shared asset can be:
+
+```text
+Resource management: MANAGED
+
+Streaming association: OWNED
+Video Project association: REFERENCED
+```
+
+## Removal policy
+
+```text
+DELETE_WHEN_UNREFERENCED
+DETACH_ONLY
+ALWAYS_RETAIN
+ASK
+```
+
+Casklet must still enforce safety invariants. `DELETE_WHEN_UNREFERENCED` is eligibility, not permission to ignore path checks.
+
+## Category belongs to the association
+
+The same resource can serve different purposes:
+
+```text
+Streaming → intro.mp4 → Stream Intros
+University → intro.mp4 → Presentation Media
+```
+
+Therefore category and role belong to `ResourceAssociation`, not `Resource`.
+
+# 6. Category model
+
+```text
+Category
+────────────────────────
+id
+cask_id nullable
+stable_key
+display_name
+icon_key
+sort_order
+built_in
+created_at
+```
+
+Built-in categories use stable keys:
+
+```text
+applications
+portable-applications
+projects
+documents
+images
+videos
+audio
+archives
+downloads
+other
+```
+
+Custom category:
+
+```text
+display_name: OBS Overlays
+stable_key: custom:<uuid>
+```
+
+Do not persist literal icon characters or platform-specific icon paths. Persist a stable icon key interpreted by the GUI.
+
+Built-in categories should not be deletable. A custom category can be deleted only after its resources are reassigned.
+
+# 7. Applications and installations
+
+An Application is the logical product:
+
+```text
+Application
+────────────────────────
+id
+canonical_name
+publisher
+homepage
+metadata
+```
+
+An Installation is a platform-specific installed instance:
+
+```text
+Installation
+────────────────────────
+id
+application_id
+platform
+architecture
+provider
+provider_identifier
+version
+scope
+install_locations
+uninstall_reference
+provenance
+state
+confidence
+installed_at
+last_verified_at
+revision
+```
+
+Example:
+
+```text
+Application:
+  VLC media player
+  Publisher: VideoLAN
+
+Installation:
+  Platform: Windows
+  Architecture: x64
+  Provider: WinGet
+  Provider ID: VideoLAN.VLC
+  Location: C:\Program Files\VideoLAN\VLC
+  Scope: System
+```
+
+## Installation provenance
+
+```text
+INSTALLED_BY_CASKLET
+ADOPTED_EXISTING
+DETECTED_DURING_OPERATION
+REGISTERED_MANUALLY
+UNKNOWN
+```
+
+## Detection confidence
+
+```text
+VERIFIED
+HIGH
+MEDIUM
+LOW
+UNRESOLVED
+```
+
+`VERIFIED` means a provider supplied a stable identity and post-installation verification succeeded.
+
+Confidence must not be used alone to grant removal ownership. Ownership also requires provenance.
+
+## Installation state
+
+```text
+PLANNED
+INSTALLING
+INSTALLED
+INSTALL_FAILED
+PARTIALLY_INSTALLED
+CHANGED
+MISSING
+UNINSTALLING
+UNINSTALLED
+UNINSTALL_FAILED
+UNKNOWN
+```
+
+Typical flow:
+
+```text
+PLANNED
+   ↓
+INSTALLING
+   ├──→ INSTALLED
+   ├──→ INSTALL_FAILED
+   ├──→ PARTIALLY_INSTALLED
+   └──→ UNKNOWN
+```
+
+Removal:
+
+```text
+INSTALLED
+   ↓
+UNINSTALLING
+   ├──→ UNINSTALLED
+   ├──→ UNINSTALL_FAILED
+   └──→ UNKNOWN
+```
+
+`UNKNOWN` is preferable to making an unsafe assumption after a process crash or ambiguous provider result.
+
+# 8. Installation association
+
+```text
+CaskInstallation
+────────────────────────
+id
+cask_id
+installation_id
+relationship
+removal_policy
+requested_by_operation_id
+created_at
+```
+
+Relationship:
+
+```text
+INSTALLED_FOR_CASK
+ADOPTED_BY_CASK
+REFERENCED_BY_CASK
+DISCOVERED_NEAR_OPERATION
+```
+
+Only `INSTALLED_FOR_CASK` can initially qualify for automatic uninstall.
+
+Even then, uninstall requires:
+
+```text
+provenance == INSTALLED_BY_CASKLET
+AND no other retaining associations exist
+AND provider supports uninstall
+AND current identity is verified
+AND user approved the removal plan
+```
+
+This rule should eventually exist in exactly one domain service.
+
+# 9. Installer artifacts
+
+An installer artifact is a Resource plus installer-specific metadata:
+
+```text
+InstallerArtifact
+────────────────────────
+resource_id
+format
+platform
+signature_status
+signer
+detected_publisher
+product_hint
+hash
+inspection_confidence
+```
+
+Formats:
+
+```text
+WINDOWS_EXE
+WINDOWS_MSI
+WINDOWS_MSIX
+MACOS_DMG
+MACOS_PKG
+MACOS_APP
+LINUX_DEB
+LINUX_RPM
+LINUX_APPIMAGE
+ARCHIVE
+UNKNOWN_EXECUTABLE
+```
+
+Signature state:
+
+```text
+VALID
+INVALID
+UNSIGNED
+UNSUPPORTED
+UNKNOWN
+```
+
+An installer may lead to zero, one or several Installation records. Do not enforce a one-to-one relationship.
+
+# 10. Operation aggregate
+
+An Operation records work that can fail, take time or affect external state.
+
+```text
+Operation
+────────────────────────
+id
+cask_id nullable
+type
+state
+requested_by
+request_payload
+progress
+current_step
+started_at
+updated_at
+finished_at
+error_code
+error_details
+cancellation_requested
+revision
+```
+
+Types:
+
+```text
+CREATE_CASK
+ADD_RESOURCE
+MOVE_RESOURCE
+COPY_RESOURCE
+DOWNLOAD_RESOURCE
+SCAN_RESOURCE
+INSTALL_APPLICATION
+ASSOCIATE_APPLICATION
+REMOVE_RESOURCE
+EXPORT_CASK
+DESTROY_CASK
+RECOVER_OPERATION
+```
+
+## Operation states
+
+```text
+PENDING
+PLANNING
+AWAITING_CONFIRMATION
+RUNNING
+AWAITING_EXTERNAL_PROCESS
+VERIFYING
+SUCCEEDED
+FAILED
+PARTIALLY_SUCCEEDED
+CANCELLING
+CANCELLED
+RECOVERY_REQUIRED
+```
+
+General flow:
+
+```text
+PENDING
+   ↓
+PLANNING
+   ├──→ FAILED
+   └──→ AWAITING_CONFIRMATION
+               ↓
+            RUNNING
+        ┌──────┼────────┐
+        ▼      ▼        ▼
+   VERIFYING FAILED  CANCELLING
+        │                │
+        ▼                ▼
+   SUCCEEDED         CANCELLED
+```
+
+Some operations do not need confirmation and can move directly from planning to running.
+
+## Operation steps
+
+An operation contains ordered steps:
+
+```text
+OperationStep
+────────────────────────
+id
+operation_id
+sequence
+kind
+state
+attempt_count
+input
+result
+started_at
+finished_at
+```
+
+Example copy:
+
+```text
+1. Validate source
+2. Validate destination
+3. Check available space
+4. Create temporary destination
+5. Copy bytes
+6. Verify size
+7. Move temporary content into final position
+8. Register Resource
+9. Create association
+10. Regenerate manifest
+```
+
+This creates meaningful progress and recovery rather than an opaque spinner.
+
+# 11. Removal plan aggregate
+
+A RemovalPlan is an immutable proposal generated from observed state.
+
+```text
+RemovalPlan
+────────────────────────
+id
+cask_id
+scope
+state
+created_at
+expires_at
+based_on_cask_revision
+estimated_reclaimable_size
+warnings
+```
+
+Plan states:
+
+```text
+DRAFT
+READY
+APPROVED
+EXECUTING
+COMPLETED
+PARTIALLY_COMPLETED
+CANCELLED
+EXPIRED
+INVALIDATED
+```
+
+Plan items:
+
+```text
+RemovalPlanItem
+────────────────────────
+id
+plan_id
+target_type
+target_id
+action
+reason
+risk
+expected_size
+preconditions
+state
+```
+
+Actions:
+
+```text
+DELETE_INTERNAL_FILE
+DELETE_INTERNAL_DIRECTORY
+MOVE_TO_TRASH
+RUN_PROVIDER_UNINSTALL
+REMOVE_ASSOCIATION
+RETAIN_REFERENCED
+RETAIN_SHARED
+RETAIN_UNVERIFIED
+ASK_USER
+NO_ACTION
+```
+
+Risk:
+
+```text
+LOW
+MEDIUM
+HIGH
+BLOCKED
+```
+
+## Plan invalidation
+
+A plan becomes invalid if relevant state changes after it was generated:
+
+- Cask revision changed.
+- Resource path changed.
+- Resource acquired another Cask association.
+- Application version or identity changed.
+- Provider became unavailable.
+- Filesystem identity no longer matches.
+- Plan expired.
+
+Casklet must revalidate immediately before each destructive step.
+
+# 12. Storage accounting model
+
+We need several totals:
+
+```text
+StorageSummary
+────────────────────────
+managed_internal_bytes
+referenced_external_bytes
+shared_bytes
+application_estimated_bytes
+reclaimable_min_bytes
+reclaimable_max_bytes
+unknown_resource_count
+inaccessible_resource_count
+```
+
+Rules:
+
+- Internal exclusive files can contribute to reclaimable storage.
+- Referenced files cannot.
+- Shared resources do not contribute unless all retaining associations are included in the same removal.
+- Estimated software sizes contribute only to the upper estimate.
+- Unknown/inaccessible resources produce warnings.
+
+The GUI can simplify this to:
+
+```text
+Managed storage        21.4 GB
+Referenced storage      8.2 GB
+Applications             1.1 GB estimated
+Reclaimable            21.4–22.5 GB
+```
+
+# 13. Domain services
+
+Some rules do not naturally belong to one entity.
+
+## Removal planner
+
+Determines safe cleanup actions.
+
+Inputs:
+
+- Cask
+- associations
+- physical resource observations
+- installation states
+- provider capabilities
+
+Output:
+
+- immutable RemovalPlan
+
+## Storage calculator
+
+Produces category and reclaimability summaries without double-counting shared resources.
+
+## Resource classifier
+
+Suggests categories based on:
+
+- extension
+- content type
+- directory characteristics
+- user rules
+- operation context
+
+Classification is advisory; the user can override it.
+
+## Installation correlator
+
+Compares before/after application inventories and proposes candidate installations with confidence and evidence.
+
+It cannot create an owned installation silently.
+
+## Reconciliation service
+
+Compares:
+
+```text
+Database
+↔ Cask manifests
+↔ physical resources
+↔ provider inventories
+```
+
+It reports drift and suggests recovery actions.
+
+# 14. Domain events
+
+Domain events describe something that has already happened:
+
+```text
+CaskCreated
+CaskArchived
+ResourceAdded
+ResourceMoved
+ResourceMissing
+ResourceAssociationAdded
+InstallationDetected
+InstallationAssociated
+OperationFailed
+RemovalPlanCreated
+CaskDestructionStarted
+CaskPartiallyDestroyed
+CaskDestroyed
+ManifestProjectionRequired
+```
+
+For v0.1 these remain local, in-process events. We do not need Kafka, RabbitMQ or a distributed event system.
+
+Their value is architectural separation. For example:
+
+```text
+ResourceAdded
+   ├── update storage summary
+   ├── schedule manifest refresh
+   └── notify GUI
+```
+
+Persist only events needed for reliable recovery or auditing. Casklet does not need full event sourcing.
+
+# 15. Important command/query separation
+
+Casklet benefits from a lightweight separation:
+
+## Commands change state
+
+```text
+CreateCask
+AddResource
+InstallApplication
+AssociateInstallation
+RemoveResource
+DestroyCask
+```
+
+## Queries read state
+
+```text
+GetCask
+ListCasks
+ListResources
+GetStorageSummary
+GetOperation
+PreviewRemoval
+SearchInstalledApplications
+```
+
+This does not require separate databases or CQRS infrastructure. It merely keeps read behavior from accidentally modifying state.
+
+# 16. Major data flows
+
+## Add a copied file
+
+```text
+CLI/GUI
+→ AddResource request
+→ validate Cask
+→ inspect source
+→ create Operation
+→ calculate destination
+→ copy to temporary path
+→ verify
+→ finalize destination
+→ create Resource
+→ create ResourceAssociation
+→ commit
+→ regenerate manifest
+→ return result
+```
+
+If the database write fails after copying, the temporary/final file is recorded for recovery rather than silently orphaned.
+
+## Add a reference
+
+```text
+CLI/GUI
+→ validate path
+→ inspect resource
+→ create Resource or find existing identity
+→ create REFERENCED association
+→ update manifest
+```
+
+No file content moves.
+
+## Install through WinGet
+
+```text
+CLI/GUI
+→ resolve provider package
+→ inspect existing installation
+→ create installation plan
+→ user approves
+→ create Operation
+→ invoke WinGet
+→ verify installed identity
+→ create/update Application
+→ create Installation
+→ create CaskInstallation
+→ update manifest
+```
+
+## Destroy a Cask
+
+```text
+Request preview
+→ reconcile relevant resources
+→ generate RemovalPlan
+→ show warnings and estimates
+→ user approves
+→ revalidate plan
+→ mark Cask DESTROYING
+→ execute items one by one
+→ record every result
+→ reconcile final state
+→ mark DESTROYED or PARTIALLY_DESTROYED
+→ regenerate tombstone manifest
+```
+
+# 17. Aggregate boundaries
+
+For v0.1, use these boundaries:
+
+| Aggregate | Controls |
+|---|---|
+| Cask | Lifecycle, name, storage root |
+| Resource | Physical identity and observation |
+| Application/Installation | Installed software identity and state |
+| Operation | Execution, progress and recovery |
+| RemovalPlan | Approved destructive intent |
+
+Associations may be managed through application services because they connect aggregates.
+
+Do not load an entire Cask containing 100,000 resources into memory as one object. Query and paginate resources separately.
+
+# 18. Concurrency rules
+
+Both GUI and CLI may run simultaneously.
+
+Required rules:
+
+- One active destructive operation per Cask.
+- Multiple read operations are allowed.
+- Resource scanning can coexist with ordinary reads.
+- Mutations check entity revision.
+- SQLite transactions protect metadata changes.
+- External operations use an application-level lock.
+- A second caller receives `OPERATION_CONFLICT`, not an indefinite hang.
+- Long database transactions must not remain open while waiting for installers or user input.
+
+In particular, never do this:
+
+```text
+Open SQLite transaction
+→ launch installer
+→ wait five minutes
+→ commit
+```
+
+Instead, persist the operation state, close the transaction, run the external process, and open a new transaction to record the result.
+
+# 19. Domain errors
+
+Use structured errors:
+
+```text
+CASK_NOT_FOUND
+CASK_NOT_ACTIVE
+DUPLICATE_STORAGE_PATH
+RESOURCE_NOT_FOUND
+RESOURCE_INACCESSIBLE
+AMBIGUOUS_RESOURCE
+INVALID_PATH
+UNSAFE_PATH
+INSUFFICIENT_SPACE
+RESOURCE_SHARED
+RESOURCE_REFERENCED
+INSTALLATION_ALREADY_EXISTS
+PROVIDER_UNAVAILABLE
+PROVIDER_CAPABILITY_UNSUPPORTED
+INSTALLATION_UNRESOLVED
+OPERATION_CONFLICT
+PLAN_INVALIDATED
+RECOVERY_REQUIRED
+```
+
+Each error later carries:
+
+- stable code
+- user-safe message
+- technical context
+- suggested recovery
+- optional underlying cause
+
+The GUI translates it into helpful language. The CLI uses the same error code and returns a documented exit status.
+
+# 20. Decisions now established
+
+The proposed domain design establishes that:
+
+1. Casks, Resources, Installations and Operations have stable identities.
+2. Files and installed applications use related but distinct models.
+3. Many-to-many associations represent sharing.
+4. Category belongs to the association.
+5. Installer artifacts and installed applications are separate.
+6. Ownership requires provenance, not merely detection.
+7. Operations are durable state machines.
+8. Destruction requires an immutable, approved removal plan.
+9. Storage and reclaimable storage are different measurements.
+10. Platform details remain behind providers and platform services.
+11. We use local domain events, not event sourcing.
+12. GUI and CLI submit the same commands and queries.
+
+## Phase 3 completion gate
+
+Before proceeding, this phase should be considered approved if we agree on the following central model:
+
+```text
+Cask
+  ↕ many-to-many
+Resource
+
+Cask
+  ↕ many-to-many
+Installation
+  → Application
+
+Operation
+  → performs lifecycle work
+
+RemovalPlan
+  → authorizes and records cleanup
+```
+
+The next phase will translate this conceptual model into the **complete component architecture and API boundaries**: which modules exist, what each may depend on, how CLI and Tauri requests enter the system, and how providers, database storage, filesystem operations and progress events interact. We will still remain at design level and avoid implementation code.
