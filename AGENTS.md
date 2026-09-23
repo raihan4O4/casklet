@@ -45,4 +45,3 @@ When a task changes an approved decision, milestone, current status, or importan
 - Run formatting, linting, relevant tests, and builds for changed components.
 - Never execute arbitrary shell command strings derived from user input.
 - Never recursively delete an unresolved, broad, referenced, or insufficiently verified path.
-

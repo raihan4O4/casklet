@@ -1,6 +1,6 @@
 # Casklet Project Context
 
-Last updated: 2026-09-15
+Last updated: 2026-09-23
 
 This is the canonical handoff for humans and new Codex tasks. Keep it concise and current. Detailed specifications belong in linked documents.
 
@@ -139,4 +139,4 @@ Exact dependencies will be approved during repository/tooling design; do not add
 
 ## Current implementation milestone
 
-Milestone 0 — Reproducible foundation. Scaffold and validate the approved repository/tooling boundaries only; do not add Milestone 1 product behavior.
+Milestone 0 — Reproducible foundation. The Windows local bootstrap, shared quality gate, frozen frontend install, CLI startup, and desktop startup have been verified on 2026-09-23. The milestone remains open until the updated Windows CI and a clean-machine bootstrap pass. Do not add Milestone 1 product behavior before that acceptance gate.

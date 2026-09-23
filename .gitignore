@@ -1,5 +1,5 @@
 /target/
-/node_modules/
+node_modules/
 /.casklet-dev/
 /apps/desktop/dist/
 /apps/desktop/src-tauri/gen/

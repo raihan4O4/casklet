@@ -7,6 +7,7 @@
     "dev": "vite",
     "build": "vite build",
     "check": "svelte-check --tsconfig ./tsconfig.json",
+    "lint": "eslint .",
     "tauri": "tauri"
   },
   "dependencies": {
@@ -14,10 +15,15 @@
     "svelte": "5.57.0"
   },
   "devDependencies": {
+    "@eslint/js": "10.0.1",
     "@sveltejs/vite-plugin-svelte": "7.3.0",
     "@tauri-apps/cli": "2.11.4",
+    "eslint": "10.11.0",
+    "eslint-plugin-svelte": "3.23.0",
+    "globals": "17.12.0",
     "svelte-check": "4.7.6",
     "typescript": "6.0.3",
+    "typescript-eslint": "8.70.1",
     "vite": "8.3.0"
   }
 }

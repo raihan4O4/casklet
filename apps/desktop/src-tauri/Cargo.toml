@@ -10,12 +10,12 @@ name = "casklet_desktop_lib"
 crate-type = ["lib", "cdylib", "staticlib"]
 
 [build-dependencies]
-tauri-build = { version = "=2.5.6", features = [] }
+tauri-build = { version = "=2.6.3", features = [] }
 
 [dependencies]
-casklet-application = { path = "../../../crates/casklet-application" }
-casklet-contracts = { path = "../../../crates/casklet-contracts" }
-casklet-infrastructure = { path = "../../../crates/casklet-infrastructure" }
+casklet-application = { path = "../../../crates/casklet-application", version = "=0.0.0" }
+casklet-contracts = { path = "../../../crates/casklet-contracts", version = "=0.0.0" }
+casklet-infrastructure = { path = "../../../crates/casklet-infrastructure", version = "=0.0.0" }
 tauri = { version = "=2.11.1", features = [] }
 
 [lints]
