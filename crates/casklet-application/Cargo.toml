@@ -6,8 +6,8 @@ rust-version.workspace = true
 publish.workspace = true
 
 [dependencies]
-casklet-contracts = { path = "../casklet-contracts" }
-casklet-domain = { path = "../casklet-domain" }
+casklet-contracts = { path = "../casklet-contracts", version = "=0.0.0" }
+casklet-domain = { path = "../casklet-domain", version = "=0.0.0" }
 
 [lints]
 workspace = true

@@ -21,16 +21,16 @@ The priorities are:
 
 Pin exact versions in repository files when scaffolding begins:
 
-| Tool | Initial baseline | Pinning mechanism | Reason |
-|---|---|---|---|
-| Rust | 1.98.1 | `rust-toolchain.toml` | Stable patched compiler; 1.98.1 fixes a 1.98.0 miscompilation |
-| Rust edition | 2024 | workspace `Cargo.toml` | Current stable language edition |
-| Node.js | 24 LTS | `.node-version` and `package.json` engines | Supported LTS rather than Current |
-| pnpm | 12.x exact patch at scaffold time | `packageManager` | Fast workspace package manager with an exact project pin |
-| Tauri | 2.11.x exact compatible patch set | Cargo and pnpm lockfiles | Current Tauri 2 stable line at research time |
-| Svelte | 5.x exact resolved version | `pnpm-lock.yaml` | Lean compiled UI and explicit Svelte 5 runes model |
-| TypeScript | current supported stable at scaffold time | `pnpm-lock.yaml` | Static frontend and contract checking |
-| SQLite | bundled through Rust adapter | `Cargo.lock` | Known database engine independent of host installation |
+| Tool         | Initial baseline                          | Pinning mechanism                          | Reason                                                        |
+| ------------ | ----------------------------------------- | ------------------------------------------ | ------------------------------------------------------------- |
+| Rust         | 1.98.1                                    | `rust-toolchain.toml`                      | Stable patched compiler; 1.98.1 fixes a 1.98.0 miscompilation |
+| Rust edition | 2024                                      | workspace `Cargo.toml`                     | Current stable language edition                               |
+| Node.js      | 24 LTS                                    | `.node-version` and `package.json` engines | Supported LTS rather than Current                             |
+| pnpm         | 12.x exact patch at scaffold time         | `packageManager`                           | Fast workspace package manager with an exact project pin      |
+| Tauri        | 2.11.x exact compatible patch set         | Cargo and pnpm lockfiles                   | Current Tauri 2 stable line at research time                  |
+| Svelte       | 5.x exact resolved version                | `pnpm-lock.yaml`                           | Lean compiled UI and explicit Svelte 5 runes model            |
+| TypeScript   | current supported stable at scaffold time | `pnpm-lock.yaml`                           | Static frontend and contract checking                         |
+| SQLite       | bundled through Rust adapter              | `Cargo.lock`                               | Known database engine independent of host installation        |
 
 Rust 1.98.1 was released specifically to fix a compiler miscompilation in 1.98.0. Pinning the point release avoids silently building with the affected compiler. [Rust 1.98.1 announcement](https://blog.rust-lang.org/releases/latest/)
 

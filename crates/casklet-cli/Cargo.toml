@@ -6,8 +6,8 @@ rust-version.workspace = true
 publish.workspace = true
 
 [dependencies]
-casklet-application = { path = "../casklet-application" }
-casklet-infrastructure = { path = "../casklet-infrastructure" }
+casklet-application = { path = "../casklet-application", version = "=0.0.0" }
+casklet-infrastructure = { path = "../casklet-infrastructure", version = "=0.0.0" }
 
 [lints]
 workspace = true

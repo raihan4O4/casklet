@@ -2,6 +2,10 @@
 param()
 
 $ErrorActionPreference = 'Stop'
+$cargoBin = Join-Path $env:USERPROFILE '.cargo\bin'
+if (Test-Path (Join-Path $cargoBin 'cargo.exe')) {
+    $env:PATH = "$cargoBin;$env:PATH"
+}
 $required = @('git', 'rustup', 'cargo', 'node', 'corepack')
 $missing = $required | Where-Object { -not (Get-Command $_ -ErrorAction SilentlyContinue) }
 
