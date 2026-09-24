@@ -139,4 +139,4 @@ Exact dependencies will be approved during repository/tooling design; do not add
 
 ## Current implementation milestone
 
-Milestone 0 — Reproducible foundation. The Windows local bootstrap, shared quality gate, frozen frontend install, CLI startup, and desktop startup have been verified on 2026-09-23. The milestone remains open until the updated Windows CI and a clean-machine bootstrap pass. Do not add Milestone 1 product behavior before that acceptance gate.
+Milestone 0 — Reproducible foundation. The Windows local bootstrap, shared quality gate, frozen frontend install, CLI startup, and desktop startup were verified on 2026-09-23. PR #2 was merged, and both Windows CI jobs passed on `main` at `ac5700e` on 2026-09-24. A fresh Windows runner now checks the documented bootstrap procedure; the milestone remains open until that run passes and its evidence is recorded. Do not add Milestone 1 product behavior before that acceptance gate.
