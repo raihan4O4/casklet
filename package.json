@@ -10,6 +10,7 @@
     "check": "corepack pnpm --filter @casklet/desktop check",
     "lint": "corepack pnpm --filter @casklet/desktop lint",
     "build": "corepack pnpm --filter @casklet/desktop build",
+    "test": "corepack pnpm --filter @casklet/desktop test",
     "format:check": "prettier --check .",
     "format": "prettier --write ."
   },

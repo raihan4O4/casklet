@@ -1,6 +1,6 @@
 # Casklet Project Context
 
-Last updated: 2026-09-23
+Last updated: 2026-09-25
 
 This is the canonical handoff for humans and new Codex tasks. Keep it concise and current. Detailed specifications belong in linked documents.
 
@@ -14,7 +14,7 @@ Core principle:
 
 ## Current phase
 
-The initial design program is approved. Milestone 0 acceptance is complete; Milestone 1 is the next implementation milestone.
+The initial design program is approved. Milestone 0 is complete. Milestone 1 is locally complete on `codex/cask-create-list-inspect`; Milestone 2 is ready to begin after review of that branch.
 
 - Phase 1 — Requirements: approved.
 - Phase 2 — Cross-platform and installation workflow: approved.
@@ -139,4 +139,4 @@ Exact dependencies will be approved during repository/tooling design; do not add
 
 ## Current implementation milestone
 
-Milestone 0 — Reproducible foundation: complete on 2026-09-24. The local Windows bootstrap, shared quality gate, frozen frontend install, CLI startup, and desktop startup passed on 2026-09-23. Both CI jobs passed on merged `main` at `ac5700e`. A fresh `windows-2025` GitHub runner then followed the documented bootstrap procedure, installed the pinned Rust toolchain, and passed `cargo xtask bootstrap-check` and the full Windows quality gate in [run 36010734018](https://github.com/raihan4O4/casklet/actions/runs/36010734018); `dependency-policy` passed in the same run. Milestone 1 — Cask walking skeleton — is next. Its scope and acceptance gate are in `docs/engineering/delivery-roadmap-v0.1.md`.
+Milestone 0 — Reproducible foundation: complete on 2026-09-24. The local Windows bootstrap, shared quality gate, frozen frontend install, CLI startup, and desktop startup passed on 2026-09-23. Both CI jobs passed on merged `main` at `ac5700e`. A fresh `windows-2025` GitHub runner then followed the documented bootstrap procedure, installed the pinned Rust toolchain, and passed `cargo xtask bootstrap-check` and the full Windows quality gate in [run 36010734018](https://github.com/raihan4O4/casklet/actions/runs/36010734018); `dependency-policy` passed in the same run. Milestone 1 — Cask walking skeleton — is locally complete on `codex/cask-create-list-inspect`: creation, listing, inspection, SQLite migration, empty storage and manifest projection, generated contracts, CLI process test, GUI component smoke test, and the full Windows `cargo xtask check` gate passed. The CLI uses the approved `casklet cask create|list|get` routes, with concise human output by default and explicit JSON output. Milestone 2 — Resource intake and inspection — is the next implementation milestone after branch review. Keep `main` unchanged until the planned milestone integration; see `docs/engineering/delivery-roadmap-v0.1.md`.

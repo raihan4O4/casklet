@@ -1,0 +1,10 @@
+CREATE TABLE IF NOT EXISTS casks (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    storage_key TEXT NOT NULL UNIQUE,
+    managed_storage_root TEXT NOT NULL UNIQUE,
+    created_at_ms INTEGER NOT NULL,
+    updated_at_ms INTEGER NOT NULL,
+    revision INTEGER NOT NULL CHECK (revision >= 0),
+    state TEXT NOT NULL CHECK (state IN ('CREATING','ACTIVE','ARCHIVED','DESTROYING','PARTIALLY_DESTROYED','DESTROYED','RECOVERY_REQUIRED'))
+) STRICT;
