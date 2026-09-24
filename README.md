@@ -1,6 +1,6 @@
 # Casklet
 
-Casklet is a local-first lifecycle and resource manager for Windows 11 x64. The repository is currently at Milestone 0: a reproducible, no-feature foundation.
+Casklet is a local-first lifecycle and resource manager for Windows 11 x64. Milestone 0 established the reproducible foundation; Milestone 1 is the next implementation milestone.
 
 ## Bootstrap
 

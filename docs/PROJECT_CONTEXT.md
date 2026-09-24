@@ -14,7 +14,7 @@ Core principle:
 
 ## Current phase
 
-The initial design program is approved. Milestone 0 repository scaffolding is in progress; feature behavior remains out of scope until its milestone is started.
+The initial design program is approved. Milestone 0 acceptance is complete; Milestone 1 is the next implementation milestone.
 
 - Phase 1 — Requirements: approved.
 - Phase 2 — Cross-platform and installation workflow: approved.
@@ -139,4 +139,4 @@ Exact dependencies will be approved during repository/tooling design; do not add
 
 ## Current implementation milestone
 
-Milestone 0 — Reproducible foundation. The Windows local bootstrap, shared quality gate, frozen frontend install, CLI startup, and desktop startup were verified on 2026-09-23. PR #2 was merged, and both Windows CI jobs passed on `main` at `ac5700e` on 2026-09-24. A fresh Windows runner now checks the documented bootstrap procedure; the milestone remains open until that run passes and its evidence is recorded. Do not add Milestone 1 product behavior before that acceptance gate.
+Milestone 0 — Reproducible foundation: complete on 2026-09-24. The local Windows bootstrap, shared quality gate, frozen frontend install, CLI startup, and desktop startup passed on 2026-09-23. Both CI jobs passed on merged `main` at `ac5700e`. A fresh `windows-2025` GitHub runner then followed the documented bootstrap procedure, installed the pinned Rust toolchain, and passed `cargo xtask bootstrap-check` and the full Windows quality gate in [run 36010734018](https://github.com/raihan4O4/casklet/actions/runs/36010734018); `dependency-policy` passed in the same run. Milestone 1 — Cask walking skeleton — is next. Its scope and acceptance gate are in `docs/engineering/delivery-roadmap-v0.1.md`.
