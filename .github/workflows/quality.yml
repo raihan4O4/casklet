@@ -18,6 +18,9 @@ jobs:
           node-version-file: .node-version
       - name: Install frontend dependencies
         run: corepack pnpm install --frozen-lockfile
+      - name: Verify documented bootstrap on fresh Windows runner
+        shell: pwsh
+        run: ./scripts/bootstrap.ps1
       - name: Baseline secret scan
         shell: pwsh
         run: |
