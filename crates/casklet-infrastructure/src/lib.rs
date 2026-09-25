@@ -204,11 +204,11 @@ mod tests {
         AddMode, AddResource, CONTRACT_VERSION, CategorizeResource, CreateCask, CreateCategory,
         GetCask, GetResource, GetStorageSummary, ListCasks, ListResources,
     };
+    use casklet_contracts::{ApproveRemovalPlan, CreateRemovalPlan, GetRemovalPlan};
     use casklet_contracts::{
         CancelOperation, CreateDiagnosticsBundle, ListOperations, PreserveOperation,
         RecoverOperation,
     };
-    use casklet_contracts::{CreateRemovalPlan, GetRemovalPlan};
     use casklet_domain::resource::IntakeMode;
     use casklet_domain::resource::Resource;
     #[test]
@@ -379,10 +379,61 @@ mod tests {
             .unwrap();
         assert_eq!(loaded.plan_hash, plan.plan_hash);
         assert_eq!(loaded.items.len(), 2);
+        assert_eq!(
+            service
+                .approve_removal_plan(
+                    &ApproveRemovalPlan {
+                        version: CONTRACT_VERSION,
+                        id: plan.id.clone(),
+                        plan_hash: plan.plan_hash.clone(),
+                    },
+                    "test"
+                )
+                .unwrap()
+                .state,
+            "APPROVED"
+        );
+        assert!(
+            service
+                .approve_removal_plan(
+                    &ApproveRemovalPlan {
+                        version: CONTRACT_VERSION,
+                        id: plan.id.clone(),
+                        plan_hash: "wrong".into(),
+                    },
+                    "test"
+                )
+                .is_err()
+        );
         assert!(std::path::Path::new(&managed.path).exists());
         assert!(source.exists());
+        let pending = service
+            .create_removal_plan(
+                &CreateRemovalPlan {
+                    version: CONTRACT_VERSION,
+                    cask_id: cask.id.clone(),
+                    resource_ids: vec![managed.id.clone()],
+                    category_key: None,
+                },
+                "test",
+            )
+            .unwrap();
         fs::remove_file(&managed.path).unwrap();
         fs::write(&managed.path, b"managed").unwrap();
+        assert_eq!(
+            service
+                .approve_removal_plan(
+                    &ApproveRemovalPlan {
+                        version: CONTRACT_VERSION,
+                        id: pending.id,
+                        plan_hash: pending.plan_hash,
+                    },
+                    "test"
+                )
+                .unwrap_err()
+                .code,
+            "PLAN_CHANGED"
+        );
         let replaced = service
             .create_removal_plan(
                 &CreateRemovalPlan {
@@ -418,6 +469,25 @@ mod tests {
                 .unwrap_err()
                 .code,
             "INVALID_SCOPE"
+        );
+        let connection = service.repository.connection().unwrap();
+        connection
+            .execute(
+                "UPDATE removal_plan_items SET expected_path='tampered' WHERE id=?1",
+                [&plan.items[0].id],
+            )
+            .unwrap();
+        drop(connection);
+        assert!(
+            service
+                .get_removal_plan(
+                    &GetRemovalPlan {
+                        version: CONTRACT_VERSION,
+                        id: plan.id,
+                    },
+                    "test"
+                )
+                .is_err()
         );
         drop(service);
         fs::remove_dir_all(root).unwrap();

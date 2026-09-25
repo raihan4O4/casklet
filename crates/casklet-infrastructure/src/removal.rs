@@ -10,7 +10,16 @@ use rusqlite::{OptionalExtension, params};
 use sha2::{Digest, Sha256};
 use std::{fs, path::Path};
 
-type PlanHeader = (String, String, Option<String>, String, String, i64, i64);
+type PlanHeader = (
+    String,
+    String,
+    Option<String>,
+    String,
+    String,
+    i64,
+    i64,
+    i64,
+);
 
 fn hash_field(hash: &mut Sha256, value: &str) {
     hash.update(
@@ -58,7 +67,87 @@ fn plan_hash(plan: &RemovalPlanView, items: &[PlannedItem], cask_revision: i64) 
     format!("{:x}", hash.finalize())
 }
 
+fn load_plan_items(
+    connection: &rusqlite::Connection,
+    id: &str,
+) -> Result<Vec<PlannedItem>, String> {
+    let mut stmt = connection.prepare("SELECT id,resource_id,name,action,reason_code,expected_size_bytes,expected_path,expected_kind,expected_identity,resource_revision,association_revision,other_associations FROM removal_plan_items WHERE plan_id=?1 ORDER BY sequence").map_err(|e|e.to_string())?;
+    stmt.query_map([id], |row| {
+        Ok(PlannedItem {
+            view: RemovalPlanItemView {
+                id: row.get(0)?,
+                resource_id: row.get(1)?,
+                name: row.get(2)?,
+                action: row.get(3)?,
+                reason_code: row.get(4)?,
+                expected_size_bytes: row
+                    .get::<_, Option<i64>>(5)?
+                    .and_then(|n| u64::try_from(n).ok()),
+            },
+            path: row.get(6)?,
+            kind: row.get(7)?,
+            identity: row.get(8)?,
+            resource_revision: row.get(9)?,
+            association_revision: row.get(10)?,
+            other_associations: u64::try_from(row.get::<_, i64>(11)?).unwrap_or(u64::MAX),
+        })
+    })
+    .map_err(|e| e.to_string())?
+    .collect::<Result<Vec<_>, _>>()
+    .map_err(|e| e.to_string())
+}
+
 impl RemovalRepository for SqliteCasks {
+    fn plan_items(&self, id: &str) -> Result<Vec<PlannedItem>, String> {
+        load_plan_items(&self.connection()?, id)
+    }
+    fn approve_plan(&self, id: &str, hash: &str, now_ms: i64) -> Result<(), String> {
+        // Re-reading verifies the immutable snapshot hash before changing its state.
+        self.get_plan(id)?.ok_or("Removal plan not found")?;
+        let mut connection = self.connection()?;
+        let transaction = connection.transaction().map_err(|e| e.to_string())?;
+        let (cask_id, scope, category, expected_revision, expires_at, stored_hash, state): (String, String, Option<String>, i64, i64, String, String) = transaction.query_row(
+            "SELECT cask_id,scope,category_key,based_on_cask_revision,expires_at_ms,plan_hash,state FROM removal_plans WHERE id=?1",
+            [id],
+            |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?,row.get(5)?,row.get(6)?)),
+        ).map_err(|e|e.to_string())?;
+        if state != "DRAFT" || stored_hash != hash || expires_at <= now_ms {
+            return Err("Plan is changed, expired, or already acted on".into());
+        }
+        let (current_revision, cask_state): (i64, String) = transaction
+            .query_row(
+                "SELECT revision,state FROM casks WHERE id=?1",
+                [&cask_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .map_err(|e| e.to_string())?;
+        if current_revision != expected_revision || cask_state != "ACTIVE" {
+            return Err("Cask changed after planning".into());
+        }
+        let item_count: i64 = transaction
+            .query_row(
+                "SELECT COUNT(*) FROM removal_plan_items WHERE plan_id=?1",
+                [id],
+                |row| row.get(0),
+            )
+            .map_err(|e| e.to_string())?;
+        if item_count == 0 {
+            return Err("Empty plan cannot be approved".into());
+        }
+        if scope != "RESOURCES" {
+            let actual_count: i64 = transaction.query_row("SELECT COUNT(*) FROM resource_associations WHERE cask_id=?1 AND removed_at_ms IS NULL AND (?2 IS NULL OR category_key=?2)", params![cask_id,category], |row|row.get(0)).map_err(|e|e.to_string())?;
+            if actual_count != item_count {
+                return Err("Removal scope changed after planning".into());
+            }
+        }
+        let stale_count: i64 = transaction.query_row("SELECT COUNT(*) FROM removal_plan_items i LEFT JOIN resources r ON r.id=i.resource_id LEFT JOIN resource_associations a ON a.resource_id=i.resource_id AND a.cask_id=?2 AND a.removed_at_ms IS NULL LEFT JOIN resource_locations l ON l.resource_id=i.resource_id AND l.is_primary=1 AND l.retired_at_ms IS NULL WHERE i.plan_id=?1 AND (r.id IS NULL OR a.id IS NULL OR l.id IS NULL OR r.revision<>i.resource_revision OR a.revision<>i.association_revision OR r.kind<>i.expected_kind OR l.path_display<>i.expected_path OR l.identity_key IS NOT i.expected_identity OR (SELECT COUNT(*) FROM resource_associations x WHERE x.resource_id=i.resource_id AND x.cask_id<>?2 AND x.removed_at_ms IS NULL)<>i.other_associations)", params![id,cask_id], |row|row.get(0)).map_err(|e|e.to_string())?;
+        if stale_count != 0 {
+            return Err("Resource or association changed after planning".into());
+        }
+        transaction.execute("UPDATE removal_plans SET state='APPROVED',approved_at_ms=?2,revision=revision+1 WHERE id=?1 AND state='DRAFT'",params![id,now_ms]).map_err(|e|e.to_string())?;
+        transaction.commit().map_err(|e| e.to_string())
+    }
+
     fn candidates(&self, cask_id: &str) -> Result<Vec<RemovalCandidate>, String> {
         let connection = self.connection()?;
         let mut stmt = connection.prepare("SELECT r.id,r.display_name,l.path_display,r.kind,r.management,l.containment,r.provenance,a.relationship,a.category_key,a.removal_policy,r.availability,r.size_bytes,r.unknown_entries,r.revision,a.revision,(SELECT COUNT(*) FROM resource_associations x WHERE x.resource_id=r.id AND x.removed_at_ms IS NULL AND x.cask_id<>a.cask_id),l.identity_key FROM resource_associations a JOIN resources r ON r.id=a.resource_id JOIN resource_locations l ON l.resource_id=r.id AND l.is_primary=1 AND l.retired_at_ms IS NULL WHERE a.cask_id=?1 AND a.removed_at_ms IS NULL ORDER BY a.added_at_ms,r.id")
@@ -133,49 +222,47 @@ impl RemovalRepository for SqliteCasks {
             {
                 return Err("Resource changed during planning".into());
             }
-            transaction.execute("INSERT INTO removal_plan_items(id,plan_id,sequence,resource_id,name,action,reason_code,expected_size_bytes,expected_path,expected_kind,expected_identity,resource_revision,association_revision) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)",
-                params![item.view.id,plan.id,i64::try_from(sequence).map_err(|e|e.to_string())?,item.view.resource_id,item.view.name,item.view.action,item.view.reason_code,item.view.expected_size_bytes.map(i64::try_from).transpose().map_err(|e|e.to_string())?,item.path,item.kind,item.identity,item.resource_revision,item.association_revision]).map_err(|e|e.to_string())?;
+            transaction.execute("INSERT INTO removal_plan_items(id,plan_id,sequence,resource_id,name,action,reason_code,expected_size_bytes,expected_path,expected_kind,expected_identity,resource_revision,association_revision,other_associations) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)",
+                params![item.view.id,plan.id,i64::try_from(sequence).map_err(|e|e.to_string())?,item.view.resource_id,item.view.name,item.view.action,item.view.reason_code,item.view.expected_size_bytes.map(i64::try_from).transpose().map_err(|e|e.to_string())?,item.path,item.kind,item.identity,item.resource_revision,item.association_revision,i64::try_from(item.other_associations).map_err(|e|e.to_string())?]).map_err(|e|e.to_string())?;
         }
         transaction.commit().map_err(|e| e.to_string())
     }
 
     fn get_plan(&self, id: &str) -> Result<Option<RemovalPlanView>, String> {
         let connection = self.connection()?;
-        let header: Option<PlanHeader> = connection.query_row("SELECT cask_id,scope,category_key,state,plan_hash,created_at_ms,expires_at_ms FROM removal_plans WHERE id=?1",[id],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?,row.get(5)?,row.get(6)?))).optional().map_err(|e|e.to_string())?;
-        let Some((cask_id, scope, category_key, state, plan_hash, created_at_ms, expires_at_ms)) =
-            header
+        let header: Option<PlanHeader> = connection.query_row("SELECT cask_id,scope,category_key,state,plan_hash,created_at_ms,expires_at_ms,based_on_cask_revision FROM removal_plans WHERE id=?1",[id],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?,row.get(5)?,row.get(6)?,row.get(7)?))).optional().map_err(|e|e.to_string())?;
+        let Some((
+            cask_id,
+            scope,
+            category_key,
+            state,
+            stored_hash,
+            created_at_ms,
+            expires_at_ms,
+            cask_revision,
+        )) = header
         else {
             return Ok(None);
         };
-        let mut stmt = connection.prepare("SELECT id,resource_id,name,action,reason_code,expected_size_bytes FROM removal_plan_items WHERE plan_id=?1 ORDER BY sequence").map_err(|e|e.to_string())?;
-        let items = stmt
-            .query_map([id], |row| {
-                Ok(RemovalPlanItemView {
-                    id: row.get(0)?,
-                    resource_id: row.get(1)?,
-                    name: row.get(2)?,
-                    action: row.get(3)?,
-                    reason_code: row.get(4)?,
-                    expected_size_bytes: row
-                        .get::<_, Option<i64>>(5)?
-                        .and_then(|n| u64::try_from(n).ok()),
-                })
-            })
-            .map_err(|e| e.to_string())?
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(|e| e.to_string())?;
-        Ok(Some(RemovalPlanView {
+        let snapshots = load_plan_items(&connection, id)?;
+        let view = RemovalPlanView {
             version: CONTRACT_VERSION,
             id: id.into(),
             cask_id,
             scope,
             category_key,
             state,
-            plan_hash,
+            plan_hash: stored_hash,
             created_at_ms,
             expires_at_ms,
-            items,
-        }))
+            items: snapshots.iter().map(|item| item.view.clone()).collect(),
+        };
+        if view.state != "INVALIDATED"
+            && plan_hash(&view, &snapshots, cask_revision) != view.plan_hash
+        {
+            return Err("Removal plan integrity mismatch".into());
+        }
+        Ok(Some(view))
     }
 }
 

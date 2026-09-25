@@ -263,6 +263,14 @@ pub struct GetRemovalPlan {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ApproveRemovalPlan {
+    pub version: u32,
+    pub id: String,
+    pub plan_hash: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct RemovalPlanItemView {
     pub id: String,
     pub resource_id: String,
@@ -319,6 +327,7 @@ export type DiagnosticEvent = { operationId: string | null; code: string; atMs: 
 export type DiagnosticsBundle = { schemaVersion: number; generatedAtMs: number; operations: OperationView[]; pendingManifestCount: number; events: DiagnosticEvent[]; eventsTruncated: boolean };
 export type CreateRemovalPlan = { version: number; caskId: string; resourceIds: string[]; categoryKey: string | null };
 export type GetRemovalPlan = { version: number; id: string };
+export type ApproveRemovalPlan = { version: number; id: string; planHash: string };
 export type RemovalPlanItemView = { id: string; resourceId: string; name: string; action: string; reasonCode: string; expectedSizeBytes: number | null };
 export type RemovalPlanView = { version: number; id: string; caskId: string; scope: string; categoryKey: string | null; state: string; planHash: string; createdAtMs: number; expiresAtMs: number; items: RemovalPlanItemView[] };
 ";

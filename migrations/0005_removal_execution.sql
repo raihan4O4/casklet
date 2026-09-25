@@ -18,3 +18,5 @@ ALTER TABLE removal_plan_items ADD COLUMN run_id TEXT REFERENCES removal_runs(id
 ALTER TABLE removal_plan_items ADD COLUMN started_at_ms INTEGER;
 ALTER TABLE removal_plan_items ADD COLUMN finished_at_ms INTEGER;
 ALTER TABLE removal_plan_items ADD COLUMN result_code TEXT;
+ALTER TABLE removal_plan_items ADD COLUMN other_associations INTEGER NOT NULL DEFAULT 0;
+UPDATE removal_plans SET state='INVALIDATED' WHERE state IN ('DRAFT','APPROVED');

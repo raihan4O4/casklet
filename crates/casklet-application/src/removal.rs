@@ -1,8 +1,8 @@
 //! Read-only removal planning. Only the core can generate a plan and its items.
 use crate::{CaskRepository, CaskService};
 use casklet_contracts::{
-    ApiError, CONTRACT_VERSION, CreateRemovalPlan, GetRemovalPlan, RemovalPlanItemView,
-    RemovalPlanView,
+    ApiError, ApproveRemovalPlan, CONTRACT_VERSION, CreateRemovalPlan, GetRemovalPlan,
+    RemovalPlanItemView, RemovalPlanView,
 };
 use casklet_domain::removal::{RemovalEvidence, propose};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -55,6 +55,12 @@ pub trait RemovalRepository {
     /// # Errors
     /// Returns a database error.
     fn get_plan(&self, id: &str) -> Result<Option<RemovalPlanView>, String>;
+    /// # Errors
+    /// Returns private snapshot preconditions for verification.
+    fn plan_items(&self, id: &str) -> Result<Vec<PlannedItem>, String>;
+    /// # Errors
+    /// Rejects an expired or changed snapshot before persisting approval.
+    fn approve_plan(&self, id: &str, hash: &str, now_ms: i64) -> Result<(), String>;
 }
 
 pub trait RemovalInspection {
@@ -232,5 +238,93 @@ impl<R: CaskRepository + RemovalRepository, S: RemovalInspection> CaskService<R,
             .get_plan(&request.id)
             .map_err(|_| error("PERSISTENCE", "Could not load removal plan", correlation_id))?
             .ok_or_else(|| error("NOT_FOUND", "Removal plan not found", correlation_id))
+    }
+
+    /// Approves the exact immutable snapshot for later revalidated execution.
+    /// # Errors
+    /// Returns validation, stale-plan, or persistence errors.
+    pub fn approve_removal_plan(
+        &self,
+        request: &ApproveRemovalPlan,
+        correlation_id: &str,
+    ) -> Result<RemovalPlanView, ApiError> {
+        if request.version != CONTRACT_VERSION {
+            return Err(error(
+                "UNSUPPORTED_VERSION",
+                "Contract version mismatch",
+                correlation_id,
+            ));
+        }
+        let current = self.get_removal_plan(
+            &GetRemovalPlan {
+                version: request.version,
+                id: request.id.clone(),
+            },
+            correlation_id,
+        )?;
+        if current.plan_hash != request.plan_hash {
+            return Err(error(
+                "PLAN_CHANGED",
+                "Removal plan hash differs",
+                correlation_id,
+            ));
+        }
+        let cask = self
+            .repository
+            .get(&current.cask_id)
+            .map_err(|_| error("PERSISTENCE", "Could not load Cask", correlation_id))?
+            .ok_or_else(|| error("NOT_FOUND", "Cask not found", correlation_id))?;
+        let candidates = self
+            .repository
+            .candidates(&current.cask_id)
+            .map_err(|_| error("PERSISTENCE", "Could not load resources", correlation_id))?;
+        for item in self
+            .repository
+            .plan_items(&request.id)
+            .map_err(|_| error("PERSISTENCE", "Could not load plan items", correlation_id))?
+        {
+            if item.view.action != "TRASH" {
+                continue;
+            }
+            let Some(candidate) = candidates
+                .iter()
+                .find(|candidate| candidate.id == item.view.resource_id)
+            else {
+                return Err(error(
+                    "PLAN_CHANGED",
+                    "Planned resource is unavailable",
+                    correlation_id,
+                ));
+            };
+            if item.identity.is_none()
+                || self
+                    .storage
+                    .verify_managed(&cask.managed_storage_root, candidate)
+                    != item.identity
+            {
+                return Err(error(
+                    "PLAN_CHANGED",
+                    "Managed item changed after planning",
+                    correlation_id,
+                ));
+            }
+        }
+        let now = i64::try_from(
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map_err(|_| error("CLOCK", "Clock unavailable", correlation_id))?
+                .as_millis(),
+        )
+        .map_err(|_| error("CLOCK", "Clock unavailable", correlation_id))?;
+        self.repository
+            .approve_plan(&request.id, &request.plan_hash, now)
+            .map_err(|e| error("PLAN_NOT_APPROVABLE", &e, correlation_id))?;
+        self.get_removal_plan(
+            &GetRemovalPlan {
+                version: request.version,
+                id: request.id.clone(),
+            },
+            correlation_id,
+        )
     }
 }
