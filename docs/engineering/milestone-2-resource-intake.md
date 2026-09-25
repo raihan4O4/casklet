@@ -1,6 +1,6 @@
 # Milestone 2 — Resource intake and inspection
 
-Status: implementation complete on `codex/resource-intake-inspection`; awaiting PR review against `develop`.
+Status: complete and merged into `develop` in PR #5.
 
 The CLI follows the approved `casklet resource add|list|get|categorize`, `casklet category list`, and `casklet storage summary` routes. Adding requires an explicit `--mode copy|move|reference`. The desktop picker and drop handler stage one path for review; the user must choose a mode and press Add resource. Both entry points call the same application service.
 
@@ -10,4 +10,4 @@ The directory inspector bounds traversal to 100,000 entries and depth 64. It ret
 
 The tests cover copy, move, reference, category changes, collision preservation, symlinks and Windows junctions, inaccessible-path classification, simulated disk-full writes, an interrupted copy with a surviving intent, missing-reference availability, source/destination recursion, and migration from a Milestone 1 database. The full Windows workspace quality gate passed locally.
 
-Milestone 3 will implement reconciliation of unfinished intents and retryable manifest projections. A failed intake currently requires manual inspection of the recorded staging paths. Concurrent changes inside a directory tree can invalidate a scan; managed copy rejects links and rechecks roots, and the removal milestone must strengthen path validation before any deletion. See [ADR 0009](../adr/0009-staged-resource-intake.md).
+Milestone 3 adds explicit reconciliation of unfinished intents and retryable manifest projections; see [the Milestone 3 implementation note](milestone-3-operations-recovery.md). Concurrent changes inside a directory tree can invalidate a scan; managed copy rejects links and rechecks roots, and the removal milestone must strengthen path validation before any deletion. See [ADR 0009](../adr/0009-staged-resource-intake.md).

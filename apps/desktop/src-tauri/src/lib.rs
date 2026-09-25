@@ -21,7 +21,16 @@ pub fn run() {
             create_category,
             list_categories,
             categorize_resource,
-            storage_summary
+            storage_summary,
+            list_operations,
+            get_operation,
+            recover_operation,
+            preserve_operation,
+            cancel_operation,
+            recovery_status,
+            inspect_recovery,
+            retry_manifests,
+            create_diagnostics_bundle
         ])
         .run(tauri::generate_context!())
         .expect("failed to run Casklet desktop");
@@ -66,9 +75,16 @@ async fn add_resource(
 ) -> Result<casklet_contracts::ResourceView, casklet_contracts::ApiError> {
     let service = service.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
-        service.add_resource(&request, "desktop", &|done, total| {
-            let _ = app.emit("resource.progress", (done, total));
-        })
+        service.add_resource_with_events(
+            &request,
+            "desktop",
+            &|done, total| {
+                let _ = app.emit("resource.progress", (done, total));
+            },
+            &|id| {
+                let _ = app.emit("operation.started", id);
+            },
+        )
     })
     .await
     .map_err(|e| casklet_contracts::ApiError {
@@ -125,4 +141,83 @@ fn storage_summary(
     request: casklet_contracts::GetStorageSummary,
 ) -> Result<casklet_contracts::StorageSummary, casklet_contracts::ApiError> {
     service.storage_summary(&request, "desktop")
+}
+
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+fn list_operations(
+    service: tauri::State<'_, Service>,
+    request: casklet_contracts::ListOperations,
+) -> Result<Vec<casklet_contracts::OperationView>, casklet_contracts::ApiError> {
+    service.list_operations(&request, "desktop")
+}
+
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+fn get_operation(
+    service: tauri::State<'_, Service>,
+    request: casklet_contracts::GetOperation,
+) -> Result<casklet_contracts::OperationView, casklet_contracts::ApiError> {
+    service.get_operation(&request, "desktop")
+}
+
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+fn recover_operation(
+    service: tauri::State<'_, Service>,
+    request: casklet_contracts::RecoverOperation,
+) -> Result<casklet_contracts::OperationView, casklet_contracts::ApiError> {
+    service.recover_operation(&request, "desktop")
+}
+
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+fn preserve_operation(
+    service: tauri::State<'_, Service>,
+    request: casklet_contracts::PreserveOperation,
+) -> Result<casklet_contracts::OperationView, casklet_contracts::ApiError> {
+    service.preserve_operation(&request, "desktop")
+}
+
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+fn cancel_operation(
+    service: tauri::State<'_, Service>,
+    request: casklet_contracts::CancelOperation,
+) -> Result<casklet_contracts::OperationView, casklet_contracts::ApiError> {
+    service.cancel_operation(&request, "desktop")
+}
+
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+fn recovery_status(
+    service: tauri::State<'_, Service>,
+) -> Result<casklet_contracts::RecoveryStatus, casklet_contracts::ApiError> {
+    service.recovery_status("desktop")
+}
+
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+fn inspect_recovery(
+    service: tauri::State<'_, Service>,
+    request: casklet_contracts::GetOperation,
+) -> Result<casklet_contracts::RecoveryInspection, casklet_contracts::ApiError> {
+    service.inspect_recovery(&request, "desktop")
+}
+
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+fn retry_manifests(
+    service: tauri::State<'_, Service>,
+) -> Result<usize, casklet_contracts::ApiError> {
+    service.retry_manifest_projections("desktop")
+}
+
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+fn create_diagnostics_bundle(
+    service: tauri::State<'_, Service>,
+    request: casklet_contracts::CreateDiagnosticsBundle,
+) -> Result<(), casklet_contracts::ApiError> {
+    service.create_diagnostics_bundle(&request, "desktop")
 }

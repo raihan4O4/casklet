@@ -2,9 +2,9 @@
   import { invoke } from '@tauri-apps/api/core';
   import { listen } from '@tauri-apps/api/event';
   import { getCurrentWindow } from '@tauri-apps/api/window';
-  import { open } from '@tauri-apps/plugin-dialog';
+  import { open, save } from '@tauri-apps/plugin-dialog';
   import { onMount } from 'svelte';
-  import type { AddMode, ApiError, CaskView, CategoryView, ResourceView, StorageSummary } from '../contracts/generated/casklet';
+  import type { AddMode, ApiError, CaskView, CategoryView, ResourceView, StorageSummary, RecoveryStatus, RecoveryInspection, OperationView } from '../contracts/generated/casklet';
   import { CONTRACT_VERSION } from '../contracts/generated/casklet';
 
   let casks: CaskView[] = $state([]);
@@ -21,6 +21,10 @@
   let progress = $state('');
   let categoryName = $state('');
   let selectedResource: ResourceView | null = $state(null);
+  let recovery: RecoveryStatus | null = $state(null);
+  let recoveryInspection: RecoveryInspection | null = $state(null);
+  let activeOperation = $state('');
+  let operations: OperationView[] = $state([]);
 
   function message(cause: unknown): string {
     const api = cause as Partial<ApiError>;
@@ -29,7 +33,44 @@
   async function refresh() {
     try {
       casks = await invoke<CaskView[]>('list_casks', { request: { version: CONTRACT_VERSION } });
+      await refreshRecovery();
+      await refreshOperations();
       error = '';
+    } catch (cause) { error = message(cause); }
+  }
+  async function refreshRecovery() {
+    recovery = await invoke<RecoveryStatus>('recovery_status');
+  }
+  async function refreshOperations() {
+    operations = await invoke<OperationView[]>('list_operations', { request: { version: CONTRACT_VERSION, caskId: null } });
+  }
+  async function recoverOperation(id: string) {
+    try {
+      await invoke('recover_operation', { request: { version: CONTRACT_VERSION, id } });
+      await refreshRecovery();
+      await refreshResources();
+    } catch (cause) { error = message(cause); await refreshRecovery(); }
+  }
+  async function retryManifests() {
+    try { await invoke('retry_manifests'); await refreshRecovery(); }
+    catch (cause) { error = message(cause); }
+  }
+  async function inspectRecovery(id: string) {
+    try { recoveryInspection = await invoke<RecoveryInspection>('inspect_recovery', { request: { version: CONTRACT_VERSION, id } }); }
+    catch (cause) { error = message(cause); }
+  }
+  async function preserveOperation(id: string) {
+    try { await invoke('preserve_operation', { request: { version: CONTRACT_VERSION, id } }); await refreshRecovery(); }
+    catch (cause) { error = message(cause); }
+  }
+  async function cancelOperation(id: string) {
+    try { await invoke('cancel_operation', { request: { version: CONTRACT_VERSION, id } }); progress = 'Cancellation requested. Casklet will stop at a safe boundary.'; await refreshOperations(); }
+    catch (cause) { error = message(cause); }
+  }
+  async function saveDiagnostics() {
+    try {
+      const outputPath = await save({ defaultPath: 'casklet-diagnostics.json' });
+      if (outputPath) { await invoke('create_diagnostics_bundle', { request: { version: CONTRACT_VERSION, outputPath } }); progress = 'Diagnostic bundle saved.'; }
     } catch (cause) { error = message(cause); }
   }
   async function create() {
@@ -40,6 +81,7 @@
       name = '';
       await refresh();
       await refreshResources();
+      await refreshRecovery();
     } catch (cause) { error = message(cause); }
     finally { busy = false; }
   }
@@ -72,7 +114,7 @@
       pendingPath = ''; pendingMode = ''; progress = '';
       await refreshResources();
     } catch (cause) { error = message(cause); }
-    finally { busy = false; }
+    finally { await refreshRecovery().catch(() => {}); await refreshOperations().catch(() => {}); activeOperation = ''; busy = false; }
   }
   async function createCategory() {
     if (!selected || !categoryName.trim()) return;
@@ -92,6 +134,8 @@
     let disposed = false;
     let unlistenDrop: (() => void) | undefined;
     let unlistenProgress: (() => void) | undefined;
+    let unlistenStarted: (() => void) | undefined;
+    const poll = window.setInterval(() => { void refreshRecovery().catch(() => {}); void refreshOperations().catch(() => {}); }, 3000);
     void getCurrentWindow().onDragDropEvent((event) => {
       if (event.payload.type === 'drop' && event.payload.paths.length > 0) {
         if (event.payload.paths.length > 1) { error = 'Drop one item at a time.'; return; }
@@ -101,7 +145,9 @@
     void listen<[number, number]>('resource.progress', (event) => {
       const [done, total] = event.payload; progress = total === 0 ? `${done} entries inspected` : `${done} of ${total} bytes processed`;
     }).then((unlisten) => { if (disposed) unlisten(); else unlistenProgress = unlisten; });
-    return () => { disposed = true; unlistenDrop?.(); unlistenProgress?.(); };
+    void listen<string>('operation.started', (event) => { activeOperation = event.payload; })
+      .then((unlisten) => { if (disposed) unlisten(); else unlistenStarted = unlisten; });
+    return () => { disposed = true; window.clearInterval(poll); unlistenDrop?.(); unlistenProgress?.(); unlistenStarted?.(); };
   });
 </script>
 
@@ -117,6 +163,36 @@
     {#if casks.length === 0}<p>No Casks yet.</p>{/if}
     <ul>{#each casks as cask (cask.id)}<li><button class="cask-link" onclick={() => void inspect(cask.id)}>{cask.name}</button></li>{/each}</ul>
   </section>
+  <button type="button" onclick={() => void saveDiagnostics()}>Save diagnostics</button>
+  {#if operations.some((item) => item.state === 'RUNNING')}
+    <section aria-label="Running operations"><h2>Running operations</h2><ul>
+      {#each operations.filter((item) => item.state === 'RUNNING') as operation (operation.id)}
+        <li>{operation.id}: {operation.step} {operation.progressCompleted}{operation.progressTotal === null ? '' : `/${operation.progressTotal}`}
+          <button type="button" disabled={operation.cancellationRequested} onclick={() => void cancelOperation(operation.id)}>{operation.cancellationRequested ? 'Cancellation requested' : 'Cancel'}</button>
+        </li>
+      {/each}
+    </ul></section>
+  {/if}
+  {#if recovery && (recovery.operations.length || recovery.pendingManifestCasks.length)}
+    <section aria-label="Recovery status">
+      <h2>Recovery needed</h2>
+      <p>Casklet keeps uncertain files for inspection. Recovery only completes work that was already registered and still verifies.</p>
+      <ul>{#each recovery.operations as operation (operation.id)}
+        <li>Operation {operation.id}: {operation.state.toLowerCase()}
+          <button type="button" onclick={() => void inspectRecovery(operation.id)}>Inspect paths</button>
+          <button type="button" onclick={() => void recoverOperation(operation.id)}>Verify and recover</button>
+          <button type="button" onclick={() => void preserveOperation(operation.id)}>Keep files and close</button>
+        </li>
+      {/each}</ul>
+      {#if recoveryInspection}<dl>
+        <dt>Mode</dt><dd>{recoveryInspection.mode}</dd>
+        <dt>Source</dt><dd>{recoveryInspection.sourcePath} ({recoveryInspection.sourceStatus})</dd>
+        <dt>Staging</dt><dd>{recoveryInspection.stagingPath} ({recoveryInspection.stagingStatus})</dd>
+        <dt>Managed destination</dt><dd>{recoveryInspection.finalPath} ({recoveryInspection.finalStatus})</dd>
+      </dl>{/if}
+      {#if recovery.pendingManifestCasks.length}<p>{recovery.pendingManifestCasks.length} Cask manifests await regeneration. <button type="button" onclick={() => void retryManifests()}>Retry manifests</button></p>{/if}
+    </section>
+  {/if}
   {#if selected}
     <section aria-label="Cask details">
       <h2>{selected.name}</h2>
@@ -140,6 +216,7 @@
           </div>
         {/if}
         {#if progress}<p role="status">{progress}</p>{/if}
+        {#if activeOperation}<button type="button" onclick={() => void cancelOperation(activeOperation)}>Cancel operation</button>{/if}
       </section>
       <section aria-label="Resource inventory">
         <h3>Resources</h3>

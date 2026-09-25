@@ -1,7 +1,9 @@
 use casklet_contracts::{
-    AddMode, AddResource, ApiError, CONTRACT_VERSION, CaskView, CategorizeResource, CategoryView,
-    CreateCask, CreateCategory, GetCask, GetResource, GetStorageSummary, ListCasks, ListCategories,
-    ListResources, ResourceView, StorageSummary,
+    AddMode, AddResource, ApiError, CONTRACT_VERSION, CancelOperation, CaskView,
+    CategorizeResource, CategoryView, CreateCask, CreateCategory, CreateDiagnosticsBundle, GetCask,
+    GetOperation, GetResource, GetStorageSummary, ListCasks, ListCategories, ListOperations,
+    ListResources, OperationView, PreserveOperation, RecoverOperation, RecoveryInspection,
+    RecoveryStatus, ResourceView, StorageSummary,
 };
 use clap::{Parser, Subcommand, ValueEnum};
 use std::fmt::Write;
@@ -39,6 +41,18 @@ enum Command {
     Storage {
         #[command(subcommand)]
         action: StorageAction,
+    },
+    Operation {
+        #[command(subcommand)]
+        action: OperationAction,
+    },
+    Recovery {
+        #[command(subcommand)]
+        action: RecoveryAction,
+    },
+    Diagnostics {
+        #[command(subcommand)]
+        action: DiagnosticsAction,
     },
 }
 
@@ -95,6 +109,38 @@ enum CategoryAction {
 #[derive(Debug, Subcommand)]
 enum StorageAction {
     Summary { cask_id: String },
+}
+
+#[derive(Debug, Subcommand)]
+enum OperationAction {
+    List {
+        #[arg(long)]
+        cask_id: Option<String>,
+    },
+    Get {
+        id: String,
+    },
+    Recover {
+        id: String,
+    },
+    Preserve {
+        id: String,
+    },
+    Cancel {
+        id: String,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum RecoveryAction {
+    Status,
+    Inspect { id: String },
+    RetryManifests,
+}
+
+#[derive(Debug, Subcommand)]
+enum DiagnosticsAction {
+    Bundle { output_path: String },
 }
 
 #[expect(
@@ -244,6 +290,99 @@ fn main() -> ExitCode {
                 &correlation_id,
             )
             .map(|summary| render_storage_summary(&summary, cli.output)),
+        Command::Operation {
+            action: OperationAction::List { cask_id },
+        } => service
+            .list_operations(
+                &ListOperations {
+                    version: CONTRACT_VERSION,
+                    cask_id,
+                },
+                &correlation_id,
+            )
+            .map(|items| render_operations(&items, cli.output)),
+        Command::Operation {
+            action: OperationAction::Get { id },
+        } => service
+            .get_operation(
+                &GetOperation {
+                    version: CONTRACT_VERSION,
+                    id,
+                },
+                &correlation_id,
+            )
+            .map(|item| render_operation(&item, cli.output)),
+        Command::Operation {
+            action: OperationAction::Recover { id },
+        } => service
+            .recover_operation(
+                &RecoverOperation {
+                    version: CONTRACT_VERSION,
+                    id,
+                },
+                &correlation_id,
+            )
+            .map(|item| render_operation(&item, cli.output)),
+        Command::Operation {
+            action: OperationAction::Preserve { id },
+        } => service
+            .preserve_operation(
+                &PreserveOperation {
+                    version: CONTRACT_VERSION,
+                    id,
+                },
+                &correlation_id,
+            )
+            .map(|item| render_operation(&item, cli.output)),
+        Command::Operation {
+            action: OperationAction::Cancel { id },
+        } => service
+            .cancel_operation(
+                &CancelOperation {
+                    version: CONTRACT_VERSION,
+                    id,
+                },
+                &correlation_id,
+            )
+            .map(|item| render_operation(&item, cli.output)),
+        Command::Recovery {
+            action: RecoveryAction::Status,
+        } => service
+            .recovery_status(&correlation_id)
+            .map(|status| render_recovery_status(&status, cli.output)),
+        Command::Recovery {
+            action: RecoveryAction::Inspect { id },
+        } => service
+            .inspect_recovery(
+                &GetOperation {
+                    version: CONTRACT_VERSION,
+                    id,
+                },
+                &correlation_id,
+            )
+            .map(|item| render_recovery_inspection(&item, cli.output)),
+        Command::Recovery {
+            action: RecoveryAction::RetryManifests,
+        } => service
+            .retry_manifest_projections(&correlation_id)
+            .map(|count| match cli.output {
+                Output::Table => format!("Regenerated {count} manifests.\n"),
+                Output::Json => format!("{{\"completed\":{count}}}\n"),
+            }),
+        Command::Diagnostics {
+            action: DiagnosticsAction::Bundle { output_path },
+        } => service
+            .create_diagnostics_bundle(
+                &CreateDiagnosticsBundle {
+                    version: CONTRACT_VERSION,
+                    output_path: output_path.clone(),
+                },
+                &correlation_id,
+            )
+            .map(|()| match cli.output {
+                Output::Table => format!("Wrote diagnostics to {output_path}\n"),
+                Output::Json => format!("{}\n", serde_json::json!({"outputPath":output_path})),
+            }),
     };
     match result {
         Ok(output) => {
@@ -254,6 +393,82 @@ fn main() -> ExitCode {
             render_error(&error, cli.output);
             ExitCode::FAILURE
         }
+    }
+}
+
+fn render_operations(items: &[OperationView], output: Output) -> String {
+    match output {
+        Output::Json => format!(
+            "{}\n",
+            serde_json::to_string(items).expect("Operation DTO is serializable")
+        ),
+        Output::Table => {
+            let mut result = String::new();
+            for item in items {
+                writeln!(result, "{} {} {}", item.id, item.state, item.step).expect("String write");
+            }
+            result
+        }
+    }
+}
+
+fn render_operation(item: &OperationView, output: Output) -> String {
+    match output {
+        Output::Json => format!(
+            "{}\n",
+            serde_json::to_string(item).expect("Operation DTO is serializable")
+        ),
+        Output::Table => format!(
+            "{}\nState: {}\nStep: {}\nProgress: {}{}\n",
+            item.id,
+            item.state,
+            item.step,
+            item.progress_completed,
+            item.progress_total
+                .map_or_else(String::new, |total| format!("/{total}"))
+        ),
+    }
+}
+
+fn render_recovery_status(status: &RecoveryStatus, output: Output) -> String {
+    match output {
+        Output::Json => format!(
+            "{}\n",
+            serde_json::to_string(status).expect("Recovery DTO is serializable")
+        ),
+        Output::Table => {
+            let mut result = String::new();
+            for item in &status.operations {
+                writeln!(result, "Operation {} needs recovery", item.id).expect("String write");
+            }
+            for id in &status.pending_manifest_casks {
+                writeln!(result, "Cask {id} has a pending manifest").expect("String write");
+            }
+            if result.is_empty() {
+                result.push_str("No recovery required.\n");
+            }
+            result
+        }
+    }
+}
+
+fn render_recovery_inspection(item: &RecoveryInspection, output: Output) -> String {
+    match output {
+        Output::Json => format!(
+            "{}\n",
+            serde_json::to_string(item).expect("Recovery DTO is serializable")
+        ),
+        Output::Table => format!(
+            "Operation: {}\nMode: {}\nSource: {} ({})\nStaging: {} ({})\nManaged destination: {} ({})\n",
+            item.operation.id,
+            item.mode.to_ascii_lowercase(),
+            item.source_path,
+            item.source_status.to_ascii_lowercase(),
+            item.staging_path,
+            item.staging_status.to_ascii_lowercase(),
+            item.final_path,
+            item.final_status.to_ascii_lowercase()
+        ),
     }
 }
 

@@ -41,8 +41,12 @@ impl ResourceRepository for SqliteCasks {
         Ok(count > 0)
     }
     fn create_category(&self, cask_id: &str, key: &str, name: &str) -> Result<(), String> {
-        self.connection()?.execute("INSERT INTO categories(key,cask_id,display_name,is_builtin,sort_order) VALUES (?1,?2,?3,0,100)",
+        let mut connection = self.connection()?;
+        let transaction = connection.transaction().map_err(|e| e.to_string())?;
+        transaction.execute("INSERT INTO categories(key,cask_id,display_name,is_builtin,sort_order) VALUES (?1,?2,?3,0,100)",
             params![key,cask_id,name]).map_err(|e| e.to_string())?;
+        transaction.execute("INSERT INTO projection_jobs(cask_id,target_revision,state,updated_at_ms) VALUES (?1,1,'PENDING',CAST(unixepoch('subsec')*1000 AS INTEGER)) ON CONFLICT(cask_id) DO UPDATE SET target_revision=target_revision+1,state='PENDING'",[cask_id]).map_err(|e| e.to_string())?;
+        transaction.commit().map_err(|e| e.to_string())?;
         Ok(())
     }
     fn list_categories(&self, cask_id: &str) -> Result<Vec<CategoryView>, String> {
@@ -70,9 +74,21 @@ impl ResourceRepository for SqliteCasks {
         staging: &str,
         final_path: &str,
     ) -> Result<(), String> {
-        self.connection()?.execute("INSERT INTO intake_operations(id,cask_id,resource_id,mode,source_path,staging_path,final_path,state,created_at_ms,updated_at_ms) VALUES (?1,?2,?3,?4,?5,?6,?7,'PLANNED',?8,?8)",
-            params![op_id,resource.cask_id,resource.id,mode.code(),source,staging,final_path,resource.created_at_ms])
+        let mut connection = self.connection()?;
+        let transaction = connection.transaction().map_err(|e| e.to_string())?;
+        transaction.execute("INSERT INTO operations(id,cask_id,type,state,current_step_code,started_at_ms,updated_at_ms) VALUES (?1,?2,'RESOURCE_INTAKE','RUNNING','MATERIALIZE',?3,?3)",
+            params![op_id,resource.cask_id,resource.created_at_ms]).map_err(|e| e.to_string())?;
+        transaction.execute("INSERT INTO operation_steps(operation_id,sequence,step_code,state,attempt_count,started_at_ms) VALUES (?1,1,'MATERIALIZE','RUNNING',1,?2)",
+            params![op_id,resource.created_at_ms]).map_err(|e| e.to_string())?;
+        transaction.execute("INSERT INTO operation_steps(operation_id,sequence,step_code,state,attempt_count) VALUES (?1,2,'REGISTER','PENDING',0)",[op_id]).map_err(|e|e.to_string())?;
+        transaction.execute("INSERT INTO operation_locks(lock_key,operation_id,owner_instance_id,acquired_at_ms,heartbeat_at_ms) VALUES (?1,?2,?3,?4,?4)",
+            params![format!("cask:{}:mutation",resource.cask_id),op_id,std::process::id().to_string(),resource.created_at_ms])
+            .map_err(|e| format!("Cask has an active or unrecovered mutation: {e}"))?;
+        transaction.execute("INSERT INTO intake_operations(id,cask_id,resource_id,mode,source_path,staging_path,final_path,state,created_at_ms,updated_at_ms,resource_name,resource_kind,category_key,size_bytes,unknown_entries) VALUES (?1,?2,?3,?4,?5,?6,?7,'PLANNED',?8,?8,?9,?10,?11,?12,?13)",
+            params![op_id,resource.cask_id,resource.id,mode.code(),source,staging,final_path,resource.created_at_ms,resource.name,resource.kind.code(),resource.category_key,resource.size_bytes.and_then(|n| i64::try_from(n).ok()),i64::try_from(resource.unknown_entries).map_err(|e| e.to_string())?])
             .map_err(|e| e.to_string())?;
+        transaction.execute("INSERT INTO diagnostic_events(operation_id,event_code,at_ms) VALUES (?1,'INTAKE_STARTED',?2)",params![op_id,resource.created_at_ms]).map_err(|e|e.to_string())?;
+        transaction.commit().map_err(|e| e.to_string())?;
         Ok(())
     }
     fn commit_resource(&self, resource: &Resource, op_id: Option<&str>) -> Result<(), String> {
@@ -96,19 +112,106 @@ impl ResourceRepository for SqliteCasks {
                 if op_id.is_some() {"DELETE_WHEN_UNREFERENCED"} else {"DETACH_ONLY"},resource.created_at_ms])
             .map_err(|e| e.to_string())?;
         if let Some(op_id) = op_id {
-            transaction.execute("UPDATE intake_operations SET state='REGISTERED',updated_at_ms=?2 WHERE id=?1 AND state='PLANNED'",
-                params![op_id,resource.created_at_ms]).map_err(|e| e.to_string())?;
+            let changed = transaction.execute("UPDATE intake_operations SET state='REGISTERED',updated_at_ms=CAST(unixepoch('subsec')*1000 AS INTEGER) WHERE id=?1 AND state IN ('PLANNED','RECOVERY_REQUIRED')",
+                [op_id]).map_err(|e| e.to_string())?;
+            if changed != 1 {
+                return Err("Intake state changed during registration".into());
+            }
+            let changed = transaction.execute("UPDATE operation_steps SET state='SUCCEEDED',finished_at_ms=CAST(unixepoch('subsec')*1000 AS INTEGER) WHERE operation_id=?1 AND sequence=2 AND state='RUNNING'",
+                [op_id]).map_err(|e|e.to_string())?;
+            if changed != 1 {
+                return Err("Registration step changed".into());
+            }
+            transaction.execute("INSERT INTO projection_jobs(cask_id,target_revision,state,updated_at_ms) VALUES (?1,1,'PENDING',?2) ON CONFLICT(cask_id) DO UPDATE SET target_revision=target_revision+1,state='PENDING',updated_at_ms=excluded.updated_at_ms",
+                params![resource.cask_id,resource.created_at_ms]).map_err(|e| e.to_string())?;
+        } else {
+            transaction.execute("INSERT INTO projection_jobs(cask_id,target_revision,state,updated_at_ms) VALUES (?1,1,'PENDING',?2) ON CONFLICT(cask_id) DO UPDATE SET target_revision=target_revision+1,state='PENDING',updated_at_ms=excluded.updated_at_ms",
+                params![resource.cask_id,resource.created_at_ms]).map_err(|e| e.to_string())?;
         }
         transaction.commit().map_err(|e| e.to_string())
     }
     fn complete_intake(&self, op_id: &str) -> Result<(), String> {
-        self.connection()?
+        let mut connection = self.connection()?;
+        let transaction = connection.transaction().map_err(|e| e.to_string())?;
+        let changed = transaction
             .execute(
                 "UPDATE intake_operations SET state='COMPLETE' WHERE id=?1 AND state='REGISTERED'",
                 [op_id],
             )
             .map_err(|e| e.to_string())?;
+        if changed != 1 {
+            return Err("Intake was not registered".into());
+        }
+        transaction.execute("UPDATE operations SET state='SUCCEEDED',current_step_code='COMPLETE',finished_at_ms=updated_at_ms,revision=revision+1 WHERE id=?1 AND state IN ('RUNNING','RECOVERY_REQUIRED')",[op_id]).map_err(|e| e.to_string())?;
+        transaction
+            .execute("DELETE FROM operation_locks WHERE operation_id=?1", [op_id])
+            .map_err(|e| e.to_string())?;
+        transaction.execute("INSERT INTO diagnostic_events(operation_id,event_code,at_ms) VALUES (?1,'INTAKE_SUCCEEDED',CAST(unixepoch('subsec')*1000 AS INTEGER))",[op_id]).map_err(|e|e.to_string())?;
+        transaction.commit().map_err(|e| e.to_string())?;
         Ok(())
+    }
+    fn progress_intake(&self, op_id: &str, completed: u64, total: u64) -> Result<(), String> {
+        let completed = i64::try_from(completed).map_err(|e| e.to_string())?;
+        let total = i64::try_from(total).map_err(|e| e.to_string())?;
+        let mut connection = self.connection()?;
+        let transaction = connection.transaction().map_err(|e| e.to_string())?;
+        transaction.execute("UPDATE operations SET progress_completed=?2,progress_total=?3,updated_at_ms=CAST(unixepoch('subsec')*1000 AS INTEGER),revision=revision+1 WHERE id=?1 AND state='RUNNING'",
+            params![op_id,completed,total]).map_err(|e| e.to_string())?;
+        transaction.execute("UPDATE operation_locks SET heartbeat_at_ms=CAST(unixepoch('subsec')*1000 AS INTEGER) WHERE operation_id=?1",[op_id]).map_err(|e|e.to_string())?;
+        transaction.commit().map_err(|e| e.to_string())?;
+        Ok(())
+    }
+    fn fail_intake(&self, op_id: &str, error_code: &str) -> Result<(), String> {
+        let mut connection = self.connection()?;
+        let transaction = connection.transaction().map_err(|e| e.to_string())?;
+        transaction.execute("UPDATE intake_operations SET state='RECOVERY_REQUIRED' WHERE id=?1 AND state='PLANNED'",[op_id]).map_err(|e| e.to_string())?;
+        transaction.execute("UPDATE operations SET state='RECOVERY_REQUIRED',current_step_code='RECONCILE',error_code=?2,revision=revision+1 WHERE id=?1 AND state='RUNNING'",params![op_id,error_code]).map_err(|e| e.to_string())?;
+        transaction.execute("UPDATE operation_steps SET state='RECOVERY_REQUIRED' WHERE operation_id=?1 AND state='RUNNING'",[op_id]).map_err(|e| e.to_string())?;
+        transaction.execute("INSERT INTO diagnostic_events(operation_id,event_code,at_ms) VALUES (?1,?2,CAST(unixepoch('subsec')*1000 AS INTEGER))",params![op_id,error_code]).map_err(|e|e.to_string())?;
+        transaction.commit().map_err(|e| e.to_string())?;
+        Ok(())
+    }
+    fn materialized_intake(&self, op_id: &str) -> Result<(), String> {
+        let mut connection = self.connection()?;
+        let transaction = connection.transaction().map_err(|e| e.to_string())?;
+        let changed = transaction.execute("UPDATE operation_steps SET state='SUCCEEDED',finished_at_ms=CAST(unixepoch('subsec')*1000 AS INTEGER) WHERE operation_id=?1 AND sequence=1 AND state IN ('RUNNING','RECOVERY_REQUIRED')",[op_id]).map_err(|e|e.to_string())?;
+        if changed == 0 {
+            let state: String = transaction
+                .query_row(
+                    "SELECT state FROM operation_steps WHERE operation_id=?1 AND sequence=1",
+                    [op_id],
+                    |row| row.get(0),
+                )
+                .map_err(|e| e.to_string())?;
+            if state != "SUCCEEDED" {
+                return Err("Materialization step changed".into());
+            }
+        }
+        let changed = transaction.execute("UPDATE operation_steps SET state='RUNNING',attempt_count=attempt_count+1,started_at_ms=CAST(unixepoch('subsec')*1000 AS INTEGER) WHERE operation_id=?1 AND sequence=2 AND state IN ('PENDING','RECOVERY_REQUIRED')",[op_id]).map_err(|e|e.to_string())?;
+        if changed == 0 {
+            let state: String = transaction
+                .query_row(
+                    "SELECT state FROM operation_steps WHERE operation_id=?1 AND sequence=2",
+                    [op_id],
+                    |row| row.get(0),
+                )
+                .map_err(|e| e.to_string())?;
+            if state != "RUNNING" {
+                return Err("Registration step changed".into());
+            }
+        }
+        transaction.execute("UPDATE operations SET current_step_code='REGISTER',revision=revision+1 WHERE id=?1 AND state IN ('RUNNING','RECOVERY_REQUIRED')",[op_id]).map_err(|e|e.to_string())?;
+        transaction.commit().map_err(|e| e.to_string())
+    }
+    fn cancellation_requested(&self, op_id: &str) -> Result<bool, String> {
+        self.connection()?
+            .query_row(
+                "SELECT cancellation_requested FROM operations WHERE id=?1",
+                [op_id],
+                |row| row.get::<_, i64>(0),
+            )
+            .map(|flag| flag == 1)
+            .map_err(|e| e.to_string())
     }
     fn list_resources(&self, cask_id: &str) -> Result<Vec<ResourceView>, String> {
         let connection = self.connection()?;
@@ -133,8 +236,12 @@ impl ResourceRepository for SqliteCasks {
             .map_err(|e| e.to_string())
     }
     fn categorize(&self, id: &str, key: &str) -> Result<(), String> {
-        self.connection()?.execute("UPDATE resource_associations SET category_key=?2,revision=revision+1 WHERE resource_id=?1 AND removed_at_ms IS NULL", params![id,key])
-            .map_err(|e| e.to_string())?;
+        let mut connection = self.connection()?;
+        let transaction = connection.transaction().map_err(|e| e.to_string())?;
+        let cask_id: String = transaction.query_row("SELECT cask_id FROM resource_associations WHERE resource_id=?1 AND removed_at_ms IS NULL",[id],|row|row.get(0)).map_err(|e|e.to_string())?;
+        transaction.execute("UPDATE resource_associations SET category_key=?2,revision=revision+1 WHERE resource_id=?1 AND removed_at_ms IS NULL", params![id,key]).map_err(|e| e.to_string())?;
+        transaction.execute("INSERT INTO projection_jobs(cask_id,target_revision,state,updated_at_ms) VALUES (?1,1,'PENDING',CAST(unixepoch('subsec')*1000 AS INTEGER)) ON CONFLICT(cask_id) DO UPDATE SET target_revision=target_revision+1,state='PENDING'",[cask_id]).map_err(|e| e.to_string())?;
+        transaction.commit().map_err(|e| e.to_string())?;
         Ok(())
     }
 }

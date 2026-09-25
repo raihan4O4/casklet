@@ -4,6 +4,9 @@ use casklet_domain::{Cask, CaskState};
 use rusqlite::{Connection, params};
 use sha2::{Digest, Sha256};
 use std::{fs, path::PathBuf, time::Duration};
+mod diagnostics;
+mod operations;
+mod projection;
 mod resource_storage;
 mod resources;
 
@@ -37,7 +40,7 @@ impl SqliteCasks {
                     .map_err(|e| e.to_string())?;
                 transaction.commit().map_err(|e| e.to_string())?;
             }
-            1 | 2 => {}
+            1..=3 => {}
             _ => return Err(format!("unsupported database schema version: {version}")),
         }
         if version == 1 || version == 0 {
@@ -47,6 +50,16 @@ impl SqliteCasks {
                 .map_err(|e| e.to_string())?;
             transaction
                 .execute_batch("PRAGMA user_version=2")
+                .map_err(|e| e.to_string())?;
+            transaction.commit().map_err(|e| e.to_string())?;
+        }
+        if version <= 2 {
+            let transaction = connection.transaction().map_err(|e| e.to_string())?;
+            transaction
+                .execute_batch(include_str!("../../../migrations/0003_operations.sql"))
+                .map_err(|e| e.to_string())?;
+            transaction
+                .execute_batch("PRAGMA user_version=3")
                 .map_err(|e| e.to_string())?;
             transaction.commit().map_err(|e| e.to_string())?;
         }
@@ -84,8 +97,13 @@ const SELECT: &str = "SELECT id,name,storage_key,managed_storage_root,created_at
 
 impl CaskRepository for SqliteCasks {
     fn create(&self, cask: &Cask) -> Result<(), String> {
-        self.connection()?.execute("INSERT INTO casks (id,name,storage_key,managed_storage_root,created_at_ms,updated_at_ms,revision,state) VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
+        let mut connection = self.connection()?;
+        let transaction = connection.transaction().map_err(|e| e.to_string())?;
+        transaction.execute("INSERT INTO casks (id,name,storage_key,managed_storage_root,created_at_ms,updated_at_ms,revision,state) VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
             params![cask.id,cask.name,cask.storage_key,cask.managed_storage_root,cask.created_at_ms,cask.updated_at_ms,cask.revision,cask.state.code()]).map_err(|e| e.to_string())?;
+        transaction.execute("INSERT INTO projection_jobs(cask_id,target_revision,state,updated_at_ms) VALUES (?1,0,'PENDING',?2)",
+            params![cask.id,cask.created_at_ms]).map_err(|e| e.to_string())?;
+        transaction.commit().map_err(|e| e.to_string())?;
         Ok(())
     }
     fn get(&self, id: &str) -> Result<Option<Cask>, String> {
@@ -144,10 +162,14 @@ pub fn development_service() -> Result<CaskService<SqliteCasks, LocalStorage>, S
         || PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../.casklet-dev"),
         PathBuf::from,
     );
-    Ok(CaskService {
-        repository: SqliteCasks::open(root.join("db/casklet.db"))?,
+    let repository = SqliteCasks::open(root.join("db/casklet.db"))?;
+    repository.detect_abandoned_operations()?;
+    let service = CaskService {
+        repository,
         storage: LocalStorage::new(root.join("casks")),
-    })
+    };
+    let _ = service.retry_manifest_projections("startup");
+    Ok(service)
 }
 
 #[cfg(test)]
@@ -158,7 +180,12 @@ mod tests {
         AddMode, AddResource, CONTRACT_VERSION, CategorizeResource, CreateCask, CreateCategory,
         GetCask, GetResource, GetStorageSummary, ListCasks, ListResources,
     };
+    use casklet_contracts::{
+        CancelOperation, CreateDiagnosticsBundle, ListOperations, PreserveOperation,
+        RecoverOperation,
+    };
     use casklet_domain::resource::IntakeMode;
+    use casklet_domain::resource::Resource;
     #[test]
     fn migration_and_restart() {
         let root = std::env::temp_dir().join(format!("casklet-m1-{}", uuid::Uuid::new_v4()));
@@ -198,7 +225,7 @@ mod tests {
             .unwrap()
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(schema_version, 2);
+        assert_eq!(schema_version, 3);
         assert_eq!(
             reopened
                 .list(
@@ -254,6 +281,60 @@ mod tests {
         let reopened = SqliteCasks::open(db).unwrap();
         assert_eq!(reopened.list().unwrap()[0].name, "Existing");
         assert!(reopened.category_exists("existing", "other").unwrap());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn upgrades_milestone_two_pending_intent_without_claiming_success() {
+        let root =
+            std::env::temp_dir().join(format!("casklet-m3-upgrade-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let db = root.join("state.db");
+        let connection = Connection::open(&db).unwrap();
+        connection
+            .execute_batch(include_str!("../../../migrations/0001_casks.sql"))
+            .unwrap();
+        connection
+            .execute_batch(include_str!("../../../migrations/0002_resources.sql"))
+            .unwrap();
+        connection.execute("INSERT INTO casks(id,name,storage_key,managed_storage_root,created_at_ms,updated_at_ms,revision,state) VALUES ('legacy-cask','Legacy','legacy','C:/legacy',1,1,0,'ACTIVE')",[]).unwrap();
+        connection.execute("INSERT INTO intake_operations(id,cask_id,resource_id,mode,source_path,staging_path,final_path,state,created_at_ms,updated_at_ms) VALUES ('legacy-op','legacy-cask','legacy-resource','COPY','C:/source','C:/stage','C:/final','PLANNED',1,1)",[]).unwrap();
+        connection.execute_batch("PRAGMA user_version=2").unwrap();
+        drop(connection);
+        let service = CaskService {
+            repository: SqliteCasks::open(db).unwrap(),
+            storage: LocalStorage::new(root.join("casks")),
+        };
+        let operations = service.recovery_status("test").unwrap().operations;
+        assert_eq!(operations.len(), 1);
+        assert_eq!(operations[0].state, "RECOVERY_REQUIRED");
+        assert_eq!(
+            service
+                .recover_operation(
+                    &RecoverOperation {
+                        version: CONTRACT_VERSION,
+                        id: "legacy-op".into()
+                    },
+                    "test"
+                )
+                .unwrap_err()
+                .code,
+            "RECOVERY_REQUIRED"
+        );
+        assert_eq!(
+            service
+                .preserve_operation(
+                    &PreserveOperation {
+                        version: CONTRACT_VERSION,
+                        id: "legacy-op".into()
+                    },
+                    "test"
+                )
+                .unwrap()
+                .state,
+            "CLOSED_PRESERVED"
+        );
+        drop(service);
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -416,7 +497,7 @@ mod tests {
         };
         assert!(
             storage
-                .materialize(&observed, &paths, IntakeMode::Move, &|_, _| {})
+                .materialize(&observed, &paths, IntakeMode::Move, &|_, _| {}, &|| false)
                 .is_err()
         );
         assert_eq!(fs::read(source).unwrap(), b"source");
@@ -440,7 +521,7 @@ mod tests {
         };
         assert!(
             storage
-                .materialize(&observed, &paths, IntakeMode::Copy, &|_, _| {})
+                .materialize(&observed, &paths, IntakeMode::Copy, &|_, _| {}, &|| false)
                 .is_err()
         );
         assert_eq!(fs::read(root.join("data.txt")).unwrap(), b"data");
@@ -544,7 +625,7 @@ mod tests {
             };
             assert!(
                 storage
-                    .materialize(&observed, &paths, IntakeMode::Copy, &|_, _| {})
+                    .materialize(&observed, &paths, IntakeMode::Copy, &|_, _| {}, &|| false)
                     .is_err()
             );
             assert_eq!(fs::read(&external).unwrap(), b"preserve");
@@ -585,7 +666,7 @@ mod tests {
         };
         assert!(
             storage
-                .materialize(&observed, &paths, IntakeMode::Copy, &|_, _| {})
+                .materialize(&observed, &paths, IntakeMode::Copy, &|_, _| {}, &|| false)
                 .is_err()
         );
         assert_eq!(
@@ -618,26 +699,24 @@ mod tests {
         let source = root.join("large.bin");
         fs::write(&source, vec![7_u8; 2 * 1024 * 1024]).unwrap();
         let notifications = AtomicUsize::new(0);
-        let interrupted = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            let _ = service.add_resource(
-                &AddResource {
-                    version: CONTRACT_VERSION,
-                    cask_id: cask.id.clone(),
-                    source_path: source.to_string_lossy().into_owned(),
-                    mode: AddMode::Copy,
-                    category_key: "other".into(),
-                },
-                "test",
-                &|_, _| {
-                    assert_ne!(
-                        notifications.fetch_add(1, Ordering::SeqCst),
-                        1,
-                        "simulated interruption"
-                    );
-                },
-            );
-        }));
-        assert!(interrupted.is_err());
+        let interrupted = service.add_resource(
+            &AddResource {
+                version: CONTRACT_VERSION,
+                cask_id: cask.id.clone(),
+                source_path: source.to_string_lossy().into_owned(),
+                mode: AddMode::Copy,
+                category_key: "other".into(),
+            },
+            "test",
+            &|_, _| {
+                assert_ne!(
+                    notifications.fetch_add(1, Ordering::SeqCst),
+                    1,
+                    "simulated interruption"
+                );
+            },
+        );
+        assert_eq!(interrupted.unwrap_err().code, "INTAKE_RECOVERY_REQUIRED");
         assert_eq!(fs::metadata(&source).unwrap().len(), 2 * 1024 * 1024);
         let (state, staged): (String, String) = service
             .repository
@@ -649,8 +728,27 @@ mod tests {
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .unwrap();
-        assert_eq!(state, "PLANNED");
+        assert_eq!(state, "RECOVERY_REQUIRED");
         assert!(std::path::Path::new(&staged).exists());
+        let op_id: String = service
+            .repository
+            .connection()
+            .unwrap()
+            .query_row("SELECT id FROM intake_operations", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(
+            service
+                .recover_operation(
+                    &RecoverOperation {
+                        version: CONTRACT_VERSION,
+                        id: op_id
+                    },
+                    "test"
+                )
+                .unwrap_err()
+                .code,
+            "RECOVERY_REQUIRED"
+        );
         assert!(
             service
                 .list_resources(
@@ -662,6 +760,950 @@ mod tests {
                 )
                 .unwrap()
                 .is_empty()
+        );
+        drop(service);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn concurrent_intake_is_locked_and_manifest_is_projected() {
+        use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+        let root = std::env::temp_dir().join(format!("casklet-m3-lock-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let service = CaskService {
+            repository: SqliteCasks::open(root.join("state.db")).unwrap(),
+            storage: LocalStorage::new(root.join("casks")),
+        };
+        let cask = service
+            .create(
+                &CreateCask {
+                    version: CONTRACT_VERSION,
+                    name: "Work".into(),
+                },
+                "test",
+            )
+            .unwrap();
+        let first = root.join("first.bin");
+        let second = root.join("second.bin");
+        fs::write(&first, vec![1_u8; 2 * 1024 * 1024]).unwrap();
+        fs::write(&second, b"second").unwrap();
+        let attempted = AtomicBool::new(false);
+        let notifications = AtomicUsize::new(0);
+        let result = service
+            .add_resource(
+                &AddResource {
+                    version: CONTRACT_VERSION,
+                    cask_id: cask.id.clone(),
+                    source_path: first.to_string_lossy().into_owned(),
+                    mode: AddMode::Copy,
+                    category_key: "other".into(),
+                },
+                "test",
+                &|_, total| {
+                    if total > 0
+                        && notifications.fetch_add(1, Ordering::SeqCst) == 1
+                        && !attempted.swap(true, Ordering::SeqCst)
+                    {
+                        let conflict = service
+                            .add_resource(
+                                &AddResource {
+                                    version: CONTRACT_VERSION,
+                                    cask_id: cask.id.clone(),
+                                    source_path: second.to_string_lossy().into_owned(),
+                                    mode: AddMode::Move,
+                                    category_key: "other".into(),
+                                },
+                                "test",
+                                &|_, _| {},
+                            )
+                            .unwrap_err();
+                        assert_eq!(conflict.code, "PERSISTENCE");
+                    }
+                },
+            )
+            .unwrap();
+        assert!(attempted.load(Ordering::SeqCst));
+        assert!(second.exists());
+        let operations = service
+            .list_operations(
+                &ListOperations {
+                    version: CONTRACT_VERSION,
+                    cask_id: Some(cask.id.clone()),
+                },
+                "test",
+            )
+            .unwrap();
+        assert_eq!(operations.len(), 1);
+        assert_eq!(operations[0].state, "SUCCEEDED");
+        let lock_count: i64 = service
+            .repository
+            .connection()
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM operation_locks", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(lock_count, 0);
+        let manifest: serde_json::Value = serde_json::from_slice(
+            &fs::read(PathBuf::from(&cask.managed_storage_root).join(".casklet/manifest.json"))
+                .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(manifest["resources"][0]["id"], result.id);
+        assert!(
+            service
+                .recovery_status("test")
+                .unwrap()
+                .pending_manifest_casks
+                .is_empty()
+        );
+        drop(service);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn interrupted_move_preserves_staging_and_can_close_without_deletion() {
+        let root = std::env::temp_dir().join(format!("casklet-m3-move-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let service = CaskService {
+            repository: SqliteCasks::open(root.join("state.db")).unwrap(),
+            storage: LocalStorage::new(root.join("casks")),
+        };
+        let cask = service
+            .create(
+                &CreateCask {
+                    version: CONTRACT_VERSION,
+                    name: "Work".into(),
+                },
+                "test",
+            )
+            .unwrap();
+        let source = root.join("source.txt");
+        fs::write(&source, b"preserve").unwrap();
+        let observed = service
+            .storage
+            .inspect(&source.to_string_lossy(), &|_, _| {})
+            .unwrap();
+        let mut resource = Resource::new(
+            cask.id.clone(),
+            observed.name.clone(),
+            observed.source_path.clone(),
+            observed.kind,
+            IntakeMode::Move,
+            "other".into(),
+            observed.size_bytes,
+            0,
+            1,
+        )
+        .unwrap();
+        let paths = service.storage.allocate(
+            &service.repository.get(&cask.id).unwrap().unwrap(),
+            &resource.id,
+            &resource.name,
+        );
+        resource.path.clone_from(&paths.final_path);
+        let op = uuid::Uuid::new_v4().to_string();
+        service
+            .repository
+            .begin_intake(
+                &op,
+                &resource,
+                IntakeMode::Move,
+                &observed.source_path,
+                &paths.staging,
+                &paths.final_path,
+            )
+            .unwrap();
+        fs::create_dir_all(PathBuf::from(&paths.staging).parent().unwrap()).unwrap();
+        fs::rename(&source, &paths.staging).unwrap();
+        fs::write(&source, b"ambiguous new source").unwrap();
+        service
+            .repository
+            .connection()
+            .unwrap()
+            .execute("UPDATE operation_locks SET owner_instance_id='999999'", [])
+            .unwrap();
+        service.repository.detect_abandoned_operations().unwrap();
+        assert_eq!(
+            service.recovery_status("test").unwrap().operations[0].state,
+            "RECOVERY_REQUIRED"
+        );
+        let error = service
+            .recover_operation(
+                &RecoverOperation {
+                    version: CONTRACT_VERSION,
+                    id: op.clone(),
+                },
+                "test",
+            )
+            .unwrap_err();
+        assert_eq!(error.code, "RECOVERY_REQUIRED");
+        let preserved = service
+            .preserve_operation(
+                &PreserveOperation {
+                    version: CONTRACT_VERSION,
+                    id: op,
+                },
+                "test",
+            )
+            .unwrap();
+        assert_eq!(preserved.state, "CLOSED_PRESERVED");
+        assert!(PathBuf::from(&paths.staging).exists());
+        assert_eq!(fs::read(&source).unwrap(), b"ambiguous new source");
+        let lock_count: i64 = service
+            .repository
+            .connection()
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM operation_locks", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(lock_count, 0);
+        drop(service);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "staged recovery test shows each durable boundary"
+    )]
+    fn complete_staging_recovers_idempotently_after_restart() {
+        let root = std::env::temp_dir().join(format!("casklet-m3-stage-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let service = CaskService {
+            repository: SqliteCasks::open(root.join("state.db")).unwrap(),
+            storage: LocalStorage::new(root.join("casks")),
+        };
+        let cask = service
+            .create(
+                &CreateCask {
+                    version: CONTRACT_VERSION,
+                    name: "Work".into(),
+                },
+                "test",
+            )
+            .unwrap();
+        let source = root.join("source.txt");
+        fs::write(&source, b"complete stage").unwrap();
+        let observed = service
+            .storage
+            .inspect(&source.to_string_lossy(), &|_, _| {})
+            .unwrap();
+        let mut resource = Resource::new(
+            cask.id.clone(),
+            observed.name.clone(),
+            observed.source_path.clone(),
+            observed.kind,
+            IntakeMode::Move,
+            "other".into(),
+            observed.size_bytes,
+            0,
+            1,
+        )
+        .unwrap();
+        let paths = service.storage.allocate(
+            &service.repository.get(&cask.id).unwrap().unwrap(),
+            &resource.id,
+            &resource.name,
+        );
+        resource.path.clone_from(&paths.final_path);
+        let op = uuid::Uuid::new_v4().to_string();
+        service
+            .repository
+            .begin_intake(
+                &op,
+                &resource,
+                IntakeMode::Move,
+                &observed.source_path,
+                &paths.staging,
+                &paths.final_path,
+            )
+            .unwrap();
+        fs::create_dir_all(PathBuf::from(&paths.staging).parent().unwrap()).unwrap();
+        fs::rename(&source, &paths.staging).unwrap();
+        service
+            .repository
+            .connection()
+            .unwrap()
+            .execute("UPDATE operation_locks SET owner_instance_id='999999'", [])
+            .unwrap();
+        drop(service);
+        let reopened = CaskService {
+            repository: SqliteCasks::open(root.join("state.db")).unwrap(),
+            storage: LocalStorage::new(root.join("casks")),
+        };
+        reopened.repository.detect_abandoned_operations().unwrap();
+        let recovered = reopened
+            .recover_operation(
+                &RecoverOperation {
+                    version: CONTRACT_VERSION,
+                    id: op.clone(),
+                },
+                "test",
+            )
+            .unwrap();
+        assert_eq!(recovered.state, "SUCCEEDED");
+        assert_eq!(fs::read(&paths.final_path).unwrap(), b"complete stage");
+        assert!(!source.exists());
+        assert!(!PathBuf::from(&paths.staging).exists());
+        assert_eq!(
+            reopened
+                .recover_operation(
+                    &RecoverOperation {
+                        version: CONTRACT_VERSION,
+                        id: op
+                    },
+                    "test"
+                )
+                .unwrap()
+                .state,
+            "SUCCEEDED"
+        );
+        assert_eq!(
+            reopened
+                .list_resources(
+                    &ListResources {
+                        version: CONTRACT_VERSION,
+                        cask_id: cask.id
+                    },
+                    "test"
+                )
+                .unwrap()
+                .len(),
+            1
+        );
+        drop(reopened);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn unregistered_final_can_be_verified_and_registered() {
+        let root = std::env::temp_dir().join(format!("casklet-m3-final-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let service = CaskService {
+            repository: SqliteCasks::open(root.join("state.db")).unwrap(),
+            storage: LocalStorage::new(root.join("casks")),
+        };
+        let cask = service
+            .create(
+                &CreateCask {
+                    version: CONTRACT_VERSION,
+                    name: "Work".into(),
+                },
+                "test",
+            )
+            .unwrap();
+        let source = root.join("source.txt");
+        fs::write(&source, b"complete final").unwrap();
+        let observed = service
+            .storage
+            .inspect(&source.to_string_lossy(), &|_, _| {})
+            .unwrap();
+        let mut resource = Resource::new(
+            cask.id.clone(),
+            observed.name.clone(),
+            observed.source_path.clone(),
+            observed.kind,
+            IntakeMode::Copy,
+            "other".into(),
+            observed.size_bytes,
+            0,
+            1,
+        )
+        .unwrap();
+        let paths = service.storage.allocate(
+            &service.repository.get(&cask.id).unwrap().unwrap(),
+            &resource.id,
+            &resource.name,
+        );
+        resource.path.clone_from(&paths.final_path);
+        let op = uuid::Uuid::new_v4().to_string();
+        service
+            .repository
+            .begin_intake(
+                &op,
+                &resource,
+                IntakeMode::Copy,
+                &observed.source_path,
+                &paths.staging,
+                &paths.final_path,
+            )
+            .unwrap();
+        service
+            .storage
+            .materialize(&observed, &paths, IntakeMode::Copy, &|_, _| {}, &|| false)
+            .unwrap();
+        service
+            .repository
+            .connection()
+            .unwrap()
+            .execute("UPDATE operation_locks SET owner_instance_id='999999'", [])
+            .unwrap();
+        service.repository.detect_abandoned_operations().unwrap();
+        assert_eq!(
+            service
+                .recover_operation(
+                    &RecoverOperation {
+                        version: CONTRACT_VERSION,
+                        id: op
+                    },
+                    "test"
+                )
+                .unwrap()
+                .state,
+            "SUCCEEDED"
+        );
+        assert_eq!(fs::read(&paths.final_path).unwrap(), b"complete final");
+        assert!(source.exists());
+        assert_eq!(
+            service
+                .list_resources(
+                    &ListResources {
+                        version: CONTRACT_VERSION,
+                        cask_id: cask.id
+                    },
+                    "test"
+                )
+                .unwrap()
+                .len(),
+            1
+        );
+        drop(service);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "restart recovery test keeps each durable boundary visible"
+    )]
+    fn registered_intake_can_be_verified_after_restart() {
+        let root =
+            std::env::temp_dir().join(format!("casklet-m3-registered-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let service = CaskService {
+            repository: SqliteCasks::open(root.join("state.db")).unwrap(),
+            storage: LocalStorage::new(root.join("casks")),
+        };
+        let cask = service
+            .create(
+                &CreateCask {
+                    version: CONTRACT_VERSION,
+                    name: "Work".into(),
+                },
+                "test",
+            )
+            .unwrap();
+        let source = root.join("source.txt");
+        fs::write(&source, b"registered").unwrap();
+        let observed = service
+            .storage
+            .inspect(&source.to_string_lossy(), &|_, _| {})
+            .unwrap();
+        let mut resource = Resource::new(
+            cask.id.clone(),
+            observed.name.clone(),
+            observed.source_path.clone(),
+            observed.kind,
+            IntakeMode::Copy,
+            "other".into(),
+            observed.size_bytes,
+            0,
+            1,
+        )
+        .unwrap();
+        let paths = service.storage.allocate(
+            &service.repository.get(&cask.id).unwrap().unwrap(),
+            &resource.id,
+            &resource.name,
+        );
+        resource.path.clone_from(&paths.final_path);
+        let op = uuid::Uuid::new_v4().to_string();
+        service
+            .repository
+            .begin_intake(
+                &op,
+                &resource,
+                IntakeMode::Copy,
+                &observed.source_path,
+                &paths.staging,
+                &paths.final_path,
+            )
+            .unwrap();
+        service
+            .storage
+            .materialize(&observed, &paths, IntakeMode::Copy, &|_, _| {}, &|| false)
+            .unwrap();
+        service.repository.materialized_intake(&op).unwrap();
+        service
+            .repository
+            .commit_resource(&resource, Some(&op))
+            .unwrap();
+        service
+            .repository
+            .connection()
+            .unwrap()
+            .execute("UPDATE operation_locks SET owner_instance_id='999999'", [])
+            .unwrap();
+        drop(service);
+        let reopened = CaskService {
+            repository: SqliteCasks::open(root.join("state.db")).unwrap(),
+            storage: LocalStorage::new(root.join("casks")),
+        };
+        reopened.repository.detect_abandoned_operations().unwrap();
+        let recovered = reopened
+            .recover_operation(
+                &RecoverOperation {
+                    version: CONTRACT_VERSION,
+                    id: op.clone(),
+                },
+                "test",
+            )
+            .unwrap();
+        assert_eq!(recovered.state, "SUCCEEDED");
+        assert_eq!(
+            reopened
+                .recover_operation(
+                    &RecoverOperation {
+                        version: CONTRACT_VERSION,
+                        id: op
+                    },
+                    "test"
+                )
+                .unwrap()
+                .state,
+            "SUCCEEDED"
+        );
+        assert!(
+            reopened
+                .recovery_status("test")
+                .unwrap()
+                .operations
+                .is_empty()
+        );
+        drop(reopened);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn manifest_projection_failure_remains_pending_and_retries() {
+        let root =
+            std::env::temp_dir().join(format!("casklet-m3-projection-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let service = CaskService {
+            repository: SqliteCasks::open(root.join("state.db")).unwrap(),
+            storage: LocalStorage::new(root.join("casks")),
+        };
+        let cask = service
+            .create(
+                &CreateCask {
+                    version: CONTRACT_VERSION,
+                    name: "Work".into(),
+                },
+                "test",
+            )
+            .unwrap();
+        let metadata = PathBuf::from(&cask.managed_storage_root).join(".casklet");
+        fs::remove_dir_all(&metadata).unwrap();
+        fs::write(&metadata, b"blocked").unwrap();
+        let source = root.join("reference.txt");
+        fs::write(&source, b"reference").unwrap();
+        let added = service
+            .add_resource(
+                &AddResource {
+                    version: CONTRACT_VERSION,
+                    cask_id: cask.id.clone(),
+                    source_path: source.to_string_lossy().into_owned(),
+                    mode: AddMode::Reference,
+                    category_key: "other".into(),
+                },
+                "test",
+                &|_, _| {},
+            )
+            .unwrap();
+        assert_eq!(
+            service
+                .recovery_status("test")
+                .unwrap()
+                .pending_manifest_casks,
+            vec![cask.id.clone()]
+        );
+        fs::remove_file(&metadata).unwrap();
+        assert_eq!(service.retry_manifest_projections("test").unwrap(), 1);
+        assert!(
+            service
+                .recovery_status("test")
+                .unwrap()
+                .pending_manifest_casks
+                .is_empty()
+        );
+        let manifest: serde_json::Value =
+            serde_json::from_slice(&fs::read(metadata.join("manifest.json")).unwrap()).unwrap();
+        assert_eq!(manifest["resources"][0]["id"], added.id);
+        drop(service);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn interrupted_manifest_swap_restores_valid_previous_projection() {
+        let root =
+            std::env::temp_dir().join(format!("casklet-m3-manifest-swap-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let service = CaskService {
+            repository: SqliteCasks::open(root.join("state.db")).unwrap(),
+            storage: LocalStorage::new(root.join("casks")),
+        };
+        let cask = service
+            .create(
+                &CreateCask {
+                    version: CONTRACT_VERSION,
+                    name: "Work".into(),
+                },
+                "test",
+            )
+            .unwrap();
+        let metadata = PathBuf::from(&cask.managed_storage_root).join(".casklet");
+        fs::rename(
+            metadata.join("manifest.json"),
+            metadata.join("manifest.valid.prev"),
+        )
+        .unwrap();
+        fs::write(metadata.join("manifest.invalid.prev"), b"not JSON").unwrap();
+        service
+            .repository
+            .connection()
+            .unwrap()
+            .execute(
+                "UPDATE projection_jobs SET state='PENDING' WHERE cask_id=?1",
+                [&cask.id],
+            )
+            .unwrap();
+        assert_eq!(service.retry_manifest_projections("test").unwrap(), 1);
+        let manifest: serde_json::Value =
+            serde_json::from_slice(&fs::read(metadata.join("manifest.json")).unwrap()).unwrap();
+        assert_eq!(manifest["cask"]["id"], cask.id);
+        assert!(!metadata.join("manifest.valid.prev").exists());
+        drop(service);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn hard_exit_boundary_helper() {
+        let Ok(phase) = std::env::var("CASKLET_TEST_EXIT_PHASE") else {
+            return;
+        };
+        let root = PathBuf::from(std::env::var("CASKLET_TEST_EXIT_ROOT").unwrap());
+        let cask_id = std::env::var("CASKLET_TEST_EXIT_CASK").unwrap();
+        let service = CaskService {
+            repository: SqliteCasks::open(root.join("state.db")).unwrap(),
+            storage: LocalStorage::new(root.join("casks")),
+        };
+        let source = root.join("source.bin");
+        let observed = service
+            .storage
+            .inspect(&source.to_string_lossy(), &|_, _| {})
+            .unwrap();
+        let mut resource = Resource::new(
+            cask_id.clone(),
+            observed.name.clone(),
+            observed.source_path.clone(),
+            observed.kind,
+            IntakeMode::Copy,
+            "other".into(),
+            observed.size_bytes,
+            0,
+            1,
+        )
+        .unwrap();
+        let paths = service.storage.allocate(
+            &service.repository.get(&cask_id).unwrap().unwrap(),
+            &resource.id,
+            &resource.name,
+        );
+        resource.path.clone_from(&paths.final_path);
+        let op = uuid::Uuid::new_v4().to_string();
+        service
+            .repository
+            .begin_intake(
+                &op,
+                &resource,
+                IntakeMode::Copy,
+                &observed.source_path,
+                &paths.staging,
+                &paths.final_path,
+            )
+            .unwrap();
+        if phase == "STAGE" {
+            fs::create_dir_all(PathBuf::from(&paths.staging).parent().unwrap()).unwrap();
+            fs::copy(&source, &paths.staging).unwrap();
+        }
+        if matches!(phase.as_str(), "FINAL" | "REGISTER" | "COMPLETE") {
+            service
+                .storage
+                .materialize(&observed, &paths, IntakeMode::Copy, &|_, _| {}, &|| false)
+                .unwrap();
+        }
+        if matches!(phase.as_str(), "REGISTER" | "COMPLETE") {
+            service.repository.materialized_intake(&op).unwrap();
+            service
+                .repository
+                .commit_resource(&resource, Some(&op))
+                .unwrap();
+        }
+        if phase == "COMPLETE" {
+            service.repository.complete_intake(&op).unwrap();
+        }
+        std::process::exit(73);
+    }
+
+    #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "child-process fault matrix records every intake boundary"
+    )]
+    fn forced_exit_at_each_durable_boundary_is_recoverable() {
+        for phase in ["INTENT", "STAGE", "FINAL", "REGISTER", "COMPLETE"] {
+            let root = std::env::temp_dir()
+                .join(format!("casklet-m3-exit-{phase}-{}", uuid::Uuid::new_v4()));
+            fs::create_dir_all(&root).unwrap();
+            let service = CaskService {
+                repository: SqliteCasks::open(root.join("state.db")).unwrap(),
+                storage: LocalStorage::new(root.join("casks")),
+            };
+            let cask = service
+                .create(
+                    &CreateCask {
+                        version: CONTRACT_VERSION,
+                        name: "Work".into(),
+                    },
+                    "test",
+                )
+                .unwrap();
+            fs::write(root.join("source.bin"), b"durable bytes").unwrap();
+            drop(service);
+            let output = std::process::Command::new(std::env::current_exe().unwrap())
+                .args(["--exact", "tests::hard_exit_boundary_helper", "--nocapture"])
+                .env("CASKLET_TEST_EXIT_PHASE", phase)
+                .env("CASKLET_TEST_EXIT_ROOT", &root)
+                .env("CASKLET_TEST_EXIT_CASK", &cask.id)
+                .output()
+                .unwrap();
+            assert_eq!(
+                output.status.code(),
+                Some(73),
+                "phase {phase}: {}",
+                String::from_utf8_lossy(&output.stderr)
+            );
+            let service = CaskService {
+                repository: SqliteCasks::open(root.join("state.db")).unwrap(),
+                storage: LocalStorage::new(root.join("casks")),
+            };
+            service.repository.detect_abandoned_operations().unwrap();
+            let op = service
+                .list_operations(
+                    &ListOperations {
+                        version: CONTRACT_VERSION,
+                        cask_id: Some(cask.id.clone()),
+                    },
+                    "test",
+                )
+                .unwrap()
+                .remove(0);
+            if phase == "INTENT" {
+                assert_eq!(op.state, "RECOVERY_REQUIRED");
+                assert_eq!(
+                    service
+                        .recover_operation(
+                            &RecoverOperation {
+                                version: CONTRACT_VERSION,
+                                id: op.id.clone()
+                            },
+                            "test"
+                        )
+                        .unwrap_err()
+                        .code,
+                    "RECOVERY_REQUIRED"
+                );
+                assert_eq!(
+                    service
+                        .preserve_operation(
+                            &PreserveOperation {
+                                version: CONTRACT_VERSION,
+                                id: op.id
+                            },
+                            "test"
+                        )
+                        .unwrap()
+                        .state,
+                    "CLOSED_PRESERVED"
+                );
+            } else {
+                let recovered = service
+                    .recover_operation(
+                        &RecoverOperation {
+                            version: CONTRACT_VERSION,
+                            id: op.id,
+                        },
+                        "test",
+                    )
+                    .unwrap();
+                assert_eq!(recovered.state, "SUCCEEDED");
+                assert_eq!(
+                    service
+                        .list_resources(
+                            &ListResources {
+                                version: CONTRACT_VERSION,
+                                cask_id: cask.id.clone()
+                            },
+                            "test"
+                        )
+                        .unwrap()
+                        .len(),
+                    1
+                );
+                assert!(root.join("source.bin").exists());
+            }
+            let _ = service.retry_manifest_projections("test").unwrap();
+            assert!(
+                service
+                    .recovery_status("test")
+                    .unwrap()
+                    .pending_manifest_casks
+                    .is_empty()
+            );
+            drop(service);
+            fs::remove_dir_all(root).unwrap();
+        }
+    }
+
+    #[test]
+    fn cancellation_stops_copy_at_boundary_and_keeps_source() {
+        use std::sync::{
+            Mutex,
+            atomic::{AtomicBool, Ordering},
+        };
+        let root = std::env::temp_dir().join(format!("casklet-m3-cancel-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let service = CaskService {
+            repository: SqliteCasks::open(root.join("state.db")).unwrap(),
+            storage: LocalStorage::new(root.join("casks")),
+        };
+        let cask = service
+            .create(
+                &CreateCask {
+                    version: CONTRACT_VERSION,
+                    name: "Work".into(),
+                },
+                "test",
+            )
+            .unwrap();
+        let source = root.join("large.bin");
+        fs::write(&source, vec![3_u8; 3 * 1024 * 1024]).unwrap();
+        let operation_id = Mutex::new(String::new());
+        let requested = AtomicBool::new(false);
+        let result = service.add_resource_with_events(
+            &AddResource {
+                version: CONTRACT_VERSION,
+                cask_id: cask.id.clone(),
+                source_path: source.to_string_lossy().into_owned(),
+                mode: AddMode::Copy,
+                category_key: "other".into(),
+            },
+            "test",
+            &|done, total| {
+                if done < total
+                    && !operation_id.lock().unwrap().is_empty()
+                    && !requested.swap(true, Ordering::SeqCst)
+                {
+                    let id = operation_id.lock().unwrap().clone();
+                    service
+                        .cancel_operation(
+                            &CancelOperation {
+                                version: CONTRACT_VERSION,
+                                id,
+                            },
+                            "test",
+                        )
+                        .unwrap();
+                }
+            },
+            &|id| {
+                *operation_id.lock().unwrap() = id.into();
+            },
+        );
+        assert_eq!(result.unwrap_err().code, "INTAKE_RECOVERY_REQUIRED");
+        assert!(requested.load(Ordering::SeqCst));
+        assert_eq!(fs::metadata(&source).unwrap().len(), 3 * 1024 * 1024);
+        let inspection = service
+            .inspect_recovery(
+                &casklet_contracts::GetOperation {
+                    version: CONTRACT_VERSION,
+                    id: operation_id.lock().unwrap().clone(),
+                },
+                "test",
+            )
+            .unwrap();
+        assert_eq!(inspection.staging_status, "PRESENT_FILE");
+        assert_eq!(inspection.final_status, "MISSING");
+        assert_eq!(inspection.operation.state, "RECOVERY_REQUIRED");
+        drop(service);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn diagnostics_bundle_contains_codes_without_private_paths() {
+        let root =
+            std::env::temp_dir().join(format!("casklet-m3-diagnostics-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let service = CaskService {
+            repository: SqliteCasks::open(root.join("state.db")).unwrap(),
+            storage: LocalStorage::new(root.join("casks")),
+        };
+        let cask = service
+            .create(
+                &CreateCask {
+                    version: CONTRACT_VERSION,
+                    name: "Work".into(),
+                },
+                "test",
+            )
+            .unwrap();
+        let source = root.join("private-secret-name.txt");
+        fs::write(&source, b"private").unwrap();
+        service
+            .add_resource(
+                &AddResource {
+                    version: CONTRACT_VERSION,
+                    cask_id: cask.id,
+                    source_path: source.to_string_lossy().into_owned(),
+                    mode: AddMode::Copy,
+                    category_key: "other".into(),
+                },
+                "test",
+                &|_, _| {},
+            )
+            .unwrap();
+        let output = root.join("diagnostics.json");
+        service
+            .create_diagnostics_bundle(
+                &CreateDiagnosticsBundle {
+                    version: CONTRACT_VERSION,
+                    output_path: output.to_string_lossy().into_owned(),
+                },
+                "test",
+            )
+            .unwrap();
+        let bundle = fs::read_to_string(&output).unwrap();
+        assert!(bundle.contains("INTAKE_STARTED"));
+        assert!(bundle.contains("INTAKE_SUCCEEDED"));
+        assert!(!bundle.contains("private-secret-name"));
+        assert!(
+            service
+                .create_diagnostics_bundle(
+                    &CreateDiagnosticsBundle {
+                        version: CONTRACT_VERSION,
+                        output_path: output.to_string_lossy().into_owned()
+                    },
+                    "test"
+                )
+                .is_err()
         );
         drop(service);
         fs::remove_dir_all(root).unwrap();
