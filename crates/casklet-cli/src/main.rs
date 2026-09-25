@@ -566,9 +566,14 @@ fn render_plan(plan: &RemovalPlanView, output: Output) -> String {
         ),
         Output::Table => {
             let mut result = format!(
-                "Plan {} ({}; expires {})\nHash: {}\n",
+                "Plan {} ({}; {}; expires {})\nHash: {}\n",
                 plan.id,
                 plan.state.to_ascii_lowercase(),
+                if plan.permanent {
+                    "permanent files"
+                } else {
+                    "Recycle Bin"
+                },
                 plan.expires_at_ms,
                 plan.plan_hash,
             );

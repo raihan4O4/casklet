@@ -510,6 +510,8 @@ mod tests {
                 &|_, _| {},
             )
             .unwrap();
+        let external_link = root.join("external-hard-link.txt");
+        fs::hard_link(&managed.path, &external_link).unwrap();
         let plan = service
             .create_removal_plan(
                 &CreateRemovalPlan {
@@ -562,6 +564,7 @@ mod tests {
         );
         assert!(!std::path::Path::new(&managed.path).exists());
         assert!(source.exists());
+        assert_eq!(fs::read(&external_link).unwrap(), b"keep source");
         fs::remove_dir_all(root).unwrap();
     }
     #[test]
