@@ -32,5 +32,5 @@ export type GetRemovalPlan = { version: number; id: string };
 export type ApproveRemovalPlan = { version: number; id: string; planHash: string };
 export type ExecuteRemovalPlan = { version: number; id: string; planHash: string; confirmPermanent: boolean };
 export type CloseRemovalRun = { version: number; runId: string };
-export type RemovalPlanItemView = { id: string; resourceId: string; name: string; action: string; reasonCode: string; expectedSizeBytes: number | null; state: string; resultCode: string | null };
+export type RemovalPlanItemView = { id: string; resourceId: string; name: string; action: string; reasonCode: string; expectedSizeBytes: number | null; state: string; resultCode: string | null; recoveryPath: string | null };
 export type RemovalPlanView = { version: number; id: string; caskId: string; scope: string; categoryKey: string | null; permanent: boolean; state: string; planHash: string; runId: string | null; createdAtMs: number; expiresAtMs: number; items: RemovalPlanItemView[] };

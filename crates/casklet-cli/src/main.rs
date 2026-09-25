@@ -184,7 +184,8 @@ enum PlanAction {
         confirm_permanent: bool,
     },
     #[cfg(feature = "reviewed-removal")]
-    ClosePreserved {
+    #[command(alias = "close-preserved")]
+    CloseUncertain {
         run_id: String,
         #[arg(long)]
         yes: bool,
@@ -499,7 +500,7 @@ fn main() -> ExitCode {
             .map(|plan| render_plan(&plan, cli.output)),
         #[cfg(feature = "reviewed-removal")]
         Command::Plan {
-            action: PlanAction::ClosePreserved { run_id, yes },
+            action: PlanAction::CloseUncertain { run_id, yes },
         } => confirm_removal(&run_id, yes, cli.no_input)
             .and_then(|()| {
                 service.close_uncertain_removal(
@@ -593,6 +594,9 @@ fn render_plan(plan: &RemovalPlanView, output: Output) -> String {
                         .map_or_else(String::new, |code| format!("; {code}")),
                 )
                 .expect("String write");
+                if let Some(path) = &item.recovery_path {
+                    writeln!(result, "  Possible recovery location: {path}").expect("String write");
+                }
             }
             result
         }

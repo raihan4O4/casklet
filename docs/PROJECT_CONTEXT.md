@@ -1,6 +1,6 @@
 # Casklet Project Context
 
-Last updated: 2026-09-25
+Last updated: 2026-09-26
 
 This is the canonical handoff for humans and new Codex tasks. Keep it concise and current. Detailed specifications belong in linked documents.
 
@@ -139,4 +139,4 @@ Exact dependencies will be approved during repository/tooling design; do not add
 
 ## Current implementation milestone
 
-Milestone 0 — Reproducible foundation — and Milestone 1 — Cask walking skeleton — are complete. Milestone 2 — Resource intake and inspection — merged into `develop` as PR #5. Milestone 3 PR #6 includes durable operations and recovery; a live desktop cancellation/reconnect smoke test remains before approval. Milestone 4 has immutable previews and a journaled cleanup workflow behind the disabled `reviewed-removal` feature (ADR 0012). Newly staged managed files and fully scanned managed directories record Windows identity evidence; legacy records and unverifiable recovery items remain preserved (ADR 0011). The user confirmed managed-directory Recycle Bin cleanup and explicit file-only permanent deletion belong in Milestone 4. Default builds have no destructive removal entry point. Real Windows file and directory Recycle Bin smoke tests passed, but adversarial testing and independent security review remain before the feature can be enabled or Milestone 5 accepted. See `docs/engineering/milestone-4-safe-cleanup.md` and `docs/security/milestone-4-removal-review.md`. Keep `main` unchanged until planned milestone integration.
+Milestone 0 — Reproducible foundation — and Milestone 1 — Cask walking skeleton — are complete. Milestone 2 — Resource intake and inspection — merged into `develop` as PR #5. Milestone 3 durable operations and recovery merged into `develop` as PR #6. Milestone 4 has immutable previews and a journaled cleanup workflow behind the disabled `reviewed-removal` feature (ADR 0012). Newly staged managed files and fully scanned managed directories record Windows identity evidence; legacy records and unverifiable recovery items remain preserved (ADR 0011). The user confirmed managed-directory Recycle Bin cleanup and explicit file-only permanent deletion belong in Milestone 4. Default builds have no destructive removal entry point. Real Windows file and directory Recycle Bin smoke tests passed, and adversarial replacement, hard-link, junction, quarantine, and crash tests pass. Independent security review remains required before the destructive feature can be enabled in a public build. See `docs/engineering/milestone-4-safe-cleanup.md` and `docs/security/milestone-4-removal-review.md`. Keep `main` unchanged until planned milestone integration.

@@ -313,7 +313,7 @@
         {#if selectedResource}<button type="button" onclick={previewSelectedResource}>Preview selected resource</button>{/if}
         {#if removalPlan}
           <p>Plan {removalPlan.id} is {removalPlan.state.toLowerCase()} and expires {new Date(removalPlan.expiresAtMs).toLocaleString()}. Disposal: {removalPlan.permanent ? 'permanent files' : 'Recycle Bin'}.</p>
-          <ul>{#each removalPlan.items as item (item.id)}<li>{item.name}: {item.action.toLowerCase()} ({item.reasonCode.toLowerCase()}); {item.state.toLowerCase()}{item.resultCode ? ` (${item.resultCode.toLowerCase()})` : ''}</li>{/each}</ul>
+          <ul>{#each removalPlan.items as item (item.id)}<li>{item.name}: {item.action.toLowerCase()} ({item.reasonCode.toLowerCase()}); {item.state.toLowerCase()}{item.resultCode ? ` (${item.resultCode.toLowerCase()})` : ''}{#if item.recoveryPath}<br />Possible recovery location: <code>{item.recoveryPath}</code>{/if}</li>{/each}</ul>
           {#if removalEnabled && removalPlan.state === 'DRAFT'}
             <button type="button" disabled={removalBusy} onclick={() => void approveRemoval()}>Approve this plan</button>
           {/if}
@@ -325,10 +325,10 @@
             <button type="button" disabled={removalBusy || removalConfirmation !== removalPlan.id || (removalPlan.permanent && !permanentConfirmation)} onclick={() => void executeRemoval()}>Execute cleanup</button>
           {/if}
           {#if removalEnabled && removalPlan.state === 'PARTIAL' && removalPlan.runId}
-            <p role="alert">The cleanup outcome is uncertain. Closing this run preserves unresolved items and releases its lock; inspect retained files before creating another plan.</p>
+            <p role="alert">The cleanup outcome is uncertain. Inspect the original path, Recycle Bin, and any recovery location before closing. Closing releases the lock and keeps unresolved outcomes marked unknown.</p>
             <label for="removal-confirmation">Type the run ID to close with preservation</label>
             <input id="removal-confirmation" bind:value={removalConfirmation} autocomplete="off" />
-            <button type="button" disabled={removalBusy || removalConfirmation !== removalPlan.runId} onclick={() => void closeUncertainRemoval()}>Close and preserve</button>
+            <button type="button" disabled={removalBusy || removalConfirmation !== removalPlan.runId} onclick={() => void closeUncertainRemoval()}>Close uncertain run</button>
           {/if}
         {/if}
       </section>

@@ -231,6 +231,7 @@ test("cleanup execution requires the exact reviewed plan ID", async () => {
     expectedSizeBytes: 5,
     state: "PENDING",
     resultCode: null,
+    recoveryPath: null,
   };
   const draft = {
     version: 1,

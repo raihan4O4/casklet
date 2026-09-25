@@ -22,6 +22,55 @@ type PlanHeader = (
     bool,
 );
 
+impl LocalStorage {
+    fn verify_quarantined(
+        &self,
+        quarantine: &Path,
+        kind: &str,
+        expected_identity: &str,
+    ) -> Result<(), String> {
+        check_components(quarantine)?;
+        let observed = self.inspect(&quarantine.to_string_lossy(), &|_, _| {})?;
+        if observed.kind.code() != kind
+            || observed.recordable_identity.as_deref() != Some(expected_identity)
+        {
+            return Err("Quarantined resource changed; item retained for recovery".into());
+        }
+        Ok(())
+    }
+
+    fn stage_verified_removal(
+        &self,
+        cask_root: &str,
+        candidate: &RemovalCandidate,
+        expected_identity: &str,
+        run_id: &str,
+        item_id: &str,
+    ) -> Result<std::path::PathBuf, String> {
+        if uuid::Uuid::parse_str(run_id).is_err() || uuid::Uuid::parse_str(item_id).is_err() {
+            return Err("Invalid removal run or item ID".into());
+        }
+        if self.verify_managed(cask_root, candidate).as_deref() != Some(expected_identity) {
+            return Err("Managed resource identity changed before quarantine".into());
+        }
+        let quarantine = Path::new(cask_root)
+            .join(".casklet")
+            .join("removal-staging")
+            .join(run_id)
+            .join(item_id);
+        let parent = quarantine.parent().ok_or("Invalid quarantine path")?;
+        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        check_components(parent)?;
+        if fs::symlink_metadata(&quarantine).is_ok() {
+            return Err("Quarantine destination is occupied".into());
+        }
+        check_components(Path::new(&candidate.path))?;
+        fs::rename(&candidate.path, &quarantine).map_err(|e| e.to_string())?;
+        self.verify_quarantined(&quarantine, &candidate.kind, expected_identity)?;
+        Ok(quarantine)
+    }
+}
+
 fn hash_field(hash: &mut Sha256, value: &str) {
     hash.update(
         u64::try_from(value.len())
@@ -89,6 +138,7 @@ fn load_plan_items(
                     .and_then(|n| u64::try_from(n).ok()),
                 state: row.get(12)?,
                 result_code: row.get(13)?,
+                recovery_path: None,
             },
             path: row.get(6)?,
             kind: row.get(7)?,
@@ -348,7 +398,7 @@ impl RemovalRepository for SqliteCasks {
         let mut connection = self.connection()?;
         let transaction = connection.transaction().map_err(|e| e.to_string())?;
         let (plan_id,cask_id,scope): (String,String,String) = transaction.query_row("SELECT run.plan_id,run.cask_id,p.scope FROM removal_runs run JOIN removal_plans p ON p.id=run.plan_id WHERE run.id=?1 AND run.state='RECOVERY_REQUIRED'",[run_id],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?))).map_err(|e|e.to_string())?;
-        transaction.execute("UPDATE removal_plan_items SET state='PRESERVED',result_code='CLOSED_PRESERVED',finished_at_ms=?2 WHERE plan_id=?1 AND state IN ('UNKNOWN','PENDING','FAILED')",params![plan_id,now_ms]).map_err(|e|e.to_string())?;
+        transaction.execute("UPDATE removal_plan_items SET state='UNKNOWN',result_code='CLOSED_UNRESOLVED',finished_at_ms=?2 WHERE plan_id=?1 AND state IN ('UNKNOWN','PENDING','FAILED')",params![plan_id,now_ms]).map_err(|e|e.to_string())?;
         transaction
             .execute(
                 "UPDATE removal_runs SET state='CLOSED_PRESERVED',updated_at_ms=?2 WHERE id=?1",
@@ -487,7 +537,7 @@ impl RemovalRepository for SqliteCasks {
             )
             .optional()
             .map_err(|e| e.to_string())?;
-        let view = RemovalPlanView {
+        let mut view = RemovalPlanView {
             version: CONTRACT_VERSION,
             id: id.into(),
             cask_id,
@@ -505,6 +555,29 @@ impl RemovalRepository for SqliteCasks {
             && plan_hash(&view, &snapshots, cask_revision) != view.plan_hash
         {
             return Err("Removal plan integrity mismatch".into());
+        }
+        if let Some(run_id) = &view.run_id
+            && uuid::Uuid::parse_str(run_id).is_ok()
+        {
+            let root: String = connection
+                .query_row(
+                    "SELECT managed_storage_root FROM casks WHERE id=?1",
+                    [&view.cask_id],
+                    |row| row.get(0),
+                )
+                .map_err(|e| e.to_string())?;
+            for item in &mut view.items {
+                if item.state == "UNKNOWN" && uuid::Uuid::parse_str(&item.id).is_ok() {
+                    let location = Path::new(&root)
+                        .join(".casklet")
+                        .join("removal-staging")
+                        .join(run_id)
+                        .join(&item.id);
+                    if fs::symlink_metadata(&location).is_ok() {
+                        item.recovery_path = Some(location.to_string_lossy().into_owned());
+                    }
+                }
+            }
         }
         Ok(Some(view))
     }
@@ -564,35 +637,12 @@ impl RemovalInspection for LocalStorage {
         run_id: &str,
         item_id: &str,
     ) -> Result<(), String> {
-        if !matches!(candidate.kind.as_str(), "FILE" | "DIRECTORY")
-            || uuid::Uuid::parse_str(run_id).is_err()
-            || uuid::Uuid::parse_str(item_id).is_err()
-        {
+        if !matches!(candidate.kind.as_str(), "FILE" | "DIRECTORY") {
             return Err("Only identified managed resources may be trashed".into());
         }
-        if self.verify_managed(cask_root, candidate).as_deref() != Some(expected_identity) {
-            return Err("Managed resource identity changed before trash".into());
-        }
-        let root = Path::new(cask_root);
-        let quarantine = root
-            .join(".casklet")
-            .join("removal-staging")
-            .join(run_id)
-            .join(item_id);
-        let parent = quarantine.parent().ok_or("Invalid quarantine path")?;
-        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-        check_components(parent)?;
-        if fs::symlink_metadata(&quarantine).is_ok() {
-            return Err("Quarantine destination is occupied".into());
-        }
-        check_components(Path::new(&candidate.path))?;
-        fs::rename(&candidate.path, &quarantine).map_err(|e| e.to_string())?;
-        let observed = self.inspect(&quarantine.to_string_lossy(), &|_, _| {})?;
-        if observed.recordable_identity.as_deref() != Some(expected_identity)
-            || observed.kind.code() != candidate.kind
-        {
-            return Err("Quarantined resource identity differs; item retained for recovery".into());
-        }
+        let quarantine =
+            self.stage_verified_removal(cask_root, candidate, expected_identity, run_id, item_id)?;
+        self.verify_quarantined(&quarantine, &candidate.kind, expected_identity)?;
         trash::delete(&quarantine).map_err(|e| e.to_string())
     }
 
@@ -604,35 +654,12 @@ impl RemovalInspection for LocalStorage {
         run_id: &str,
         item_id: &str,
     ) -> Result<(), String> {
-        if candidate.kind != "FILE"
-            || uuid::Uuid::parse_str(run_id).is_err()
-            || uuid::Uuid::parse_str(item_id).is_err()
-        {
+        if candidate.kind != "FILE" {
             return Err("Permanent deletion supports identified managed files only".into());
         }
-        if self.verify_managed(cask_root, candidate).as_deref() != Some(expected_identity) {
-            return Err("Managed file identity changed before permanent deletion".into());
-        }
-        let root = Path::new(cask_root);
-        let quarantine = root
-            .join(".casklet")
-            .join("removal-staging")
-            .join(run_id)
-            .join(item_id);
-        let parent = quarantine.parent().ok_or("Invalid quarantine path")?;
-        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
-        check_components(parent)?;
-        if fs::symlink_metadata(&quarantine).is_ok() {
-            return Err("Quarantine destination is occupied".into());
-        }
-        check_components(Path::new(&candidate.path))?;
-        fs::rename(&candidate.path, &quarantine).map_err(|e| e.to_string())?;
-        let observed = self.inspect(&quarantine.to_string_lossy(), &|_, _| {})?;
-        if observed.kind != ResourceKind::File
-            || observed.recordable_identity.as_deref() != Some(expected_identity)
-        {
-            return Err("Quarantined file identity differs; item retained for recovery".into());
-        }
+        let quarantine =
+            self.stage_verified_removal(cask_root, candidate, expected_identity, run_id, item_id)?;
+        self.verify_quarantined(&quarantine, &candidate.kind, expected_identity)?;
         fs::remove_file(&quarantine).map_err(|e| e.to_string())
     }
 }
@@ -692,5 +719,36 @@ impl SqliteCasks {
             transaction.commit().map_err(|e| e.to_string())?;
         }
         Ok(())
+    }
+}
+
+#[cfg(all(test, windows))]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn quarantine_replacement_with_identical_bytes_is_rejected() {
+        let root =
+            std::env::temp_dir().join(format!("casklet-quarantine-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let quarantine = root.join("quarantine.txt");
+        fs::write(&quarantine, b"same bytes").unwrap();
+        let storage = LocalStorage::new(root.clone());
+        let identity = storage
+            .inspect(&quarantine.to_string_lossy(), &|_, _| {})
+            .unwrap()
+            .recordable_identity
+            .unwrap();
+        let retained = root.join("retained.txt");
+        fs::rename(&quarantine, &retained).unwrap();
+        fs::write(&quarantine, b"same bytes").unwrap();
+        assert!(
+            storage
+                .verify_quarantined(&quarantine, "FILE", &identity)
+                .is_err()
+        );
+        assert!(retained.exists());
+        assert!(quarantine.exists());
+        fs::remove_dir_all(root).unwrap();
     }
 }
