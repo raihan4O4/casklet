@@ -28,7 +28,7 @@ vi.mock("@tauri-apps/api/window", () => ({
     },
   }),
 }));
-vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn() }));
+vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn(), save: vi.fn() }));
 
 afterEach(() => {
   cleanup();
@@ -63,6 +63,9 @@ test("a dropped file waits for an explicit intake mode and Add action", async ()
     unknownEntries: 0,
   };
   calls.invoke.mockImplementation(async (command: string) => {
+    if (command === "recovery_status")
+      return { version: 1, operations: [], pendingManifestCasks: [] };
+    if (command === "list_operations") return [];
     if (command === "list_casks") return [cask];
     if (command === "get_cask") return cask;
     if (command === "list_resources") return [];
@@ -117,6 +120,9 @@ test("creates and inspects a Cask through typed Tauri commands", async () => {
   };
   let items: (typeof cask)[] = [];
   calls.invoke.mockImplementation(async (command: string) => {
+    if (command === "recovery_status")
+      return { version: 1, operations: [], pendingManifestCasks: [] };
+    if (command === "list_operations") return [];
     if (command === "list_casks") return items;
     if (command === "create_cask") {
       items = [cask];
@@ -152,4 +158,55 @@ test("creates and inspects a Cask through typed Tauri commands", async () => {
     }),
   );
   expect(screen.getByText("C:/Casklets/cask-1")).toBeTruthy();
+});
+
+test("shows interrupted work and requires an explicit recovery action", async () => {
+  const operation = {
+    version: 1,
+    id: "op-1",
+    caskId: "cask-1",
+    state: "RECOVERY_REQUIRED",
+    step: "RECONCILE",
+    progressCompleted: 1,
+    progressTotal: 5,
+    cancellationRequested: false,
+    errorCode: "INTERRUPTED",
+    updatedAtMs: 1,
+  };
+  let pending = true;
+  calls.invoke.mockImplementation(async (command: string) => {
+    if (command === "list_casks") return [];
+    if (command === "list_operations") return [operation];
+    if (command === "recovery_status")
+      return {
+        version: 1,
+        operations: pending ? [operation] : [],
+        pendingManifestCasks: [],
+      };
+    if (command === "inspect_recovery")
+      return {
+        version: 1,
+        operation,
+        mode: "MOVE",
+        sourcePath: "C:/source.txt",
+        sourceStatus: "MISSING",
+        stagingPath: "C:/stage.txt",
+        stagingStatus: "PRESENT_FILE",
+        finalPath: "C:/final.txt",
+        finalStatus: "MISSING",
+      };
+    if (command === "preserve_operation") {
+      pending = false;
+      return { ...operation, state: "CLOSED_PRESERVED" };
+    }
+    throw new Error(`Unexpected command: ${command}`);
+  });
+  render(App);
+  await screen.findByText("Recovery needed");
+  await fireEvent.click(screen.getByRole("button", { name: "Inspect paths" }));
+  expect(await screen.findByText("C:/stage.txt (PRESENT_FILE)")).toBeTruthy();
+  await fireEvent.click(
+    screen.getByRole("button", { name: "Keep files and close" }),
+  );
+  await waitFor(() => expect(screen.queryByText("Recovery needed")).toBeNull());
 });

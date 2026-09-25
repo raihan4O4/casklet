@@ -2,6 +2,9 @@
 use casklet_contracts::{ApiError, CONTRACT_VERSION, CaskView, CreateCask, GetCask, ListCasks};
 use casklet_domain::{Cask, DomainError};
 use std::time::{SystemTime, UNIX_EPOCH};
+pub mod diagnostics;
+pub mod operation;
+pub mod projection;
 pub mod resource;
 
 /// Returns linked lower-layer markers for a dependency-direction smoke test.
@@ -38,7 +41,11 @@ pub struct CaskService<R, S> {
     pub storage: S,
 }
 
-impl<R: CaskRepository, S: ManagedStorage> CaskService<R, S> {
+impl<
+    R: CaskRepository + resource::ResourceRepository + projection::ProjectionRepository,
+    S: ManagedStorage + projection::ManifestProjection,
+> CaskService<R, S>
+{
     /// # Errors
     /// Returns a typed validation, persistence, or storage error.
     pub fn create(&self, request: &CreateCask, correlation_id: &str) -> Result<CaskView, ApiError> {
@@ -66,6 +73,7 @@ impl<R: CaskRepository, S: ManagedStorage> CaskService<R, S> {
         self.storage
             .initialize(&cask)
             .map_err(|e| api_error("STORAGE", e, correlation_id))?;
+        let _ = self.retry_manifest_projections(correlation_id);
         Ok(view(cask))
     }
     /// # Errors

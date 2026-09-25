@@ -1,6 +1,7 @@
 //! Platform-neutral Cask rules.
 
 use uuid::Uuid;
+pub mod operation;
 pub mod resource;
 
 pub const CRATE_BOUNDARY: &str = "domain";

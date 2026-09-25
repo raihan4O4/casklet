@@ -37,7 +37,7 @@ fn is_link(path: &Path) -> Result<bool, String> {
     Ok(false)
 }
 
-fn check_components(path: &Path) -> Result<(), String> {
+pub(super) fn check_components(path: &Path) -> Result<(), String> {
     for component in path.ancestors() {
         if component.as_os_str().is_empty() || !component.exists() {
             continue;
@@ -188,6 +188,7 @@ fn copy_file(
     progress: &dyn Fn(u64, u64),
     completed: &mut u64,
     total: u64,
+    cancel: &dyn Fn() -> bool,
 ) -> Result<(), String> {
     check_components(source)?;
     let mut reader = File::open(source).map_err(|e| e.to_string())?;
@@ -196,7 +197,7 @@ fn copy_file(
         .create_new(true)
         .open(target)
         .map_err(|e| e.to_string())?;
-    copy_stream(&mut reader, &mut writer, progress, completed, total)?;
+    copy_stream(&mut reader, &mut writer, progress, completed, total, cancel)?;
     writer.sync_all().map_err(|e| e.to_string())
 }
 
@@ -206,9 +207,13 @@ fn copy_stream(
     progress: &dyn Fn(u64, u64),
     completed: &mut u64,
     total: u64,
+    cancel: &dyn Fn() -> bool,
 ) -> Result<(), String> {
     let mut buffer = vec![0_u8; 1024 * 1024].into_boxed_slice();
     loop {
+        if cancel() {
+            return Err("Cancellation requested; staged data preserved".into());
+        }
         let n = reader.read(&mut buffer).map_err(|e| e.to_string())?;
         if n == 0 {
             break;
@@ -216,6 +221,9 @@ fn copy_stream(
         writer.write_all(&buffer[..n]).map_err(|e| e.to_string())?;
         *completed = completed.saturating_add(u64::try_from(n).map_err(|e| e.to_string())?);
         progress(*completed, total);
+        if cancel() {
+            return Err("Cancellation requested; staged data preserved".into());
+        }
     }
     Ok(())
 }
@@ -225,12 +233,16 @@ fn copy_tree(
     target: &Path,
     progress: &dyn Fn(u64, u64),
     total: u64,
+    cancel: &dyn Fn() -> bool,
 ) -> Result<(), String> {
     fs::create_dir(target).map_err(|e| e.to_string())?;
     let mut queue = VecDeque::from([(source.to_path_buf(), target.to_path_buf(), 0_usize)]);
     let mut completed = 0;
     let mut entries = 0_u64;
     while let Some((src_dir, dst_dir, depth)) = queue.pop_front() {
+        if cancel() {
+            return Err("Cancellation requested; staged data preserved".into());
+        }
         check_components(&src_dir)?;
         for entry in fs::read_dir(&src_dir).map_err(|e| e.to_string())? {
             entries += 1;
@@ -253,7 +265,7 @@ fn copy_tree(
                 fs::create_dir(&dst).map_err(|e| e.to_string())?;
                 queue.push_back((src, dst, depth + 1));
             } else if metadata.is_file() {
-                copy_file(&src, &dst, progress, &mut completed, total)?;
+                copy_file(&src, &dst, progress, &mut completed, total, cancel)?;
             } else {
                 return Err("Directory contains an unsupported entry".into());
             }
@@ -309,6 +321,7 @@ impl ResourceStorage for LocalStorage {
         paths: &IntakePaths,
         mode: IntakeMode,
         progress: &dyn Fn(u64, u64),
+        cancel: &dyn Fn() -> bool,
     ) -> Result<(), String> {
         let source = Path::new(&observed.source_path);
         let staging = Path::new(&paths.staging);
@@ -344,6 +357,9 @@ impl ResourceStorage for LocalStorage {
         match mode {
             IntakeMode::Reference => return Err("Reference has no managed materialization".into()),
             IntakeMode::Move => {
+                if cancel() {
+                    return Err("Cancellation requested before move".into());
+                }
                 check_components(source)?;
                 if !observed.file_identity.matches_path(&observed.source_path)? {
                     return Err("Source identity changed before move; source preserved".into());
@@ -353,6 +369,9 @@ impl ResourceStorage for LocalStorage {
                 })?;
                 if !observed.file_identity.matches_path(&paths.staging)? {
                     return Err("Moved item identity changed; staging retained for recovery".into());
+                }
+                if cancel() {
+                    return Err("Cancellation requested; staged data preserved".into());
                 }
             }
             IntakeMode::Copy => {
@@ -364,11 +383,21 @@ impl ResourceStorage for LocalStorage {
                         progress,
                         &mut completed,
                         observed.size_bytes.unwrap_or(0),
+                        cancel,
                     )?;
                 } else {
-                    copy_tree(source, staging, progress, observed.size_bytes.unwrap_or(0))?;
+                    copy_tree(
+                        source,
+                        staging,
+                        progress,
+                        observed.size_bytes.unwrap_or(0),
+                        cancel,
+                    )?;
                 }
             }
+        }
+        if cancel() {
+            return Err("Cancellation requested; staged data preserved".into());
         }
         check_components(staging)?;
         let verified = inspect_path(&staging.to_string_lossy(), &|_, _| {})?;
@@ -380,11 +409,44 @@ impl ResourceStorage for LocalStorage {
         if occupied(final_path)? {
             return Err("Managed destination appeared during intake".into());
         }
+        if cancel() {
+            return Err("Cancellation requested; staged data preserved".into());
+        }
         fs::rename(staging, final_path).map_err(|e| e.to_string())?;
         progress(
             observed.size_bytes.unwrap_or(0),
             observed.size_bytes.unwrap_or(0),
         );
+        Ok(())
+    }
+    fn finish_staged(
+        &self,
+        cask: &casklet_domain::Cask,
+        resource: &casklet_domain::resource::Resource,
+        paths: &IntakePaths,
+        observed: &Observation,
+    ) -> Result<(), String> {
+        let expected = self.allocate(cask, &resource.id, &resource.name);
+        if expected.staging != paths.staging || expected.final_path != paths.final_path {
+            return Err("Recovery paths no longer match managed allocation".into());
+        }
+        let staging = Path::new(&paths.staging);
+        let final_path = Path::new(&paths.final_path);
+        check_components(staging)?;
+        check_components(final_path)?;
+        let final_parent = final_path.parent().ok_or("Invalid managed destination")?;
+        fs::create_dir_all(final_parent).map_err(|e| e.to_string())?;
+        check_components(final_parent)?;
+        if occupied(final_path)? {
+            return Err("Managed destination is occupied; staged item preserved".into());
+        }
+        if !observed.file_identity.matches_path(&paths.staging)? {
+            return Err("Staged item identity changed; files preserved".into());
+        }
+        fs::rename(staging, final_path).map_err(|e| e.to_string())?;
+        if !observed.file_identity.matches_path(&paths.final_path)? {
+            return Err("Managed item identity changed after recovery rename".into());
+        }
         Ok(())
     }
 }
@@ -419,6 +481,7 @@ mod tests {
             &|_, _| {},
             &mut completed,
             11,
+            &|| false,
         )
         .unwrap_err();
         assert!(!error.is_empty());

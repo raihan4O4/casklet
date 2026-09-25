@@ -14,7 +14,7 @@ Core principle:
 
 ## Current phase
 
-The initial design program is approved. Milestones 0 and 1 are complete and merged into `develop`. Milestone 2 implementation is complete on `codex/resource-intake-inspection` and proposed for review against `develop`. Milestone 3 — durable operations and recovery — is next after that review.
+The initial design program is approved. Milestones 0–2 are complete and merged into `develop`. Milestone 3 — durable operations and recovery — is implemented locally on `codex/durable-operations-recovery` and awaiting user smoke testing and review.
 
 - Phase 1 — Requirements: approved.
 - Phase 2 — Cross-platform and installation workflow: approved.
@@ -139,4 +139,4 @@ Exact dependencies will be approved during repository/tooling design; do not add
 
 ## Current implementation milestone
 
-Milestone 0 — Reproducible foundation: complete on 2026-09-24, including a clean Windows runner bootstrap and quality gate in [run 36010734018](https://github.com/raihan4O4/casklet/actions/runs/36010734018). Milestone 1 — Cask walking skeleton — is complete and merged into `develop`: creation, listing, inspection, SQLite migration, empty manifest projection, CLI and GUI smoke tests. Milestone 2 — Resource intake and inspection — is locally complete on `codex/resource-intake-inspection`: resource/category schema, explicit copy/move/reference routes, bounded inspection, managed staging, inventory and storage queries, GUI picker/drop review, and safety tests. The branch is proposed for PR review; it is not yet merged. See `docs/engineering/milestone-2-resource-intake.md` and ADR 0009. Milestone 3 will add unfinished-intake reconciliation and manifest projection retries. Keep `main` unchanged until planned milestone integration.
+Milestone 0 — Reproducible foundation — and Milestone 1 — Cask walking skeleton — are complete. Milestone 2 — Resource intake and inspection — merged into `develop` as PR #5. Milestone 3 includes operation/step journals, persistent locks, progress/cancellation, startup abandonment detection, explicit intake recovery or preserved close, manifest projection retry, CLI/desktop recovery views, and path-free diagnostics. Forced-exit tests cover each intake boundary and manifest backup restoration is tested. A live desktop cancellation/reconnect smoke test remains before approval. See `docs/engineering/milestone-3-operations-recovery.md` and ADR 0010. Keep `main` unchanged until planned milestone integration.

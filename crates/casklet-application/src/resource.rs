@@ -1,5 +1,8 @@
 //! Resource intake use cases. Filesystem behavior remains behind a port.
-use crate::{CaskRepository, CaskService};
+use crate::{
+    CaskRepository, CaskService,
+    projection::{ManifestProjection, ProjectionRepository},
+};
 use casklet_contracts::{
     AddMode, AddResource, ApiError, CONTRACT_VERSION, CategorizeResource, CategoryView,
     CreateCategory, GetResource, GetStorageSummary, ListCategories, ListResources, ResourceView,
@@ -10,6 +13,7 @@ use casklet_domain::{
     resource::{IntakeMode, Resource, ResourceKind},
 };
 use std::{
+    panic::{AssertUnwindSafe, catch_unwind},
     sync::Arc,
     time::{SystemTime, UNIX_EPOCH},
 };
@@ -66,6 +70,18 @@ pub trait ResourceRepository {
     /// Returns a persistence error.
     fn complete_intake(&self, op_id: &str) -> Result<(), String>;
     /// # Errors
+    /// Returns a persistence error. Progress is advisory; the durable state remains authoritative.
+    fn progress_intake(&self, op_id: &str, completed: u64, total: u64) -> Result<(), String>;
+    /// # Errors
+    /// Records an uncertain intake without discarding its staging data.
+    fn fail_intake(&self, op_id: &str, error_code: &str) -> Result<(), String>;
+    /// # Errors
+    /// Records the materialization step before registration begins.
+    fn materialized_intake(&self, op_id: &str) -> Result<(), String>;
+    /// # Errors
+    /// Returns whether cancellation has been requested for this operation.
+    fn cancellation_requested(&self, op_id: &str) -> Result<bool, String>;
+    /// # Errors
     /// Returns a persistence error.
     fn list_resources(&self, cask_id: &str) -> Result<Vec<ResourceView>, String>;
     /// # Errors
@@ -90,10 +106,24 @@ pub trait ResourceStorage {
         paths: &IntakePaths,
         mode: IntakeMode,
         progress: &dyn Fn(u64, u64),
+        cancel: &dyn Fn() -> bool,
+    ) -> Result<(), String>;
+    /// # Errors
+    /// Renames a verified staged item into its recorded managed destination.
+    fn finish_staged(
+        &self,
+        cask: &Cask,
+        resource: &Resource,
+        paths: &IntakePaths,
+        observed: &Observation,
     ) -> Result<(), String>;
 }
 
-impl<R: CaskRepository + ResourceRepository, S: ResourceStorage> CaskService<R, S> {
+impl<
+    R: CaskRepository + ResourceRepository + ProjectionRepository,
+    S: ResourceStorage + ManifestProjection,
+> CaskService<R, S>
+{
     /// # Errors
     /// Returns validation, persistence, or filesystem errors with a correlation ID.
     pub fn add_resource(
@@ -101,6 +131,23 @@ impl<R: CaskRepository + ResourceRepository, S: ResourceStorage> CaskService<R, 
         request: &AddResource,
         correlation_id: &str,
         progress: &dyn Fn(u64, u64),
+    ) -> Result<ResourceView, ApiError> {
+        self.add_resource_with_events(request, correlation_id, progress, &|_| {})
+    }
+
+    /// Reports the durable operation ID after intent and lock are committed.
+    /// # Errors
+    /// Returns validation, persistence, or filesystem errors with a correlation ID.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "intake validation and durable phases form one use case"
+    )]
+    pub fn add_resource_with_events(
+        &self,
+        request: &AddResource,
+        correlation_id: &str,
+        progress: &dyn Fn(u64, u64),
+        started: &dyn Fn(&str),
     ) -> Result<ResourceView, ApiError> {
         check(request.version, correlation_id)?;
         let cask = self
@@ -172,15 +219,65 @@ impl<R: CaskRepository + ResourceRepository, S: ResourceStorage> CaskService<R, 
                     &paths.final_path,
                 )
                 .map_err(|e| err("PERSISTENCE", e, correlation_id))?;
-            self.storage
-                .materialize(&observed, &paths, mode, progress)
-                .map_err(|e| err("INTAKE_RECOVERY_REQUIRED", e, correlation_id))?;
-            self.repository
-                .commit_resource(&resource, Some(&op_id))
-                .map_err(|e| err("INTAKE_RECOVERY_REQUIRED", e, correlation_id))?;
-            self.repository
-                .complete_intake(&op_id)
-                .map_err(|e| err("PERSISTENCE", e, correlation_id))?;
+            if catch_unwind(AssertUnwindSafe(|| started(&op_id))).is_err() {
+                let _ = self
+                    .repository
+                    .fail_intake(&op_id, "PRESENTATION_INTERRUPTED");
+                return Err(err(
+                    "INTAKE_RECOVERY_REQUIRED",
+                    "Operation notification failed; intent preserved".into(),
+                    correlation_id,
+                ));
+            }
+            let materialized = catch_unwind(AssertUnwindSafe(|| {
+                self.storage.materialize(
+                    &observed,
+                    &paths,
+                    mode,
+                    &|done, total| {
+                        let _ = self.repository.progress_intake(&op_id, done, total);
+                        progress(done, total);
+                    },
+                    &|| {
+                        self.repository
+                            .cancellation_requested(&op_id)
+                            .unwrap_or(false)
+                    },
+                )
+            }));
+            let Ok(materialized) = materialized else {
+                let _ = self.repository.fail_intake(&op_id, "WORKER_INTERRUPTED");
+                return Err(err(
+                    "INTAKE_RECOVERY_REQUIRED",
+                    "Worker interrupted; staged data preserved".into(),
+                    correlation_id,
+                ));
+            };
+            if let Err(error) = materialized {
+                let code = if self
+                    .repository
+                    .cancellation_requested(&op_id)
+                    .unwrap_or(false)
+                {
+                    "CANCELLED_STAGING_PRESERVED"
+                } else {
+                    "MATERIALIZE_FAILED"
+                };
+                let _ = self.repository.fail_intake(&op_id, code);
+                return Err(err("INTAKE_RECOVERY_REQUIRED", error, correlation_id));
+            }
+            if let Err(error) = self.repository.materialized_intake(&op_id) {
+                let _ = self.repository.fail_intake(&op_id, "STEP_JOURNAL_FAILED");
+                return Err(err("INTAKE_RECOVERY_REQUIRED", error, correlation_id));
+            }
+            if let Err(error) = self.repository.commit_resource(&resource, Some(&op_id)) {
+                let _ = self.repository.fail_intake(&op_id, "REGISTRATION_FAILED");
+                return Err(err("INTAKE_RECOVERY_REQUIRED", error, correlation_id));
+            }
+            if let Err(error) = self.repository.complete_intake(&op_id) {
+                let _ = self.repository.fail_intake(&op_id, "COMPLETION_FAILED");
+                return Err(err("INTAKE_RECOVERY_REQUIRED", error, correlation_id));
+            }
         }
         self.repository
             .get_resource(&resource.id)
@@ -191,6 +288,9 @@ impl<R: CaskRepository + ResourceRepository, S: ResourceStorage> CaskService<R, 
                     "Resource disappeared after registration".into(),
                     correlation_id,
                 )
+            })
+            .inspect(|_| {
+                let _ = self.retry_manifest_projections(correlation_id);
             })
     }
 
@@ -259,6 +359,7 @@ impl<R: CaskRepository + ResourceRepository, S: ResourceStorage> CaskService<R, 
         self.repository
             .create_category(&cask.id, &key, name)
             .map_err(|e| err("PERSISTENCE", e, correlation_id))?;
+        let _ = self.retry_manifest_projections(correlation_id);
         Ok(CategoryView {
             version: CONTRACT_VERSION,
             key,
@@ -317,6 +418,7 @@ impl<R: CaskRepository + ResourceRepository, S: ResourceStorage> CaskService<R, 
         self.repository
             .categorize(&request.resource_id, &request.category_key)
             .map_err(|e| err("PERSISTENCE", e, correlation_id))?;
+        let _ = self.retry_manifest_projections(correlation_id);
         self.repository
             .get_resource(&request.resource_id)
             .map_err(|e| err("PERSISTENCE", e, correlation_id))?
