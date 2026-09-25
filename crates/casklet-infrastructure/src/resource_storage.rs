@@ -43,6 +43,76 @@ fn recordable_file_identity(_path: &Path) -> Option<(String, same_file::Handle)>
     None
 }
 
+#[cfg(windows)]
+fn directory_object_identity(path: &Path) -> Option<String> {
+    let handle = winapi_util::Handle::from_path_any(path).ok()?;
+    let info = winapi_util::file::information(&handle).ok()?;
+    Some(format!(
+        "{:016x}:{:016x}:{:016x}",
+        info.volume_serial_number(),
+        info.file_index(),
+        info.creation_time()?
+    ))
+}
+
+/// A bounded, deterministic snapshot. Any uninspectable, linked, or changed entry
+/// makes the tree ineligible for automatic cleanup.
+#[cfg(windows)]
+fn recordable_directory_identity(root: &Path) -> Option<String> {
+    use std::os::windows::ffi::OsStrExt;
+
+    let initial_root = directory_object_identity(root)?;
+    let mut hash = Sha256::new();
+    hash.update(b"casklet-directory-v1");
+    hash.update(initial_root.as_bytes());
+    let mut queue = VecDeque::from([(root.to_path_buf(), 0_usize)]);
+    let mut entries = 0_u64;
+    while let Some((directory, depth)) = queue.pop_front() {
+        if depth > MAX_DEPTH || is_link(&directory).ok()? {
+            return None;
+        }
+        let before = directory_object_identity(&directory)?;
+        let mut children = fs::read_dir(&directory)
+            .ok()?
+            .collect::<Result<Vec<_>, _>>()
+            .ok()?;
+        children.sort_by_key(std::fs::DirEntry::file_name);
+        for child in children {
+            entries = entries.checked_add(1)?;
+            if entries > MAX_ENTRIES {
+                return None;
+            }
+            let path = child.path();
+            if is_link(&path).ok()? {
+                return None;
+            }
+            let relative = path.strip_prefix(root).ok()?;
+            for unit in relative.as_os_str().encode_wide() {
+                hash.update(unit.to_le_bytes());
+            }
+            hash.update([0_u8, 0_u8]);
+            let metadata = fs::symlink_metadata(&path).ok()?;
+            if metadata.is_dir() {
+                hash.update(b"D");
+                hash.update(directory_object_identity(&path)?.as_bytes());
+                queue.push_back((path, depth + 1));
+            } else if metadata.is_file() {
+                hash.update(b"F");
+                hash.update(recordable_file_identity(&path)?.0.as_bytes());
+            } else {
+                return None;
+            }
+        }
+        if directory_object_identity(&directory)? != before {
+            return None;
+        }
+    }
+    if directory_object_identity(root)? != initial_root {
+        return None;
+    }
+    Some(format!("tree-v1:{:x}", hash.finalize()))
+}
+
 const MAX_ENTRIES: u64 = 100_000;
 const MAX_DEPTH: usize = 64;
 
@@ -211,8 +281,16 @@ fn inspect_path(source: &str, progress: &dyn Fn(u64, u64)) -> Result<Observation
             ),
         }
     } else {
+        #[cfg(windows)]
+        let identity = if unknown == 0 {
+            recordable_directory_identity(&path)
+        } else {
+            None
+        };
+        #[cfg(not(windows))]
+        let identity = None;
         (
-            None,
+            identity,
             same_file::Handle::from_path(&path).map_err(|e| e.to_string())?,
         )
     };

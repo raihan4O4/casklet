@@ -107,6 +107,19 @@ pub trait RemovalInspection {
         run_id: &str,
         item_id: &str,
     ) -> Result<(), String>;
+    /// Permanently removes only an exactly verified managed file.
+    /// # Errors
+    /// Returns a storage or verification error; callers retain uncertain outcomes.
+    fn delete_permanently_verified(
+        &self,
+        _cask_root: &str,
+        _candidate: &RemovalCandidate,
+        _expected_identity: &str,
+        _run_id: &str,
+        _item_id: &str,
+    ) -> Result<(), String> {
+        Err("Permanent deletion is unavailable on this storage adapter".into())
+    }
 }
 
 fn error(code: &str, message: &str, correlation_id: &str) -> ApiError {
@@ -223,12 +236,21 @@ impl<R: CaskRepository + RemovalRepository, S: RemovalInspection> CaskService<R,
                     broad: identity.is_none(),
                     unknown_entries: candidate.unknown_entries > 0,
                 });
+                let (action, reason) = if request.permanent && action.code() == "TRASH" {
+                    if candidate.kind == "FILE" {
+                        ("DELETE_PERMANENTLY", "EXPLICIT_PERMANENT_FILE")
+                    } else {
+                        ("PRESERVE", "PERMANENT_DIRECTORY_UNSUPPORTED")
+                    }
+                } else {
+                    (action.code(), reason)
+                };
                 PlannedItem {
                     view: RemovalPlanItemView {
                         id: Uuid::new_v4().to_string(),
                         resource_id: candidate.id,
                         name: candidate.name,
-                        action: action.code().into(),
+                        action: action.into(),
                         reason_code: reason.into(),
                         expected_size_bytes: candidate.size_bytes,
                         state: "PENDING".into(),
@@ -249,6 +271,7 @@ impl<R: CaskRepository + RemovalRepository, S: RemovalInspection> CaskService<R,
             cask_id: cask.id,
             scope: scope.into(),
             category_key: request.category_key.clone(),
+            permanent: request.permanent,
             state: "DRAFT".into(),
             plan_hash: String::new(),
             run_id: None,
@@ -330,7 +353,7 @@ impl<R: CaskRepository + RemovalRepository, S: RemovalInspection> CaskService<R,
             .plan_items(&request.id)
             .map_err(|_| error("PERSISTENCE", "Could not load plan items", correlation_id))?
         {
-            if item.view.action != "TRASH" {
+            if !matches!(item.view.action.as_str(), "TRASH" | "DELETE_PERMANENTLY") {
                 continue;
             }
             let Some(candidate) = candidates
@@ -408,6 +431,13 @@ impl<R: CaskRepository + RemovalRepository, S: RemovalInspection> CaskService<R,
                 correlation_id,
             ));
         }
+        if plan.permanent && !request.confirm_permanent {
+            return Err(error(
+                "PERMANENT_CONFIRMATION_REQUIRED",
+                "Explicit permanent deletion confirmation is required",
+                correlation_id,
+            ));
+        }
         let cask = self
             .repository
             .get(&plan.cask_id)
@@ -438,41 +468,61 @@ impl<R: CaskRepository + RemovalRepository, S: RemovalInspection> CaskService<R,
                     let candidate = candidates
                         .iter()
                         .find(|candidate| candidate.id == item.view.resource_id);
-                    let verified = if item.view.action == "TRASH" {
-                        candidate.and_then(|candidate| {
-                            self.storage
-                                .verify_managed(&cask.managed_storage_root, candidate)
-                        }) == item.identity
-                            && item.identity.is_some()
-                    } else {
-                        true
-                    };
+                    let verified =
+                        if matches!(item.view.action.as_str(), "TRASH" | "DELETE_PERMANENTLY") {
+                            candidate.and_then(|candidate| {
+                                self.storage
+                                    .verify_managed(&cask.managed_storage_root, candidate)
+                            }) == item.identity
+                                && item.identity.is_some()
+                        } else {
+                            true
+                        };
                     self.repository
                         .start_item(&run_id, &item, now)
                         .map_err(|e| error("RECOVERY_REQUIRED", &e, correlation_id))?;
                     let (state, result) = match item.view.action.as_str() {
                         "PRESERVE" => ("PRESERVED", "PLAN_PRESERVE"),
                         "DETACH" => ("SUCCEEDED", "DETACHED"),
-                        "TRASH" if !verified => ("PRESERVED", "REVALIDATION_FAILED"),
-                        "TRASH" => {
+                        "TRASH" | "DELETE_PERMANENTLY" if !verified => {
+                            ("PRESERVED", "REVALIDATION_FAILED")
+                        }
+                        "TRASH" | "DELETE_PERMANENTLY" => {
                             let Some(candidate) = candidate else {
                                 unreachable!("verified target exists")
                             };
                             let Some(identity) = &item.identity else {
                                 unreachable!("verified identity exists")
                             };
-                            if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-                                self.storage.trash_verified(
-                                    &cask.managed_storage_root,
-                                    candidate,
-                                    identity,
-                                    &run_id,
-                                    &item.view.id,
+                            let result =
+                                std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                    if item.view.action == "TRASH" {
+                                        self.storage.trash_verified(
+                                            &cask.managed_storage_root,
+                                            candidate,
+                                            identity,
+                                            &run_id,
+                                            &item.view.id,
+                                        )
+                                    } else {
+                                        self.storage.delete_permanently_verified(
+                                            &cask.managed_storage_root,
+                                            candidate,
+                                            identity,
+                                            &run_id,
+                                            &item.view.id,
+                                        )
+                                    }
+                                }));
+                            if result.is_ok_and(|result| result.is_ok()) {
+                                (
+                                    "SUCCEEDED",
+                                    if item.view.action == "TRASH" {
+                                        "TRASHED"
+                                    } else {
+                                        "PERMANENTLY_DELETED"
+                                    },
                                 )
-                            }))
-                            .is_ok_and(|result| result.is_ok())
-                            {
-                                ("SUCCEEDED", "TRASHED")
                             } else {
                                 ("UNKNOWN", "TRASH_OUTCOME_UNCERTAIN")
                             }

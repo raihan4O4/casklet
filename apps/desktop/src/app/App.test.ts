@@ -238,6 +238,7 @@ test("cleanup execution requires the exact reviewed plan ID", async () => {
     caskId: cask.id,
     scope: "CASK",
     categoryKey: null,
+    permanent: false,
     state: "DRAFT",
     planHash: "hash-1",
     runId: null,
@@ -301,7 +302,12 @@ test("cleanup execution requires the exact reviewed plan ID", async () => {
   await fireEvent.click(execute);
   await waitFor(() =>
     expect(calls.invoke).toHaveBeenCalledWith("execute_removal_plan", {
-      request: { version: 1, id: "plan-1", planHash: "hash-1" },
+      request: {
+        version: 1,
+        id: "plan-1",
+        planHash: "hash-1",
+        confirmPermanent: false,
+      },
     }),
   );
 });

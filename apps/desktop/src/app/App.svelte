@@ -29,6 +29,8 @@
   let removalCategory = $state('');
   let removalEnabled = $state(false);
   let removalConfirmation = $state('');
+  let permanentPlan = $state(false);
+  let permanentConfirmation = $state(false);
   let removalBusy = $state(false);
 
   async function previewRemoval(resourceIds: string[] = []) {
@@ -37,7 +39,9 @@
       removalPlan = await invoke<RemovalPlanView>('create_removal_plan', { request: {
         version: CONTRACT_VERSION, caskId: selected.id, resourceIds,
         categoryKey: resourceIds.length ? null : (removalCategory || null),
+        permanent: permanentPlan,
       } });
+      permanentConfirmation = false;
       error = '';
     } catch (cause) { error = message(cause); }
   }
@@ -57,11 +61,12 @@
     finally { removalBusy = false; }
   }
   async function executeRemoval() {
-    if (!removalPlan || !removalEnabled || removalConfirmation !== removalPlan.id) return;
+    if (!removalPlan || !removalEnabled || removalConfirmation !== removalPlan.id || (removalPlan.permanent && !permanentConfirmation)) return;
     removalBusy = true;
     try {
       removalPlan = await invoke<RemovalPlanView>('execute_removal_plan', { request: {
         version: CONTRACT_VERSION, id: removalPlan.id, planHash: removalPlan.planHash,
+        confirmPermanent: removalPlan.permanent && permanentConfirmation,
       } });
       removalConfirmation = '';
       await refreshResources();
@@ -296,25 +301,28 @@
       </section>
       <section aria-label="Removal preview">
         <h3>Cleanup preview</h3>
-        <p>Review what Casklet could detach, preserve, or move to trash. This preview does not change files or associations.</p>
+        <p>Review what Casklet could detach, preserve, move to the Recycle Bin, or permanently delete. This preview does not change files or associations.</p>
         <label for="removal-category">Scope</label>
         <select id="removal-category" bind:value={removalCategory}>
           <option value="">Whole Cask</option>
           {#each categories as category (category.key)}<option value={category.key}>{category.name}</option>{/each}
         </select>
+        <label><input type="checkbox" bind:checked={permanentPlan} /> Permanently delete eligible managed files in this plan</label>
+        <p>Permanent deletion cannot be undone. Managed directories remain preserved in a permanent plan; use a Recycle Bin plan for them.</p>
         <button type="button" onclick={() => void previewRemoval()}>Create cleanup preview</button>
         {#if selectedResource}<button type="button" onclick={previewSelectedResource}>Preview selected resource</button>{/if}
         {#if removalPlan}
-          <p>Plan {removalPlan.id} is {removalPlan.state.toLowerCase()} and expires {new Date(removalPlan.expiresAtMs).toLocaleString()}.</p>
+          <p>Plan {removalPlan.id} is {removalPlan.state.toLowerCase()} and expires {new Date(removalPlan.expiresAtMs).toLocaleString()}. Disposal: {removalPlan.permanent ? 'permanent files' : 'Recycle Bin'}.</p>
           <ul>{#each removalPlan.items as item (item.id)}<li>{item.name}: {item.action.toLowerCase()} ({item.reasonCode.toLowerCase()}); {item.state.toLowerCase()}{item.resultCode ? ` (${item.resultCode.toLowerCase()})` : ''}</li>{/each}</ul>
           {#if removalEnabled && removalPlan.state === 'DRAFT'}
             <button type="button" disabled={removalBusy} onclick={() => void approveRemoval()}>Approve this plan</button>
           {/if}
           {#if removalEnabled && removalPlan.state === 'APPROVED'}
-            <p role="alert">Executing may move eligible managed files to the Recycle Bin and detach associations. Changed or uncertain items are preserved for review.</p>
+            <p role="alert">Executing may {removalPlan.permanent ? 'permanently delete eligible managed files' : 'move eligible managed files and directories to the Recycle Bin'} and detach associations. Changed or uncertain items are preserved for review.</p>
+            {#if removalPlan.permanent}<label><input type="checkbox" bind:checked={permanentConfirmation} /> I understand that permanent deletion cannot be undone</label>{/if}
             <label for="removal-confirmation">Type the plan ID to execute</label>
             <input id="removal-confirmation" bind:value={removalConfirmation} autocomplete="off" />
-            <button type="button" disabled={removalBusy || removalConfirmation !== removalPlan.id} onclick={() => void executeRemoval()}>Execute cleanup</button>
+            <button type="button" disabled={removalBusy || removalConfirmation !== removalPlan.id || (removalPlan.permanent && !permanentConfirmation)} onclick={() => void executeRemoval()}>Execute cleanup</button>
           {/if}
           {#if removalEnabled && removalPlan.state === 'PARTIAL' && removalPlan.runId}
             <p role="alert">The cleanup outcome is uncertain. Closing this run preserves unresolved items and releases its lock; inspect retained files before creating another plan.</p>

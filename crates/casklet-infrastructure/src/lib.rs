@@ -41,7 +41,7 @@ impl SqliteCasks {
                     .map_err(|e| e.to_string())?;
                 transaction.commit().map_err(|e| e.to_string())?;
             }
-            1..=5 => {}
+            1..=6 => {}
             _ => return Err(format!("unsupported database schema version: {version}")),
         }
         if version == 1 || version == 0 {
@@ -83,6 +83,18 @@ impl SqliteCasks {
                 .map_err(|e| e.to_string())?;
             transaction
                 .execute_batch("PRAGMA user_version=5")
+                .map_err(|e| e.to_string())?;
+            transaction.commit().map_err(|e| e.to_string())?;
+        }
+        if version <= 5 {
+            let transaction = connection.transaction().map_err(|e| e.to_string())?;
+            transaction
+                .execute_batch(include_str!(
+                    "../../../migrations/0006_permanent_disposal.sql"
+                ))
+                .map_err(|e| e.to_string())?;
+            transaction
+                .execute_batch("PRAGMA user_version=6")
                 .map_err(|e| e.to_string())?;
             transaction.commit().map_err(|e| e.to_string())?;
         }
@@ -213,6 +225,345 @@ mod tests {
     };
     use casklet_domain::resource::IntakeMode;
     use casklet_domain::resource::Resource;
+
+    #[cfg(windows)]
+    #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "directory planning and both stale-plan boundaries"
+    )]
+    fn managed_directory_plan_detects_nested_change_before_approval() {
+        let root = std::env::temp_dir().join(format!("casklet-m4-dir-{}", uuid::Uuid::new_v4()));
+        let source = root.join("source-directory");
+        fs::create_dir_all(source.join("nested")).unwrap();
+        fs::write(source.join("nested").join("note.txt"), b"original").unwrap();
+        let service = CaskService {
+            repository: SqliteCasks::open(root.join("state.db")).unwrap(),
+            storage: LocalStorage::new(root.join("casks")),
+        };
+        let cask = service
+            .create(
+                &CreateCask {
+                    version: CONTRACT_VERSION,
+                    name: "Directory".into(),
+                },
+                "test",
+            )
+            .unwrap();
+        let managed = service
+            .add_resource(
+                &AddResource {
+                    version: CONTRACT_VERSION,
+                    cask_id: cask.id.clone(),
+                    source_path: source.to_string_lossy().into_owned(),
+                    mode: AddMode::Copy,
+                    category_key: "other".into(),
+                },
+                "test",
+                &|_, _| {},
+            )
+            .unwrap();
+        let permanent_plan = service
+            .create_removal_plan(
+                &CreateRemovalPlan {
+                    version: CONTRACT_VERSION,
+                    cask_id: cask.id.clone(),
+                    resource_ids: vec![managed.id.clone()],
+                    category_key: None,
+                    permanent: true,
+                },
+                "test",
+            )
+            .unwrap();
+        assert_eq!(permanent_plan.items[0].action, "PRESERVE");
+        assert_eq!(
+            permanent_plan.items[0].reason_code,
+            "PERMANENT_DIRECTORY_UNSUPPORTED"
+        );
+        let plan = service
+            .create_removal_plan(
+                &CreateRemovalPlan {
+                    version: CONTRACT_VERSION,
+                    cask_id: cask.id.clone(),
+                    resource_ids: vec![managed.id.clone()],
+                    category_key: None,
+                    permanent: false,
+                },
+                "test",
+            )
+            .unwrap();
+        assert_eq!(plan.items[0].action, "TRASH");
+        let approved = service
+            .create_removal_plan(
+                &CreateRemovalPlan {
+                    version: CONTRACT_VERSION,
+                    cask_id: cask.id,
+                    resource_ids: vec![managed.id],
+                    category_key: None,
+                    permanent: false,
+                },
+                "test",
+            )
+            .unwrap();
+        service
+            .approve_removal_plan(
+                &ApproveRemovalPlan {
+                    version: CONTRACT_VERSION,
+                    id: approved.id.clone(),
+                    plan_hash: approved.plan_hash.clone(),
+                },
+                "test",
+            )
+            .unwrap();
+        fs::write(
+            std::path::Path::new(&managed.path)
+                .join("nested")
+                .join("note.txt"),
+            b"changed",
+        )
+        .unwrap();
+        assert_eq!(
+            service
+                .approve_removal_plan(
+                    &ApproveRemovalPlan {
+                        version: CONTRACT_VERSION,
+                        id: plan.id,
+                        plan_hash: plan.plan_hash,
+                    },
+                    "test"
+                )
+                .unwrap_err()
+                .code,
+            "PLAN_CHANGED"
+        );
+        let result = service
+            .execute_removal_plan(
+                &ExecuteRemovalPlan {
+                    version: CONTRACT_VERSION,
+                    id: approved.id,
+                    plan_hash: approved.plan_hash,
+                    confirm_permanent: false,
+                },
+                "test",
+            )
+            .unwrap();
+        assert_eq!(
+            result.items[0].result_code.as_deref(),
+            Some("REVALIDATION_FAILED")
+        );
+        assert!(std::path::Path::new(&managed.path).exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "full directory cleanup setup and journal assertion"
+    )]
+    fn approved_directory_cleanup_uses_journal_and_preserves_source() {
+        struct FakeDirectoryTrash {
+            storage: LocalStorage,
+            stash: PathBuf,
+        }
+        impl casklet_application::removal::RemovalInspection for FakeDirectoryTrash {
+            fn verify_managed(
+                &self,
+                root: &str,
+                candidate: &casklet_application::removal::RemovalCandidate,
+            ) -> Option<String> {
+                casklet_application::removal::RemovalInspection::verify_managed(
+                    &self.storage,
+                    root,
+                    candidate,
+                )
+            }
+            fn trash_verified(
+                &self,
+                root: &str,
+                candidate: &casklet_application::removal::RemovalCandidate,
+                identity: &str,
+                _run_id: &str,
+                _item_id: &str,
+            ) -> Result<(), String> {
+                if candidate.kind != "DIRECTORY"
+                    || self.verify_managed(root, candidate).as_deref() != Some(identity)
+                {
+                    return Err("directory changed".into());
+                }
+                fs::rename(&candidate.path, &self.stash).map_err(|e| e.to_string())
+            }
+        }
+        let root =
+            std::env::temp_dir().join(format!("casklet-m4-dir-run-{}", uuid::Uuid::new_v4()));
+        let source = root.join("source-directory");
+        fs::create_dir_all(source.join("nested")).unwrap();
+        fs::write(source.join("nested").join("note.txt"), b"original").unwrap();
+        let storage_root = root.join("casks");
+        let repository = SqliteCasks::open(root.join("state.db")).unwrap();
+        let service = CaskService {
+            repository: repository.clone(),
+            storage: LocalStorage::new(storage_root.clone()),
+        };
+        let cask = service
+            .create(
+                &CreateCask {
+                    version: CONTRACT_VERSION,
+                    name: "Directory".into(),
+                },
+                "test",
+            )
+            .unwrap();
+        let managed = service
+            .add_resource(
+                &AddResource {
+                    version: CONTRACT_VERSION,
+                    cask_id: cask.id.clone(),
+                    source_path: source.to_string_lossy().into_owned(),
+                    mode: AddMode::Copy,
+                    category_key: "other".into(),
+                },
+                "test",
+                &|_, _| {},
+            )
+            .unwrap();
+        let plan = service
+            .create_removal_plan(
+                &CreateRemovalPlan {
+                    version: CONTRACT_VERSION,
+                    cask_id: cask.id,
+                    resource_ids: vec![managed.id],
+                    category_key: None,
+                    permanent: false,
+                },
+                "test",
+            )
+            .unwrap();
+        assert_eq!(plan.items[0].action, "TRASH");
+        service
+            .approve_removal_plan(
+                &ApproveRemovalPlan {
+                    version: CONTRACT_VERSION,
+                    id: plan.id.clone(),
+                    plan_hash: plan.plan_hash.clone(),
+                },
+                "test",
+            )
+            .unwrap();
+        let stash = root.join("fake-recycle-directory");
+        let executor = CaskService {
+            repository,
+            storage: FakeDirectoryTrash {
+                storage: LocalStorage::new(storage_root),
+                stash: stash.clone(),
+            },
+        };
+        let result = executor
+            .execute_removal_plan(
+                &ExecuteRemovalPlan {
+                    version: CONTRACT_VERSION,
+                    id: plan.id,
+                    plan_hash: plan.plan_hash,
+                    confirm_permanent: false,
+                },
+                "test",
+            )
+            .unwrap();
+        assert_eq!(result.items[0].result_code.as_deref(), Some("TRASHED"));
+        assert!(stash.join("nested").join("note.txt").exists());
+        assert!(!std::path::Path::new(&managed.path).exists());
+        assert!(source.join("nested").join("note.txt").exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn permanent_file_requires_opt_in_and_confirmation() {
+        let root =
+            std::env::temp_dir().join(format!("casklet-m4-permanent-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let source = root.join("source.txt");
+        fs::write(&source, b"keep source").unwrap();
+        let service = CaskService {
+            repository: SqliteCasks::open(root.join("state.db")).unwrap(),
+            storage: LocalStorage::new(root.join("casks")),
+        };
+        let cask = service
+            .create(
+                &CreateCask {
+                    version: CONTRACT_VERSION,
+                    name: "Permanent".into(),
+                },
+                "test",
+            )
+            .unwrap();
+        let managed = service
+            .add_resource(
+                &AddResource {
+                    version: CONTRACT_VERSION,
+                    cask_id: cask.id.clone(),
+                    source_path: source.to_string_lossy().into_owned(),
+                    mode: AddMode::Copy,
+                    category_key: "other".into(),
+                },
+                "test",
+                &|_, _| {},
+            )
+            .unwrap();
+        let plan = service
+            .create_removal_plan(
+                &CreateRemovalPlan {
+                    version: CONTRACT_VERSION,
+                    cask_id: cask.id,
+                    resource_ids: vec![managed.id],
+                    category_key: None,
+                    permanent: true,
+                },
+                "test",
+            )
+            .unwrap();
+        assert_eq!(plan.items[0].action, "DELETE_PERMANENTLY");
+        service
+            .approve_removal_plan(
+                &ApproveRemovalPlan {
+                    version: CONTRACT_VERSION,
+                    id: plan.id.clone(),
+                    plan_hash: plan.plan_hash.clone(),
+                },
+                "test",
+            )
+            .unwrap();
+        let request = ExecuteRemovalPlan {
+            version: CONTRACT_VERSION,
+            id: plan.id,
+            plan_hash: plan.plan_hash,
+            confirm_permanent: false,
+        };
+        assert_eq!(
+            service
+                .execute_removal_plan(&request, "test")
+                .unwrap_err()
+                .code,
+            "PERMANENT_CONFIRMATION_REQUIRED"
+        );
+        assert!(std::path::Path::new(&managed.path).exists());
+        let result = service
+            .execute_removal_plan(
+                &ExecuteRemovalPlan {
+                    confirm_permanent: true,
+                    ..request
+                },
+                "test",
+            )
+            .unwrap();
+        assert_eq!(
+            result.items[0].result_code.as_deref(),
+            Some("PERMANENTLY_DELETED")
+        );
+        assert!(!std::path::Path::new(&managed.path).exists());
+        assert!(source.exists());
+        fs::remove_dir_all(root).unwrap();
+    }
     #[test]
     fn migration_and_restart() {
         let root = std::env::temp_dir().join(format!("casklet-m1-{}", uuid::Uuid::new_v4()));
@@ -252,7 +603,7 @@ mod tests {
             .unwrap()
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(schema_version, 5);
+        assert_eq!(schema_version, 6);
         assert_eq!(
             reopened
                 .list(
@@ -348,6 +699,7 @@ mod tests {
                     cask_id: cask.id.clone(),
                     resource_ids: vec![],
                     category_key: None,
+                    permanent: false,
                 },
                 "test",
             )
@@ -416,6 +768,7 @@ mod tests {
                     cask_id: cask.id.clone(),
                     resource_ids: vec![managed.id.clone()],
                     category_key: None,
+                    permanent: false,
                 },
                 "test",
             )
@@ -443,6 +796,7 @@ mod tests {
                     cask_id: cask.id.clone(),
                     resource_ids: vec![managed.id.clone()],
                     category_key: None,
+                    permanent: false,
                 },
                 "test",
             )
@@ -464,7 +818,8 @@ mod tests {
                         version: CONTRACT_VERSION,
                         cask_id: cask.id,
                         resource_ids: vec![managed.id.clone(), managed.id],
-                        category_key: None
+                        category_key: None,
+                        permanent: false,
                     },
                     "test"
                 )
@@ -538,6 +893,7 @@ mod tests {
                     cask_id: cask.id.clone(),
                     resource_ids: vec![managed.id.clone()],
                     category_key: None,
+                    permanent: false,
                 },
                 "test",
             )
@@ -703,6 +1059,7 @@ mod tests {
                     cask_id: cask.id.clone(),
                     resource_ids: vec![],
                     category_key: None,
+                    permanent: false,
                 },
                 "test",
             )
@@ -731,6 +1088,7 @@ mod tests {
                     version: CONTRACT_VERSION,
                     id: plan.id,
                     plan_hash: plan.plan_hash,
+                    confirm_permanent: false,
                 },
                 "test",
             )
@@ -816,6 +1174,7 @@ mod tests {
                     cask_id: cask.id.clone(),
                     resource_ids: vec![],
                     category_key: None,
+                    permanent: false,
                 },
                 "test",
             )
@@ -842,6 +1201,7 @@ mod tests {
                     version: CONTRACT_VERSION,
                     id: plan.id,
                     plan_hash: plan.plan_hash,
+                    confirm_permanent: false,
                 },
                 "test",
             )
@@ -930,6 +1290,7 @@ mod tests {
                     cask_id: cask.id.clone(),
                     resource_ids: vec![],
                     category_key: None,
+                    permanent: false,
                 },
                 "test",
             )
@@ -970,6 +1331,7 @@ mod tests {
                     version: CONTRACT_VERSION,
                     id: plan.id,
                     plan_hash: plan.plan_hash,
+                    confirm_permanent: false,
                 },
                 "test",
             )
@@ -1059,6 +1421,7 @@ mod tests {
                     cask_id: cask.id.clone(),
                     resource_ids: vec![],
                     category_key: None,
+                    permanent: false,
                 },
                 "test",
             )
@@ -1087,6 +1450,7 @@ mod tests {
                     version: CONTRACT_VERSION,
                     id: plan.id,
                     plan_hash: plan.plan_hash,
+                    confirm_permanent: false,
                 },
                 "test",
             )
@@ -1136,6 +1500,181 @@ mod tests {
         assert!(stash.exists());
         drop(connection);
         drop(executor);
+        drop(service);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn removal_hard_exit_helper() {
+        let Ok(root_text) = std::env::var("CASKLET_TEST_REMOVAL_EXIT_ROOT") else {
+            return;
+        };
+        #[expect(
+            clippy::items_after_statements,
+            reason = "fault adapter is local to the helper"
+        )]
+        struct ExitAfterQuarantine(LocalStorage);
+        #[expect(
+            clippy::items_after_statements,
+            reason = "fault adapter is local to the helper"
+        )]
+        impl casklet_application::removal::RemovalInspection for ExitAfterQuarantine {
+            fn verify_managed(
+                &self,
+                root: &str,
+                candidate: &casklet_application::removal::RemovalCandidate,
+            ) -> Option<String> {
+                casklet_application::removal::RemovalInspection::verify_managed(
+                    &self.0, root, candidate,
+                )
+            }
+            fn trash_verified(
+                &self,
+                root: &str,
+                candidate: &casklet_application::removal::RemovalCandidate,
+                identity: &str,
+                run_id: &str,
+                item_id: &str,
+            ) -> Result<(), String> {
+                assert_eq!(
+                    self.verify_managed(root, candidate).as_deref(),
+                    Some(identity)
+                );
+                let quarantine = std::path::Path::new(root)
+                    .join(".casklet")
+                    .join("removal-staging")
+                    .join(run_id)
+                    .join(item_id);
+                fs::create_dir_all(quarantine.parent().unwrap()).unwrap();
+                fs::rename(&candidate.path, &quarantine).unwrap();
+                std::process::exit(74);
+            }
+        }
+        let root = PathBuf::from(root_text);
+        let service = CaskService {
+            repository: SqliteCasks::open(root.join("state.db")).unwrap(),
+            storage: ExitAfterQuarantine(LocalStorage::new(root.join("casks"))),
+        };
+        let plan_id = std::env::var("CASKLET_TEST_REMOVAL_EXIT_PLAN").unwrap();
+        let hash = std::env::var("CASKLET_TEST_REMOVAL_EXIT_HASH").unwrap();
+        let _ = service.execute_removal_plan(
+            &ExecuteRemovalPlan {
+                version: CONTRACT_VERSION,
+                id: plan_id,
+                plan_hash: hash,
+                confirm_permanent: false,
+            },
+            "test",
+        );
+        panic!("removal fault point was not reached");
+    }
+
+    #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "child-process fault test verifies the real durable boundary after quarantine"
+    )]
+    fn hard_exit_after_quarantine_requires_preserved_recovery() {
+        let root = std::env::temp_dir().join(format!("casklet-m4-exit-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let repository = SqliteCasks::open(root.join("state.db")).unwrap();
+        let service = CaskService {
+            repository: repository.clone(),
+            storage: LocalStorage::new(root.join("casks")),
+        };
+        let cask = service
+            .create(
+                &CreateCask {
+                    version: CONTRACT_VERSION,
+                    name: "Crash".into(),
+                },
+                "test",
+            )
+            .unwrap();
+        let source = root.join("source.txt");
+        fs::write(&source, b"crash-safe").unwrap();
+        let managed = service
+            .add_resource(
+                &AddResource {
+                    version: CONTRACT_VERSION,
+                    cask_id: cask.id.clone(),
+                    source_path: source.to_string_lossy().into_owned(),
+                    mode: AddMode::Copy,
+                    category_key: "other".into(),
+                },
+                "test",
+                &|_, _| {},
+            )
+            .unwrap();
+        let plan = service
+            .create_removal_plan(
+                &CreateRemovalPlan {
+                    version: CONTRACT_VERSION,
+                    cask_id: cask.id.clone(),
+                    resource_ids: vec![],
+                    category_key: None,
+                    permanent: false,
+                },
+                "test",
+            )
+            .unwrap();
+        service
+            .approve_removal_plan(
+                &ApproveRemovalPlan {
+                    version: CONTRACT_VERSION,
+                    id: plan.id.clone(),
+                    plan_hash: plan.plan_hash.clone(),
+                },
+                "test",
+            )
+            .unwrap();
+        drop(service);
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "tests::removal_hard_exit_helper", "--nocapture"])
+            .env("CASKLET_TEST_REMOVAL_EXIT_ROOT", &root)
+            .env("CASKLET_TEST_REMOVAL_EXIT_PLAN", &plan.id)
+            .env("CASKLET_TEST_REMOVAL_EXIT_HASH", &plan.plan_hash)
+            .output()
+            .unwrap();
+        assert_eq!(
+            output.status.code(),
+            Some(74),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let repository = SqliteCasks::open(root.join("state.db")).unwrap();
+        repository
+            .detect_abandoned_removals_with(|_| false)
+            .unwrap();
+        let recovered =
+            casklet_application::removal::RemovalRepository::get_plan(&repository, &plan.id)
+                .unwrap()
+                .unwrap();
+        assert_eq!(recovered.state, "PARTIAL");
+        assert_eq!(recovered.items[0].state, "UNKNOWN");
+        let quarantine = std::path::Path::new(&cask.managed_storage_root)
+            .join(".casklet")
+            .join("removal-staging")
+            .join(recovered.run_id.as_deref().unwrap())
+            .join(&recovered.items[0].id);
+        assert!(quarantine.exists());
+        assert!(!std::path::Path::new(&managed.path).exists());
+        assert!(source.exists());
+        let service = CaskService {
+            repository,
+            storage: LocalStorage::new(root.join("casks")),
+        };
+        let closed = service
+            .close_uncertain_removal(
+                &CloseRemovalRun {
+                    version: CONTRACT_VERSION,
+                    run_id: recovered.run_id.unwrap(),
+                },
+                "test",
+            )
+            .unwrap();
+        assert_eq!(closed.items[0].state, "PRESERVED");
+        assert!(quarantine.exists());
         drop(service);
         fs::remove_dir_all(root).unwrap();
     }

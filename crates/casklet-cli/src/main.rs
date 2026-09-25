@@ -161,6 +161,8 @@ enum PlanAction {
         resource: Vec<String>,
         #[arg(long)]
         category: Option<String>,
+        #[arg(long)]
+        permanent: bool,
     },
     Get {
         id: String,
@@ -178,6 +180,8 @@ enum PlanAction {
         hash: String,
         #[arg(long)]
         yes: bool,
+        #[arg(long)]
+        confirm_permanent: bool,
     },
     #[cfg(feature = "reviewed-removal")]
     ClosePreserved {
@@ -433,6 +437,7 @@ fn main() -> ExitCode {
                     cask_id,
                     resource,
                     category,
+                    permanent,
                 },
         } => service
             .create_removal_plan(
@@ -441,6 +446,7 @@ fn main() -> ExitCode {
                     cask_id,
                     resource_ids: resource,
                     category_key: category,
+                    permanent,
                 },
                 &correlation_id,
             )
@@ -471,7 +477,13 @@ fn main() -> ExitCode {
             .map(|plan| render_plan(&plan, cli.output)),
         #[cfg(feature = "reviewed-removal")]
         Command::Plan {
-            action: PlanAction::Execute { id, hash, yes },
+            action:
+                PlanAction::Execute {
+                    id,
+                    hash,
+                    yes,
+                    confirm_permanent,
+                },
         } => confirm_removal(&id, yes, cli.no_input)
             .and_then(|()| {
                 service.execute_removal_plan(
@@ -479,6 +491,7 @@ fn main() -> ExitCode {
                         version: CONTRACT_VERSION,
                         id,
                         plan_hash: hash,
+                        confirm_permanent,
                     },
                     &correlation_id,
                 )
