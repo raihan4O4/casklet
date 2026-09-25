@@ -41,7 +41,7 @@ impl SqliteCasks {
                     .map_err(|e| e.to_string())?;
                 transaction.commit().map_err(|e| e.to_string())?;
             }
-            1..=4 => {}
+            1..=5 => {}
             _ => return Err(format!("unsupported database schema version: {version}")),
         }
         if version == 1 || version == 0 {
@@ -71,6 +71,18 @@ impl SqliteCasks {
                 .map_err(|e| e.to_string())?;
             transaction
                 .execute_batch("PRAGMA user_version=4")
+                .map_err(|e| e.to_string())?;
+            transaction.commit().map_err(|e| e.to_string())?;
+        }
+        if version <= 4 {
+            let transaction = connection.transaction().map_err(|e| e.to_string())?;
+            transaction
+                .execute_batch(include_str!(
+                    "../../../migrations/0005_removal_execution.sql"
+                ))
+                .map_err(|e| e.to_string())?;
+            transaction
+                .execute_batch("PRAGMA user_version=5")
                 .map_err(|e| e.to_string())?;
             transaction.commit().map_err(|e| e.to_string())?;
         }
@@ -175,6 +187,7 @@ pub fn development_service() -> Result<CaskService<SqliteCasks, LocalStorage>, S
     );
     let repository = SqliteCasks::open(root.join("db/casklet.db"))?;
     repository.detect_abandoned_operations()?;
+    repository.detect_abandoned_removals()?;
     let service = CaskService {
         repository,
         storage: LocalStorage::new(root.join("casks")),
@@ -237,7 +250,7 @@ mod tests {
             .unwrap()
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(schema_version, 4);
+        assert_eq!(schema_version, 5);
         assert_eq!(
             reopened
                 .list(
@@ -282,7 +295,7 @@ mod tests {
         clippy::too_many_lines,
         reason = "integration fixture covers persistence, copy, reference, and immutable preview"
     )]
-    fn removal_preview_preserves_unverified_managed_and_detaches_references() {
+    fn removal_preview_tracks_verified_files_and_preserves_replacements() {
         let root = std::env::temp_dir().join(format!("casklet-m4-plan-{}", uuid::Uuid::new_v4()));
         fs::create_dir_all(&root).unwrap();
         let service = CaskService {
@@ -344,7 +357,7 @@ mod tests {
                 .find(|i| i.resource_id == managed.id)
                 .unwrap()
                 .action,
-            "PRESERVE"
+            "TRASH"
         );
         assert_eq!(
             plan.items
@@ -368,6 +381,29 @@ mod tests {
         assert_eq!(loaded.items.len(), 2);
         assert!(std::path::Path::new(&managed.path).exists());
         assert!(source.exists());
+        fs::remove_file(&managed.path).unwrap();
+        fs::write(&managed.path, b"managed").unwrap();
+        let replaced = service
+            .create_removal_plan(
+                &CreateRemovalPlan {
+                    version: CONTRACT_VERSION,
+                    cask_id: cask.id.clone(),
+                    resource_ids: vec![managed.id.clone()],
+                    category_key: None,
+                },
+                "test",
+            )
+            .unwrap();
+        assert_eq!(replaced.items[0].action, "PRESERVE");
+        assert_eq!(
+            loaded
+                .items
+                .iter()
+                .find(|i| i.resource_id == managed.id)
+                .unwrap()
+                .action,
+            "TRASH"
+        );
         assert_eq!(
             service
                 .create_removal_plan(
@@ -382,6 +418,125 @@ mod tests {
                 .unwrap_err()
                 .code,
             "INVALID_SCOPE"
+        );
+        drop(service);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "integration fixture covers journal uncertainty and mutation lock after restart"
+    )]
+    fn interrupted_removal_run_keeps_its_lock_and_unknown_item() {
+        let root = std::env::temp_dir().join(format!("casklet-m4-run-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let service = CaskService {
+            repository: SqliteCasks::open(root.join("state.db")).unwrap(),
+            storage: LocalStorage::new(root.join("casks")),
+        };
+        let cask = service
+            .create(
+                &CreateCask {
+                    version: CONTRACT_VERSION,
+                    name: "Recovery".into(),
+                },
+                "test",
+            )
+            .unwrap();
+        let source = root.join("source.txt");
+        fs::write(&source, b"keep").unwrap();
+        let managed = service
+            .add_resource(
+                &AddResource {
+                    version: CONTRACT_VERSION,
+                    cask_id: cask.id.clone(),
+                    source_path: source.to_string_lossy().into_owned(),
+                    mode: AddMode::Copy,
+                    category_key: "other".into(),
+                },
+                "test",
+                &|_, _| {},
+            )
+            .unwrap();
+        let plan = service
+            .create_removal_plan(
+                &CreateRemovalPlan {
+                    version: CONTRACT_VERSION,
+                    cask_id: cask.id.clone(),
+                    resource_ids: vec![managed.id.clone()],
+                    category_key: None,
+                },
+                "test",
+            )
+            .unwrap();
+        let run_id = uuid::Uuid::new_v4().to_string();
+        let connection = service.repository.connection().unwrap();
+        connection
+            .execute(
+                "UPDATE removal_plans SET state='EXECUTING' WHERE id=?1",
+                [&plan.id],
+            )
+            .unwrap();
+        connection.execute("INSERT INTO removal_runs(id,plan_id,cask_id,state,owner_pid,started_at_ms,updated_at_ms) VALUES (?1,?2,?3,'RUNNING','4294967295',1,1)", params![run_id,plan.id,cask.id]).unwrap();
+        connection
+            .execute(
+                "INSERT INTO removal_locks(cask_id,run_id,acquired_at_ms) VALUES (?1,?2,1)",
+                params![cask.id, run_id],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "UPDATE removal_plan_items SET run_id=?1,started_at_ms=1 WHERE id=?2",
+                params![run_id, plan.items[0].id],
+            )
+            .unwrap();
+        drop(connection);
+        service
+            .repository
+            .detect_abandoned_removals_with(|_| false)
+            .unwrap();
+        let connection = service.repository.connection().unwrap();
+        let state: String = connection
+            .query_row(
+                "SELECT state FROM removal_runs WHERE id=?1",
+                [&run_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let item_state: String = connection
+            .query_row(
+                "SELECT state FROM removal_plan_items WHERE id=?1",
+                [&plan.items[0].id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let lock_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM removal_locks WHERE cask_id=?1",
+                [&cask.id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(state, "RECOVERY_REQUIRED");
+        assert_eq!(item_state, "UNKNOWN");
+        assert_eq!(lock_count, 1);
+        assert!(std::path::Path::new(&managed.path).exists());
+        drop(connection);
+        assert!(
+            service
+                .add_resource(
+                    &AddResource {
+                        version: CONTRACT_VERSION,
+                        cask_id: cask.id,
+                        source_path: source.to_string_lossy().into_owned(),
+                        mode: AddMode::Copy,
+                        category_key: "other".into(),
+                    },
+                    "test",
+                    &|_, _| {}
+                )
+                .is_err()
         );
         drop(service);
         fs::remove_dir_all(root).unwrap();

@@ -8,7 +8,7 @@ Milestones 1–3 recorded paths, sizes, and association metadata, but did not pe
 
 ## Decision
 
-The removal planner records immutable previews but proposes `PRESERVE` for a managed item unless a recorded identity matches the current observation. The Milestone 4 migration adds a nullable identity field; existing records remain null. No approval or execution endpoint is exposed in this slice. Identity recording and platform-specific revalidation must be implemented and tested before a plan can authorize trash or deletion.
+The removal planner records immutable previews but proposes `PRESERVE` for a managed item unless a recorded identity matches the current observation. The Milestone 4 migration adds a nullable identity field; existing records remain null. Newly staged managed files record Windows volume, file index, creation time, and content digest after the staged object is verified at its final location. Recovery records this identity only when it can match the staged object to that final location; an already present final path remains unverified. No approval or execution endpoint is exposed in this slice. A recorded identity makes an item eligible for a `TRASH` proposal, but does not itself authorize execution. Platform-specific, immediate revalidation and an independent security review remain required before execution is exposed.
 
 The domain policy also requires explicit management, containment, provenance, relationship, removal policy, no other association, presence, a narrow path, and a complete observation. A plan hash binds preview content to its snapshot for future approval checks, but is not a signature or a substitute for live revalidation.
 

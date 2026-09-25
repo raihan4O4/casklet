@@ -2,6 +2,7 @@
 use super::LocalStorage;
 use casklet_application::resource::{FileIdentity, IntakePaths, Observation, ResourceStorage};
 use casklet_domain::resource::{IntakeMode, ResourceKind};
+use sha2::{Digest, Sha256};
 use std::{
     collections::VecDeque,
     fs::{self, File, OpenOptions},
@@ -9,6 +10,38 @@ use std::{
     path::Path,
     sync::Arc,
 };
+
+#[cfg(windows)]
+fn recordable_file_identity(path: &Path) -> Option<(String, same_file::Handle)> {
+    let handle = winapi_util::Handle::from_path_any(path).ok()?;
+    let info = winapi_util::file::information(&handle).ok()?;
+    let file_identity = same_file::Handle::from_file(handle.as_file().try_clone().ok()?).ok()?;
+    let mut hash = Sha256::new();
+    let mut reader = handle.as_file();
+    let mut buffer = vec![0_u8; 1024 * 1024].into_boxed_slice();
+    loop {
+        let n = reader.read(&mut buffer).ok()?;
+        if n == 0 {
+            break;
+        }
+        hash.update(&buffer[..n]);
+    }
+    Some((
+        format!(
+            "{:016x}:{:016x}:{:016x}:{:x}",
+            info.volume_serial_number(),
+            info.file_index(),
+            info.creation_time()?,
+            hash.finalize()
+        ),
+        file_identity,
+    ))
+}
+
+#[cfg(not(windows))]
+fn recordable_file_identity(_path: &Path) -> Option<(String, same_file::Handle)> {
+    None
+}
 
 const MAX_ENTRIES: u64 = 100_000;
 const MAX_DEPTH: usize = 64;
@@ -169,6 +202,24 @@ fn inspect_path(source: &str, progress: &dyn Fn(u64, u64)) -> Result<Observation
         .ok()
         .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
         .map_or(0, |d| d.as_nanos());
+    let (recordable_identity, handle) = if kind == ResourceKind::File {
+        match recordable_file_identity(&path) {
+            Some((identity, handle)) => (Some(identity), handle),
+            None => (
+                None,
+                same_file::Handle::from_path(&path).map_err(|e| e.to_string())?,
+            ),
+        }
+    } else {
+        (
+            None,
+            same_file::Handle::from_path(&path).map_err(|e| e.to_string())?,
+        )
+    };
+    let file_identity = LocalFileIdentity(handle);
+    if !file_identity.matches_path(&path.to_string_lossy())? {
+        return Err("Path identity changed during inspection".into());
+    }
     Ok(Observation {
         source_path: path.to_string_lossy().into_owned(),
         name,
@@ -176,9 +227,8 @@ fn inspect_path(source: &str, progress: &dyn Fn(u64, u64)) -> Result<Observation
         size_bytes: Some(size),
         unknown_entries: unknown,
         identity: format!("{}:{size}:{entries}:{modified}", kind.code()),
-        file_identity: Arc::new(LocalFileIdentity(
-            same_file::Handle::from_path(&path).map_err(|e| e.to_string())?,
-        )),
+        recordable_identity,
+        file_identity: Arc::new(file_identity),
     })
 }
 
@@ -322,7 +372,7 @@ impl ResourceStorage for LocalStorage {
         mode: IntakeMode,
         progress: &dyn Fn(u64, u64),
         cancel: &dyn Fn() -> bool,
-    ) -> Result<(), String> {
+    ) -> Result<Option<String>, String> {
         let source = Path::new(&observed.source_path);
         let staging = Path::new(&paths.staging);
         let final_path = Path::new(&paths.final_path);
@@ -413,11 +463,14 @@ impl ResourceStorage for LocalStorage {
             return Err("Cancellation requested; staged data preserved".into());
         }
         fs::rename(staging, final_path).map_err(|e| e.to_string())?;
+        if !verified.file_identity.matches_path(&paths.final_path)? {
+            return Err("Managed item identity changed after rename".into());
+        }
         progress(
             observed.size_bytes.unwrap_or(0),
             observed.size_bytes.unwrap_or(0),
         );
-        Ok(())
+        Ok(verified.recordable_identity)
     }
     fn finish_staged(
         &self,
@@ -425,7 +478,7 @@ impl ResourceStorage for LocalStorage {
         resource: &casklet_domain::resource::Resource,
         paths: &IntakePaths,
         observed: &Observation,
-    ) -> Result<(), String> {
+    ) -> Result<Option<String>, String> {
         let expected = self.allocate(cask, &resource.id, &resource.name);
         if expected.staging != paths.staging || expected.final_path != paths.final_path {
             return Err("Recovery paths no longer match managed allocation".into());
@@ -447,7 +500,7 @@ impl ResourceStorage for LocalStorage {
         if !observed.file_identity.matches_path(&paths.final_path)? {
             return Err("Managed item identity changed after recovery rename".into());
         }
-        Ok(())
+        Ok(observed.recordable_identity.clone())
     }
 }
 

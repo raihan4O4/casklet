@@ -27,6 +27,7 @@ pub struct Observation {
     pub size_bytes: Option<u64>,
     pub unknown_entries: u64,
     pub identity: String,
+    pub recordable_identity: Option<String>,
     pub file_identity: Arc<dyn FileIdentity>,
 }
 
@@ -107,7 +108,7 @@ pub trait ResourceStorage {
         mode: IntakeMode,
         progress: &dyn Fn(u64, u64),
         cancel: &dyn Fn() -> bool,
-    ) -> Result<(), String>;
+    ) -> Result<Option<String>, String>;
     /// # Errors
     /// Renames a verified staged item into its recorded managed destination.
     fn finish_staged(
@@ -116,7 +117,7 @@ pub trait ResourceStorage {
         resource: &Resource,
         paths: &IntakePaths,
         observed: &Observation,
-    ) -> Result<(), String>;
+    ) -> Result<Option<String>, String>;
 }
 
 impl<
@@ -253,23 +254,50 @@ impl<
                     correlation_id,
                 ));
             };
-            if let Err(error) = materialized {
-                let code = if self
-                    .repository
-                    .cancellation_requested(&op_id)
-                    .unwrap_or(false)
-                {
-                    "CANCELLED_STAGING_PRESERVED"
-                } else {
-                    "MATERIALIZE_FAILED"
-                };
-                let _ = self.repository.fail_intake(&op_id, code);
-                return Err(err("INTAKE_RECOVERY_REQUIRED", error, correlation_id));
-            }
+            let materialized_identity = match materialized {
+                Ok(identity) => identity,
+                Err(error) => {
+                    let code = if self
+                        .repository
+                        .cancellation_requested(&op_id)
+                        .unwrap_or(false)
+                    {
+                        "CANCELLED_STAGING_PRESERVED"
+                    } else {
+                        "MATERIALIZE_FAILED"
+                    };
+                    let _ = self.repository.fail_intake(&op_id, code);
+                    return Err(err("INTAKE_RECOVERY_REQUIRED", error, correlation_id));
+                }
+            };
             if let Err(error) = self.repository.materialized_intake(&op_id) {
                 let _ = self.repository.fail_intake(&op_id, "STEP_JOURNAL_FAILED");
                 return Err(err("INTAKE_RECOVERY_REQUIRED", error, correlation_id));
             }
+            let final_observation = match self.storage.inspect(&paths.final_path, &|_, _| {}) {
+                Ok(value) => value,
+                Err(error) => {
+                    let _ = self
+                        .repository
+                        .fail_intake(&op_id, "FINAL_VERIFICATION_FAILED");
+                    return Err(err("INTAKE_RECOVERY_REQUIRED", error, correlation_id));
+                }
+            };
+            if final_observation.kind != resource.kind
+                || final_observation.size_bytes != resource.size_bytes
+                || final_observation.unknown_entries != 0
+                || final_observation.recordable_identity != materialized_identity
+            {
+                let _ = self
+                    .repository
+                    .fail_intake(&op_id, "FINAL_VERIFICATION_FAILED");
+                return Err(err(
+                    "INTAKE_RECOVERY_REQUIRED",
+                    "Final item changed; recovery required".into(),
+                    correlation_id,
+                ));
+            }
+            resource.identity_key = final_observation.recordable_identity;
             if let Err(error) = self.repository.commit_resource(&resource, Some(&op_id)) {
                 let _ = self.repository.fail_intake(&op_id, "REGISTRATION_FAILED");
                 return Err(err("INTAKE_RECOVERY_REQUIRED", error, correlation_id));

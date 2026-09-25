@@ -237,25 +237,32 @@ impl<
         }
         let stage = self.storage.path_status(&pending.paths.staging);
         let final_status = self.storage.path_status(&pending.paths.final_path);
-        if stage.starts_with("PRESENT_") && final_status == "MISSING" {
+        let recovered_identity = if stage.starts_with("PRESENT_") && final_status == "MISSING" {
             let observed =
                 self.verify_recovery_item(&pending.paths.staging, pending, correlation_id)?;
             self.storage
                 .finish_staged(&cask, &pending.resource, &pending.paths, &observed)
-                .map_err(|e| api_error("RECOVERY_REQUIRED", e, correlation_id))?;
+                .map_err(|e| api_error("RECOVERY_REQUIRED", e, correlation_id))?
         } else if stage != "MISSING" || !final_status.starts_with("PRESENT_") {
             return Err(api_error(
                 "RECOVERY_REQUIRED",
                 "Staging and managed destination are ambiguous; files preserved".into(),
                 correlation_id,
             ));
-        }
-        self.verify_recovery_item(&pending.paths.final_path, pending, correlation_id)?;
+        } else {
+            None
+        };
+        let final_observation =
+            self.verify_recovery_item(&pending.paths.final_path, pending, correlation_id)?;
+        let mut resource = pending.resource.clone();
+        resource.identity_key = recovered_identity.filter(|identity| {
+            final_observation.recordable_identity.as_deref() == Some(identity.as_str())
+        });
         self.repository
             .materialized_intake(id)
             .map_err(|e| api_error("RECOVERY_REQUIRED", e, correlation_id))?;
         self.repository
-            .commit_resource(&pending.resource, Some(id))
+            .commit_resource(&resource, Some(id))
             .map_err(|e| api_error("RECOVERY_REQUIRED", e, correlation_id))?;
         self.repository
             .complete_intake(id)

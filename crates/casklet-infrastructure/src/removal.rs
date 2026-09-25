@@ -215,9 +215,67 @@ impl RemovalInspection for LocalStorage {
         {
             return None;
         }
-        if candidate.recorded_identity.as_deref() != Some(observed.identity.as_str()) {
+        let current = observed.recordable_identity?;
+        if candidate.recorded_identity.as_deref() != Some(current.as_str()) {
             return None;
         }
-        Some(observed.identity)
+        Some(current)
+    }
+}
+
+impl SqliteCasks {
+    /// Marks interrupted cleanup as uncertain and keeps its mutation lock for inspection.
+    /// # Errors
+    /// Returns a persistence error.
+    pub fn detect_abandoned_removals(&self) -> Result<(), String> {
+        self.detect_abandoned_removals_with(super::operations::owner_process_alive)
+    }
+
+    pub(super) fn detect_abandoned_removals_with(
+        &self,
+        owner_alive: impl Fn(&str) -> bool,
+    ) -> Result<(), String> {
+        let mut connection = self.connection()?;
+        let mut statement = connection
+            .prepare("SELECT r.id,r.owner_pid,l.run_id FROM removal_runs r LEFT JOIN removal_locks l ON l.run_id=r.id WHERE r.state='RUNNING'")
+            .map_err(|e| e.to_string())?;
+        let runs = statement
+            .query_map([], |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                ))
+            })
+            .map_err(|e| e.to_string())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())?;
+        drop(statement);
+        for (run_id, owner, lock) in runs {
+            if lock.is_some() && owner_alive(&owner) {
+                continue;
+            }
+            let transaction = connection.transaction().map_err(|e| e.to_string())?;
+            transaction
+                .execute(
+                    "UPDATE removal_plan_items SET state='UNKNOWN',result_code='INTERRUPTED',finished_at_ms=CAST(unixepoch('subsec')*1000 AS INTEGER) WHERE run_id=?1 AND state='PENDING' AND started_at_ms IS NOT NULL",
+                    [&run_id],
+                )
+                .map_err(|e| e.to_string())?;
+            transaction
+                .execute(
+                    "UPDATE removal_runs SET state='RECOVERY_REQUIRED',error_code='INTERRUPTED',updated_at_ms=CAST(unixepoch('subsec')*1000 AS INTEGER) WHERE id=?1 AND state='RUNNING'",
+                    [&run_id],
+                )
+                .map_err(|e| e.to_string())?;
+            transaction
+                .execute(
+                    "UPDATE removal_plans SET state='PARTIAL',revision=revision+1 WHERE id=(SELECT plan_id FROM removal_runs WHERE id=?1) AND state='EXECUTING'",
+                    [&run_id],
+                )
+                .map_err(|e| e.to_string())?;
+            transaction.commit().map_err(|e| e.to_string())?;
+        }
+        Ok(())
     }
 }

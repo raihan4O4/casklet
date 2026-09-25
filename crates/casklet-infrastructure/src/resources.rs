@@ -76,6 +76,16 @@ impl ResourceRepository for SqliteCasks {
     ) -> Result<(), String> {
         let mut connection = self.connection()?;
         let transaction = connection.transaction().map_err(|e| e.to_string())?;
+        let removal_lock: i64 = transaction
+            .query_row(
+                "SELECT COUNT(*) FROM removal_locks WHERE cask_id=?1",
+                [&resource.cask_id],
+                |row| row.get(0),
+            )
+            .map_err(|e| e.to_string())?;
+        if removal_lock != 0 {
+            return Err("Cask has an active or unrecovered removal".into());
+        }
         transaction.execute("INSERT INTO operations(id,cask_id,type,state,current_step_code,started_at_ms,updated_at_ms) VALUES (?1,?2,'RESOURCE_INTAKE','RUNNING','MATERIALIZE',?3,?3)",
             params![op_id,resource.cask_id,resource.created_at_ms]).map_err(|e| e.to_string())?;
         transaction.execute("INSERT INTO operation_steps(operation_id,sequence,step_code,state,attempt_count,started_at_ms) VALUES (?1,1,'MATERIALIZE','RUNNING',1,?2)",
@@ -104,8 +114,8 @@ impl ResourceRepository for SqliteCasks {
             params![resource.id,resource.kind.code(),resource.name,resource.management.code(),
                 if op_id.is_some() {"ADDED_BY_CASKLET"} else {"USER_REFERENCE"},size,resource.size_measurement,unknown,resource.created_at_ms])
             .map_err(|e| e.to_string())?;
-        transaction.execute("INSERT INTO resource_locations(id,resource_id,path_display,path_key,containment,is_primary,first_seen_at_ms) VALUES (?1,?2,?3,?4,?5,1,?6)",
-            params![Uuid::new_v4().to_string(),resource.id,resource.path,resource.path.to_lowercase(),resource.containment(),resource.created_at_ms])
+        transaction.execute("INSERT INTO resource_locations(id,resource_id,path_display,path_key,containment,is_primary,first_seen_at_ms,identity_key) VALUES (?1,?2,?3,?4,?5,1,?6,?7)",
+            params![Uuid::new_v4().to_string(),resource.id,resource.path,resource.path.to_lowercase(),resource.containment(),resource.created_at_ms,resource.identity_key])
             .map_err(|e| e.to_string())?;
         transaction.execute("INSERT INTO resource_associations(id,cask_id,resource_id,category_key,relationship,removal_policy,added_at_ms) VALUES (?1,?2,?3,?4,?5,?6,?7)",
             params![Uuid::new_v4().to_string(),resource.cask_id,resource.id,resource.category_key,resource.relationship(),
