@@ -82,3 +82,76 @@ fn resource_commands_keep_human_output_brief_and_require_mode() {
     assert!(source.exists());
     fs::remove_dir_all(root).unwrap();
 }
+
+#[cfg(feature = "reviewed-removal")]
+#[test]
+fn cleanup_requires_explicit_noninteractive_confirmation() {
+    let root = std::env::temp_dir().join(format!("casklet-cli-cleanup-{}", uuid::Uuid::new_v4()));
+    fs::create_dir_all(&root).unwrap();
+    let binary = env!("CARGO_BIN_EXE_casklet");
+    let run = |args: &[&str]| {
+        Command::new(binary)
+            .args(args)
+            .env("CASKLET_DEV_ROOT", &root)
+            .output()
+            .unwrap()
+    };
+    assert!(run(&["cask", "create", "Cleanup"]).status.success());
+    let listed = run(&["--output", "json", "cask", "list"]);
+    let casks: serde_json::Value = serde_json::from_slice(&listed.stdout).unwrap();
+    let cask_id = casks[0]["id"].as_str().unwrap();
+    let source = root.join("source.txt");
+    fs::write(&source, b"preserve source").unwrap();
+    let source_text = source.to_string_lossy().into_owned();
+    assert!(
+        run(&[
+            "resource",
+            "add",
+            cask_id,
+            &source_text,
+            "--mode",
+            "reference"
+        ])
+        .status
+        .success()
+    );
+    let created = run(&["--output", "json", "plan", "create", cask_id]);
+    assert!(
+        created.status.success(),
+        "{}",
+        String::from_utf8_lossy(&created.stderr)
+    );
+    let plan: serde_json::Value = serde_json::from_slice(&created.stdout).unwrap();
+    let plan_id = plan["id"].as_str().unwrap();
+    let hash = plan["planHash"].as_str().unwrap();
+    assert!(
+        run(&["plan", "approve", plan_id, "--hash", hash])
+            .status
+            .success()
+    );
+    let refused = run(&["plan", "execute", plan_id, "--hash", hash, "--no-input"]);
+    assert!(!refused.status.success());
+    assert!(String::from_utf8_lossy(&refused.stderr).contains("CONFIRMATION_REQUIRED"));
+    assert!(source.exists());
+    let executed = run(&[
+        "plan",
+        "execute",
+        plan_id,
+        "--hash",
+        hash,
+        "--no-input",
+        "--yes",
+    ]);
+    assert!(
+        executed.status.success(),
+        "{}",
+        String::from_utf8_lossy(&executed.stderr)
+    );
+    assert!(source.exists());
+    assert!(
+        String::from_utf8(run(&["resource", "list", cask_id]).stdout)
+            .unwrap()
+            .is_empty()
+    );
+    fs::remove_dir_all(root).unwrap();
+}

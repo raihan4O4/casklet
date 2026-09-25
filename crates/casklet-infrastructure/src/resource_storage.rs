@@ -2,6 +2,7 @@
 use super::LocalStorage;
 use casklet_application::resource::{FileIdentity, IntakePaths, Observation, ResourceStorage};
 use casklet_domain::resource::{IntakeMode, ResourceKind};
+use sha2::{Digest, Sha256};
 use std::{
     collections::VecDeque,
     fs::{self, File, OpenOptions},
@@ -9,6 +10,108 @@ use std::{
     path::Path,
     sync::Arc,
 };
+
+#[cfg(windows)]
+fn recordable_file_identity(path: &Path) -> Option<(String, same_file::Handle)> {
+    let handle = winapi_util::Handle::from_path_any(path).ok()?;
+    let info = winapi_util::file::information(&handle).ok()?;
+    let file_identity = same_file::Handle::from_file(handle.as_file().try_clone().ok()?).ok()?;
+    let mut hash = Sha256::new();
+    let mut reader = handle.as_file();
+    let mut buffer = vec![0_u8; 1024 * 1024].into_boxed_slice();
+    loop {
+        let n = reader.read(&mut buffer).ok()?;
+        if n == 0 {
+            break;
+        }
+        hash.update(&buffer[..n]);
+    }
+    Some((
+        format!(
+            "{:016x}:{:016x}:{:016x}:{:x}",
+            info.volume_serial_number(),
+            info.file_index(),
+            info.creation_time()?,
+            hash.finalize()
+        ),
+        file_identity,
+    ))
+}
+
+#[cfg(not(windows))]
+fn recordable_file_identity(_path: &Path) -> Option<(String, same_file::Handle)> {
+    None
+}
+
+#[cfg(windows)]
+fn directory_object_identity(path: &Path) -> Option<String> {
+    let handle = winapi_util::Handle::from_path_any(path).ok()?;
+    let info = winapi_util::file::information(&handle).ok()?;
+    Some(format!(
+        "{:016x}:{:016x}:{:016x}",
+        info.volume_serial_number(),
+        info.file_index(),
+        info.creation_time()?
+    ))
+}
+
+/// A bounded, deterministic snapshot. Any uninspectable, linked, or changed entry
+/// makes the tree ineligible for automatic cleanup.
+#[cfg(windows)]
+fn recordable_directory_identity(root: &Path) -> Option<String> {
+    use std::os::windows::ffi::OsStrExt;
+
+    let initial_root = directory_object_identity(root)?;
+    let mut hash = Sha256::new();
+    hash.update(b"casklet-directory-v1");
+    hash.update(initial_root.as_bytes());
+    let mut queue = VecDeque::from([(root.to_path_buf(), 0_usize)]);
+    let mut entries = 0_u64;
+    while let Some((directory, depth)) = queue.pop_front() {
+        if depth > MAX_DEPTH || is_link(&directory).ok()? {
+            return None;
+        }
+        let before = directory_object_identity(&directory)?;
+        let mut children = fs::read_dir(&directory)
+            .ok()?
+            .collect::<Result<Vec<_>, _>>()
+            .ok()?;
+        children.sort_by_key(std::fs::DirEntry::file_name);
+        for child in children {
+            entries = entries.checked_add(1)?;
+            if entries > MAX_ENTRIES {
+                return None;
+            }
+            let path = child.path();
+            if is_link(&path).ok()? {
+                return None;
+            }
+            let relative = path.strip_prefix(root).ok()?;
+            for unit in relative.as_os_str().encode_wide() {
+                hash.update(unit.to_le_bytes());
+            }
+            hash.update([0_u8, 0_u8]);
+            let metadata = fs::symlink_metadata(&path).ok()?;
+            if metadata.is_dir() {
+                hash.update(b"D");
+                hash.update(directory_object_identity(&path)?.as_bytes());
+                queue.push_back((path, depth + 1));
+            } else if metadata.is_file() {
+                hash.update(b"F");
+                hash.update(recordable_file_identity(&path)?.0.as_bytes());
+            } else {
+                return None;
+            }
+        }
+        if directory_object_identity(&directory)? != before {
+            return None;
+        }
+    }
+    if directory_object_identity(root)? != initial_root {
+        return None;
+    }
+    Some(format!("tree-v1:{:x}", hash.finalize()))
+}
 
 const MAX_ENTRIES: u64 = 100_000;
 const MAX_DEPTH: usize = 64;
@@ -169,6 +272,32 @@ fn inspect_path(source: &str, progress: &dyn Fn(u64, u64)) -> Result<Observation
         .ok()
         .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
         .map_or(0, |d| d.as_nanos());
+    let (recordable_identity, handle) = if kind == ResourceKind::File {
+        match recordable_file_identity(&path) {
+            Some((identity, handle)) => (Some(identity), handle),
+            None => (
+                None,
+                same_file::Handle::from_path(&path).map_err(|e| e.to_string())?,
+            ),
+        }
+    } else {
+        #[cfg(windows)]
+        let identity = if unknown == 0 {
+            recordable_directory_identity(&path)
+        } else {
+            None
+        };
+        #[cfg(not(windows))]
+        let identity = None;
+        (
+            identity,
+            same_file::Handle::from_path(&path).map_err(|e| e.to_string())?,
+        )
+    };
+    let file_identity = LocalFileIdentity(handle);
+    if !file_identity.matches_path(&path.to_string_lossy())? {
+        return Err("Path identity changed during inspection".into());
+    }
     Ok(Observation {
         source_path: path.to_string_lossy().into_owned(),
         name,
@@ -176,9 +305,8 @@ fn inspect_path(source: &str, progress: &dyn Fn(u64, u64)) -> Result<Observation
         size_bytes: Some(size),
         unknown_entries: unknown,
         identity: format!("{}:{size}:{entries}:{modified}", kind.code()),
-        file_identity: Arc::new(LocalFileIdentity(
-            same_file::Handle::from_path(&path).map_err(|e| e.to_string())?,
-        )),
+        recordable_identity,
+        file_identity: Arc::new(file_identity),
     })
 }
 
@@ -322,7 +450,7 @@ impl ResourceStorage for LocalStorage {
         mode: IntakeMode,
         progress: &dyn Fn(u64, u64),
         cancel: &dyn Fn() -> bool,
-    ) -> Result<(), String> {
+    ) -> Result<Option<String>, String> {
         let source = Path::new(&observed.source_path);
         let staging = Path::new(&paths.staging);
         let final_path = Path::new(&paths.final_path);
@@ -413,11 +541,14 @@ impl ResourceStorage for LocalStorage {
             return Err("Cancellation requested; staged data preserved".into());
         }
         fs::rename(staging, final_path).map_err(|e| e.to_string())?;
+        if !verified.file_identity.matches_path(&paths.final_path)? {
+            return Err("Managed item identity changed after rename".into());
+        }
         progress(
             observed.size_bytes.unwrap_or(0),
             observed.size_bytes.unwrap_or(0),
         );
-        Ok(())
+        Ok(verified.recordable_identity)
     }
     fn finish_staged(
         &self,
@@ -425,7 +556,7 @@ impl ResourceStorage for LocalStorage {
         resource: &casklet_domain::resource::Resource,
         paths: &IntakePaths,
         observed: &Observation,
-    ) -> Result<(), String> {
+    ) -> Result<Option<String>, String> {
         let expected = self.allocate(cask, &resource.id, &resource.name);
         if expected.staging != paths.staging || expected.final_path != paths.final_path {
             return Err("Recovery paths no longer match managed allocation".into());
@@ -447,7 +578,7 @@ impl ResourceStorage for LocalStorage {
         if !observed.file_identity.matches_path(&paths.final_path)? {
             return Err("Managed item identity changed after recovery rename".into());
         }
-        Ok(())
+        Ok(observed.recordable_identity.clone())
     }
 }
 

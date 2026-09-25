@@ -1,10 +1,13 @@
 use casklet_contracts::{
     AddMode, AddResource, ApiError, CONTRACT_VERSION, CancelOperation, CaskView,
-    CategorizeResource, CategoryView, CreateCask, CreateCategory, CreateDiagnosticsBundle, GetCask,
-    GetOperation, GetResource, GetStorageSummary, ListCasks, ListCategories, ListOperations,
-    ListResources, OperationView, PreserveOperation, RecoverOperation, RecoveryInspection,
-    RecoveryStatus, ResourceView, StorageSummary,
+    CategorizeResource, CategoryView, CreateCask, CreateCategory, CreateDiagnosticsBundle,
+    CreateRemovalPlan, GetCask, GetOperation, GetRemovalPlan, GetResource, GetStorageSummary,
+    ListCasks, ListCategories, ListOperations, ListResources, OperationView, PreserveOperation,
+    RecoverOperation, RecoveryInspection, RecoveryStatus, RemovalPlanView, ResourceView,
+    StorageSummary,
 };
+#[cfg(feature = "reviewed-removal")]
+use casklet_contracts::{ApproveRemovalPlan, CloseRemovalRun, ExecuteRemovalPlan};
 use clap::{Parser, Subcommand, ValueEnum};
 use std::fmt::Write;
 use std::process::ExitCode;
@@ -14,6 +17,9 @@ use std::process::ExitCode;
 struct Cli {
     #[arg(long, value_enum, default_value_t = Output::Table, global = true)]
     output: Output,
+    #[cfg(feature = "reviewed-removal")]
+    #[arg(long, global = true)]
+    no_input: bool,
     #[command(subcommand)]
     command: Command,
 }
@@ -53,6 +59,10 @@ enum Command {
     Diagnostics {
         #[command(subcommand)]
         action: DiagnosticsAction,
+    },
+    Plan {
+        #[command(subcommand)]
+        action: PlanAction,
     },
 }
 
@@ -141,6 +151,45 @@ enum RecoveryAction {
 #[derive(Debug, Subcommand)]
 enum DiagnosticsAction {
     Bundle { output_path: String },
+}
+
+#[derive(Debug, Subcommand)]
+enum PlanAction {
+    Create {
+        cask_id: String,
+        #[arg(long, conflicts_with = "category")]
+        resource: Vec<String>,
+        #[arg(long)]
+        category: Option<String>,
+        #[arg(long)]
+        permanent: bool,
+    },
+    Get {
+        id: String,
+    },
+    #[cfg(feature = "reviewed-removal")]
+    Approve {
+        id: String,
+        #[arg(long)]
+        hash: String,
+    },
+    #[cfg(feature = "reviewed-removal")]
+    Execute {
+        id: String,
+        #[arg(long)]
+        hash: String,
+        #[arg(long)]
+        yes: bool,
+        #[arg(long)]
+        confirm_permanent: bool,
+    },
+    #[cfg(feature = "reviewed-removal")]
+    #[command(alias = "close-preserved")]
+    CloseUncertain {
+        run_id: String,
+        #[arg(long)]
+        yes: bool,
+    },
 }
 
 #[expect(
@@ -383,6 +432,86 @@ fn main() -> ExitCode {
                 Output::Table => format!("Wrote diagnostics to {output_path}\n"),
                 Output::Json => format!("{}\n", serde_json::json!({"outputPath":output_path})),
             }),
+        Command::Plan {
+            action:
+                PlanAction::Create {
+                    cask_id,
+                    resource,
+                    category,
+                    permanent,
+                },
+        } => service
+            .create_removal_plan(
+                &CreateRemovalPlan {
+                    version: CONTRACT_VERSION,
+                    cask_id,
+                    resource_ids: resource,
+                    category_key: category,
+                    permanent,
+                },
+                &correlation_id,
+            )
+            .map(|plan| render_plan(&plan, cli.output)),
+        Command::Plan {
+            action: PlanAction::Get { id },
+        } => service
+            .get_removal_plan(
+                &GetRemovalPlan {
+                    version: CONTRACT_VERSION,
+                    id,
+                },
+                &correlation_id,
+            )
+            .map(|plan| render_plan(&plan, cli.output)),
+        #[cfg(feature = "reviewed-removal")]
+        Command::Plan {
+            action: PlanAction::Approve { id, hash },
+        } => service
+            .approve_removal_plan(
+                &ApproveRemovalPlan {
+                    version: CONTRACT_VERSION,
+                    id,
+                    plan_hash: hash,
+                },
+                &correlation_id,
+            )
+            .map(|plan| render_plan(&plan, cli.output)),
+        #[cfg(feature = "reviewed-removal")]
+        Command::Plan {
+            action:
+                PlanAction::Execute {
+                    id,
+                    hash,
+                    yes,
+                    confirm_permanent,
+                },
+        } => confirm_removal(&id, yes, cli.no_input)
+            .and_then(|()| {
+                service.execute_removal_plan(
+                    &ExecuteRemovalPlan {
+                        version: CONTRACT_VERSION,
+                        id,
+                        plan_hash: hash,
+                        confirm_permanent,
+                    },
+                    &correlation_id,
+                )
+            })
+            .map(|plan| render_plan(&plan, cli.output)),
+        #[cfg(feature = "reviewed-removal")]
+        Command::Plan {
+            action: PlanAction::CloseUncertain { run_id, yes },
+        } => confirm_removal(&run_id, yes, cli.no_input)
+            .and_then(|()| {
+                service.close_uncertain_removal(
+                    &CloseRemovalRun {
+                        version: CONTRACT_VERSION,
+                        run_id,
+                    },
+                    &correlation_id,
+                )
+            })
+            .map(|plan| render_plan(&plan, cli.output)),
     };
     match result {
         Ok(output) => {
@@ -392,6 +521,84 @@ fn main() -> ExitCode {
         Err(error) => {
             render_error(&error, cli.output);
             ExitCode::FAILURE
+        }
+    }
+}
+
+#[cfg(feature = "reviewed-removal")]
+fn confirm_removal(id: &str, yes: bool, no_input: bool) -> Result<(), ApiError> {
+    if yes {
+        return Ok(());
+    }
+    if no_input {
+        return Err(ApiError {
+            version: CONTRACT_VERSION,
+            code: "CONFIRMATION_REQUIRED".into(),
+            message: "Pass --yes to run without input".into(),
+            correlation_id: "cli".into(),
+        });
+    }
+    eprintln!("Review the plan first. Type {id} to confirm this cleanup action:");
+    let mut answer = String::new();
+    std::io::stdin()
+        .read_line(&mut answer)
+        .map_err(|_| ApiError {
+            version: CONTRACT_VERSION,
+            code: "INPUT_FAILED".into(),
+            message: "Could not read confirmation".into(),
+            correlation_id: "cli".into(),
+        })?;
+    if answer.trim() != id {
+        return Err(ApiError {
+            version: CONTRACT_VERSION,
+            code: "CANCELLED".into(),
+            message: "Confirmation did not match".into(),
+            correlation_id: "cli".into(),
+        });
+    }
+    Ok(())
+}
+
+fn render_plan(plan: &RemovalPlanView, output: Output) -> String {
+    match output {
+        Output::Json => format!(
+            "{}\n",
+            serde_json::to_string(plan).expect("Plan DTO is serializable")
+        ),
+        Output::Table => {
+            let mut result = format!(
+                "Plan {} ({}; {}; expires {})\nHash: {}\n",
+                plan.id,
+                plan.state.to_ascii_lowercase(),
+                if plan.permanent {
+                    "permanent files"
+                } else {
+                    "Recycle Bin"
+                },
+                plan.expires_at_ms,
+                plan.plan_hash,
+            );
+            if let Some(run_id) = &plan.run_id {
+                writeln!(result, "Run: {run_id}").expect("String write");
+            }
+            for item in &plan.items {
+                writeln!(
+                    result,
+                    "{}: {} ({}) [{}{}]",
+                    item.name,
+                    item.action.to_ascii_lowercase(),
+                    item.reason_code.to_ascii_lowercase(),
+                    item.state.to_ascii_lowercase(),
+                    item.result_code
+                        .as_ref()
+                        .map_or_else(String::new, |code| format!("; {code}")),
+                )
+                .expect("String write");
+                if let Some(path) = &item.recovery_path {
+                    writeln!(result, "  Possible recovery location: {path}").expect("String write");
+                }
+            }
+            result
         }
     }
 }

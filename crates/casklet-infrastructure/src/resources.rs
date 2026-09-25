@@ -76,6 +76,16 @@ impl ResourceRepository for SqliteCasks {
     ) -> Result<(), String> {
         let mut connection = self.connection()?;
         let transaction = connection.transaction().map_err(|e| e.to_string())?;
+        let removal_lock: i64 = transaction
+            .query_row(
+                "SELECT COUNT(*) FROM removal_locks WHERE cask_id=?1",
+                [&resource.cask_id],
+                |row| row.get(0),
+            )
+            .map_err(|e| e.to_string())?;
+        if removal_lock != 0 {
+            return Err("Cask has an active or unrecovered removal".into());
+        }
         transaction.execute("INSERT INTO operations(id,cask_id,type,state,current_step_code,started_at_ms,updated_at_ms) VALUES (?1,?2,'RESOURCE_INTAKE','RUNNING','MATERIALIZE',?3,?3)",
             params![op_id,resource.cask_id,resource.created_at_ms]).map_err(|e| e.to_string())?;
         transaction.execute("INSERT INTO operation_steps(operation_id,sequence,step_code,state,attempt_count,started_at_ms) VALUES (?1,1,'MATERIALIZE','RUNNING',1,?2)",
@@ -94,6 +104,16 @@ impl ResourceRepository for SqliteCasks {
     fn commit_resource(&self, resource: &Resource, op_id: Option<&str>) -> Result<(), String> {
         let mut connection = self.connection()?;
         let transaction = connection.transaction().map_err(|e| e.to_string())?;
+        let locked: i64 = transaction
+            .query_row(
+                "SELECT COUNT(*) FROM removal_locks WHERE cask_id=?1",
+                [&resource.cask_id],
+                |row| row.get(0),
+            )
+            .map_err(|e| e.to_string())?;
+        if locked != 0 {
+            return Err("Cask has an active or unrecovered removal".into());
+        }
         let size = resource
             .size_bytes
             .map(i64::try_from)
@@ -104,8 +124,8 @@ impl ResourceRepository for SqliteCasks {
             params![resource.id,resource.kind.code(),resource.name,resource.management.code(),
                 if op_id.is_some() {"ADDED_BY_CASKLET"} else {"USER_REFERENCE"},size,resource.size_measurement,unknown,resource.created_at_ms])
             .map_err(|e| e.to_string())?;
-        transaction.execute("INSERT INTO resource_locations(id,resource_id,path_display,path_key,containment,is_primary,first_seen_at_ms) VALUES (?1,?2,?3,?4,?5,1,?6)",
-            params![Uuid::new_v4().to_string(),resource.id,resource.path,resource.path.to_lowercase(),resource.containment(),resource.created_at_ms])
+        transaction.execute("INSERT INTO resource_locations(id,resource_id,path_display,path_key,containment,is_primary,first_seen_at_ms,identity_key) VALUES (?1,?2,?3,?4,?5,1,?6,?7)",
+            params![Uuid::new_v4().to_string(),resource.id,resource.path,resource.path.to_lowercase(),resource.containment(),resource.created_at_ms,resource.identity_key])
             .map_err(|e| e.to_string())?;
         transaction.execute("INSERT INTO resource_associations(id,cask_id,resource_id,category_key,relationship,removal_policy,added_at_ms) VALUES (?1,?2,?3,?4,?5,?6,?7)",
             params![Uuid::new_v4().to_string(),resource.cask_id,resource.id,resource.category_key,resource.relationship(),
@@ -238,6 +258,10 @@ impl ResourceRepository for SqliteCasks {
     fn categorize(&self, id: &str, key: &str) -> Result<(), String> {
         let mut connection = self.connection()?;
         let transaction = connection.transaction().map_err(|e| e.to_string())?;
+        let locked: i64 = transaction.query_row("SELECT COUNT(*) FROM resource_associations a JOIN removal_locks l ON l.cask_id=a.cask_id WHERE a.resource_id=?1 AND a.removed_at_ms IS NULL",[id],|row|row.get(0)).map_err(|e|e.to_string())?;
+        if locked != 0 {
+            return Err("Cask has an active or unrecovered removal".into());
+        }
         let cask_id: String = transaction.query_row("SELECT cask_id FROM resource_associations WHERE resource_id=?1 AND removed_at_ms IS NULL",[id],|row|row.get(0)).map_err(|e|e.to_string())?;
         transaction.execute("UPDATE resource_associations SET category_key=?2,revision=revision+1 WHERE resource_id=?1 AND removed_at_ms IS NULL", params![id,key]).map_err(|e| e.to_string())?;
         transaction.execute("INSERT INTO projection_jobs(cask_id,target_revision,state,updated_at_ms) VALUES (?1,1,'PENDING',CAST(unixepoch('subsec')*1000 AS INTEGER)) ON CONFLICT(cask_id) DO UPDATE SET target_revision=target_revision+1,state='PENDING'",[cask_id]).map_err(|e| e.to_string())?;

@@ -210,3 +210,105 @@ test("shows interrupted work and requires an explicit recovery action", async ()
   );
   await waitFor(() => expect(screen.queryByText("Recovery needed")).toBeNull());
 });
+
+test("cleanup execution requires the exact reviewed plan ID", async () => {
+  const cask = {
+    version: 1,
+    id: "cask-1",
+    name: "Work",
+    state: "ACTIVE",
+    managedStorageRoot: "C:/Casklets/cask-1",
+    createdAtMs: 1,
+    updatedAtMs: 1,
+    revision: 0,
+  };
+  const item = {
+    id: "item-1",
+    resourceId: "resource-1",
+    name: "notes.txt",
+    action: "TRASH",
+    reasonCode: "ELIGIBLE_MANAGED",
+    expectedSizeBytes: 5,
+    state: "PENDING",
+    resultCode: null,
+    recoveryPath: null,
+  };
+  const draft = {
+    version: 1,
+    id: "plan-1",
+    caskId: cask.id,
+    scope: "CASK",
+    categoryKey: null,
+    permanent: false,
+    state: "DRAFT",
+    planHash: "hash-1",
+    runId: null,
+    createdAtMs: 1,
+    expiresAtMs: Date.now() + 100000,
+    items: [item],
+  };
+  calls.invoke.mockImplementation(async (command: string) => {
+    if (command === "removal_capability") return true;
+    if (command === "list_casks") return [cask];
+    if (command === "get_cask") return cask;
+    if (command === "recovery_status")
+      return { version: 1, operations: [], pendingManifestCasks: [] };
+    if (
+      command === "list_operations" ||
+      command === "list_resources" ||
+      command === "list_categories"
+    )
+      return [];
+    if (command === "storage_summary")
+      return {
+        managedLogicalBytes: 0,
+        referencedLogicalBytes: 0,
+        physicalBytes: null,
+        reclaimableMinBytes: 0,
+        reclaimableMaxBytes: 0,
+        unknownEntries: 0,
+      };
+    if (command === "create_removal_plan") return draft;
+    if (command === "approve_removal_plan")
+      return { ...draft, state: "APPROVED" };
+    if (command === "execute_removal_plan")
+      return {
+        ...draft,
+        state: "COMPLETE",
+        runId: "run-1",
+        items: [{ ...item, state: "SUCCEEDED", resultCode: "TRASHED" }],
+      };
+    throw new Error(`Unexpected command: ${command}`);
+  });
+  render(App);
+  await fireEvent.click(await screen.findByRole("button", { name: "Work" }));
+  await fireEvent.click(
+    screen.getByRole("button", { name: "Create cleanup preview" }),
+  );
+  await fireEvent.click(
+    await screen.findByRole("button", { name: "Approve this plan" }),
+  );
+  const execute = await screen.findByRole("button", {
+    name: "Execute cleanup",
+  });
+  expect((execute as HTMLButtonElement).disabled).toBe(true);
+  expect(
+    calls.invoke.mock.calls.some(
+      ([command]) => command === "execute_removal_plan",
+    ),
+  ).toBe(false);
+  await fireEvent.input(screen.getByLabelText("Type the plan ID to execute"), {
+    target: { value: "plan-1" },
+  });
+  await fireEvent.click(execute);
+  await waitFor(() =>
+    expect(calls.invoke).toHaveBeenCalledWith("execute_removal_plan", {
+      request: {
+        version: 1,
+        id: "plan-1",
+        planHash: "hash-1",
+        confirmPermanent: false,
+      },
+    }),
+  );
+});

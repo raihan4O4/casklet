@@ -294,7 +294,7 @@ impl SqliteCasks {
     }
 }
 
-fn owner_process_alive(owner: &str) -> bool {
+pub(super) fn owner_process_alive(owner: &str) -> bool {
     let Ok(pid) = owner.parse::<u32>() else {
         return true;
     };

@@ -30,7 +30,13 @@ pub fn run() {
             recovery_status,
             inspect_recovery,
             retry_manifests,
-            create_diagnostics_bundle
+            create_diagnostics_bundle,
+            create_removal_plan,
+            get_removal_plan,
+            removal_capability,
+            approve_removal_plan,
+            execute_removal_plan,
+            close_uncertain_removal
         ])
         .run(tauri::generate_context!())
         .expect("failed to run Casklet desktop");
@@ -220,4 +226,101 @@ fn create_diagnostics_bundle(
     request: casklet_contracts::CreateDiagnosticsBundle,
 ) -> Result<(), casklet_contracts::ApiError> {
     service.create_diagnostics_bundle(&request, "desktop")
+}
+
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+fn create_removal_plan(
+    service: tauri::State<'_, Service>,
+    request: casklet_contracts::CreateRemovalPlan,
+) -> Result<casklet_contracts::RemovalPlanView, casklet_contracts::ApiError> {
+    service.create_removal_plan(&request, "desktop")
+}
+
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+fn get_removal_plan(
+    service: tauri::State<'_, Service>,
+    request: casklet_contracts::GetRemovalPlan,
+) -> Result<casklet_contracts::RemovalPlanView, casklet_contracts::ApiError> {
+    service.get_removal_plan(&request, "desktop")
+}
+
+#[tauri::command]
+fn removal_capability() -> bool {
+    cfg!(feature = "reviewed-removal")
+}
+
+#[cfg(not(feature = "reviewed-removal"))]
+fn removal_review_pending() -> casklet_contracts::ApiError {
+    casklet_contracts::ApiError {
+        version: casklet_contracts::CONTRACT_VERSION,
+        code: "REMOVAL_REVIEW_PENDING".into(),
+        message: "Cleanup is disabled until its security review is complete".into(),
+        correlation_id: "desktop".into(),
+    }
+}
+
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+fn approve_removal_plan(
+    service: tauri::State<'_, Service>,
+    request: casklet_contracts::ApproveRemovalPlan,
+) -> Result<casklet_contracts::RemovalPlanView, casklet_contracts::ApiError> {
+    #[cfg(feature = "reviewed-removal")]
+    {
+        service.approve_removal_plan(&request, "desktop")
+    }
+    #[cfg(not(feature = "reviewed-removal"))]
+    {
+        let _ = (service, request);
+        Err(removal_review_pending())
+    }
+}
+
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+async fn execute_removal_plan(
+    service: tauri::State<'_, Service>,
+    request: casklet_contracts::ExecuteRemovalPlan,
+) -> Result<casklet_contracts::RemovalPlanView, casklet_contracts::ApiError> {
+    #[cfg(feature = "reviewed-removal")]
+    {
+        let worker = Service {
+            repository: service.repository.clone(),
+            storage: service.storage.clone(),
+        };
+        tauri::async_runtime::spawn_blocking(move || {
+            worker.execute_removal_plan(&request, "desktop")
+        })
+        .await
+        .map_err(|_| casklet_contracts::ApiError {
+            version: casklet_contracts::CONTRACT_VERSION,
+            code: "WORKER_INTERRUPTED".into(),
+            message: "Cleanup worker stopped; inspect recovery before retrying".into(),
+            correlation_id: "desktop".into(),
+        })?
+    }
+    #[cfg(not(feature = "reviewed-removal"))]
+    {
+        let _ = (service, request);
+        Err(removal_review_pending())
+    }
+}
+
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+fn close_uncertain_removal(
+    service: tauri::State<'_, Service>,
+    request: casklet_contracts::CloseRemovalRun,
+) -> Result<casklet_contracts::RemovalPlanView, casklet_contracts::ApiError> {
+    #[cfg(feature = "reviewed-removal")]
+    {
+        service.close_uncertain_removal(&request, "desktop")
+    }
+    #[cfg(not(feature = "reviewed-removal"))]
+    {
+        let _ = (service, request);
+        Err(removal_review_pending())
+    }
 }

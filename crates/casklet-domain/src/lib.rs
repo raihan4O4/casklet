@@ -2,6 +2,7 @@
 
 use uuid::Uuid;
 pub mod operation;
+pub mod removal;
 pub mod resource;
 
 pub const CRATE_BOUNDARY: &str = "domain";

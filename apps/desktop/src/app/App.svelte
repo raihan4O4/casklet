@@ -4,7 +4,7 @@
   import { getCurrentWindow } from '@tauri-apps/api/window';
   import { open, save } from '@tauri-apps/plugin-dialog';
   import { onMount } from 'svelte';
-  import type { AddMode, ApiError, CaskView, CategoryView, ResourceView, StorageSummary, RecoveryStatus, RecoveryInspection, OperationView } from '../contracts/generated/casklet';
+  import type { AddMode, ApiError, CaskView, CategoryView, ResourceView, StorageSummary, RecoveryStatus, RecoveryInspection, OperationView, RemovalPlanView } from '../contracts/generated/casklet';
   import { CONTRACT_VERSION } from '../contracts/generated/casklet';
 
   let casks: CaskView[] = $state([]);
@@ -25,6 +25,69 @@
   let recoveryInspection: RecoveryInspection | null = $state(null);
   let activeOperation = $state('');
   let operations: OperationView[] = $state([]);
+  let removalPlan: RemovalPlanView | null = $state(null);
+  let removalCategory = $state('');
+  let removalEnabled = $state(false);
+  let removalConfirmation = $state('');
+  let permanentPlan = $state(false);
+  let permanentConfirmation = $state(false);
+  let removalBusy = $state(false);
+
+  async function previewRemoval(resourceIds: string[] = []) {
+    if (!selected) return;
+    try {
+      removalPlan = await invoke<RemovalPlanView>('create_removal_plan', { request: {
+        version: CONTRACT_VERSION, caskId: selected.id, resourceIds,
+        categoryKey: resourceIds.length ? null : (removalCategory || null),
+        permanent: permanentPlan,
+      } });
+      permanentConfirmation = false;
+      error = '';
+    } catch (cause) { error = message(cause); }
+  }
+  function previewSelectedResource() {
+    if (selectedResource) void previewRemoval([selectedResource.id]);
+  }
+
+  async function approveRemoval() {
+    if (!removalPlan || !removalEnabled) return;
+    removalBusy = true;
+    try {
+      removalPlan = await invoke<RemovalPlanView>('approve_removal_plan', { request: {
+        version: CONTRACT_VERSION, id: removalPlan.id, planHash: removalPlan.planHash,
+      } });
+      error = '';
+    } catch (cause) { error = message(cause); }
+    finally { removalBusy = false; }
+  }
+  async function executeRemoval() {
+    if (!removalPlan || !removalEnabled || removalConfirmation !== removalPlan.id || (removalPlan.permanent && !permanentConfirmation)) return;
+    removalBusy = true;
+    try {
+      removalPlan = await invoke<RemovalPlanView>('execute_removal_plan', { request: {
+        version: CONTRACT_VERSION, id: removalPlan.id, planHash: removalPlan.planHash,
+        confirmPermanent: removalPlan.permanent && permanentConfirmation,
+      } });
+      removalConfirmation = '';
+      await refreshResources();
+      if (selected) selected = await invoke<CaskView>('get_cask', { request: { version: CONTRACT_VERSION, id: selected.id } });
+      error = '';
+    } catch (cause) { error = message(cause); }
+    finally { removalBusy = false; }
+  }
+  async function closeUncertainRemoval() {
+    if (!removalPlan?.runId || removalConfirmation !== removalPlan.runId) return;
+    removalBusy = true;
+    try {
+      removalPlan = await invoke<RemovalPlanView>('close_uncertain_removal', { request: {
+        version: CONTRACT_VERSION, runId: removalPlan.runId,
+      } });
+      removalConfirmation = '';
+      if (selected) selected = await invoke<CaskView>('get_cask', { request: { version: CONTRACT_VERSION, id: selected.id } });
+      error = '';
+    } catch (cause) { error = message(cause); }
+    finally { removalBusy = false; }
+  }
 
   function message(cause: unknown): string {
     const api = cause as Partial<ApiError>;
@@ -77,7 +140,7 @@
     busy = true;
     try {
       selected = await invoke<CaskView>('create_cask', { request: { version: CONTRACT_VERSION, name } });
-      pendingPath = ''; pendingMode = ''; selectedResource = null;
+      pendingPath = ''; pendingMode = ''; selectedResource = null; removalPlan = null;
       name = '';
       await refresh();
       await refreshResources();
@@ -86,7 +149,7 @@
     finally { busy = false; }
   }
   async function inspect(id: string) {
-    try { selected = await invoke<CaskView>('get_cask', { request: { version: CONTRACT_VERSION, id } }); pendingPath = ''; pendingMode = ''; selectedResource = null; error = ''; await refreshResources(); }
+    try { selected = await invoke<CaskView>('get_cask', { request: { version: CONTRACT_VERSION, id } }); pendingPath = ''; pendingMode = ''; selectedResource = null; removalPlan = null; error = ''; await refreshResources(); }
     catch (cause) { error = message(cause); }
   }
   async function refreshResources() {
@@ -131,6 +194,7 @@
   }
   onMount(() => {
     void refresh();
+    void invoke<boolean>('removal_capability').then((enabled) => { removalEnabled = enabled; }).catch(() => { removalEnabled = false; });
     let disposed = false;
     let unlistenDrop: (() => void) | undefined;
     let unlistenProgress: (() => void) | undefined;
@@ -233,6 +297,39 @@
           <dl><dt>Name</dt><dd>{selectedResource.name}</dd><dt>Location</dt><dd>{selectedResource.path}</dd>
             <dt>Management</dt><dd>{selectedResource.management}</dd><dt>Availability</dt><dd>{selectedResource.availability}</dd>
             <dt>Size</dt><dd>{selectedResource.sizeBytes ?? 'Unknown'} ({selectedResource.sizeMeasurement})</dd></dl>
+        {/if}
+      </section>
+      <section aria-label="Removal preview">
+        <h3>Cleanup preview</h3>
+        <p>Review what Casklet could detach, preserve, move to the Recycle Bin, or permanently delete. This preview does not change files or associations.</p>
+        <label for="removal-category">Scope</label>
+        <select id="removal-category" bind:value={removalCategory}>
+          <option value="">Whole Cask</option>
+          {#each categories as category (category.key)}<option value={category.key}>{category.name}</option>{/each}
+        </select>
+        <label><input type="checkbox" bind:checked={permanentPlan} /> Permanently delete eligible managed files in this plan</label>
+        <p>Permanent deletion cannot be undone. Managed directories remain preserved in a permanent plan; use a Recycle Bin plan for them.</p>
+        <button type="button" onclick={() => void previewRemoval()}>Create cleanup preview</button>
+        {#if selectedResource}<button type="button" onclick={previewSelectedResource}>Preview selected resource</button>{/if}
+        {#if removalPlan}
+          <p>Plan {removalPlan.id} is {removalPlan.state.toLowerCase()} and expires {new Date(removalPlan.expiresAtMs).toLocaleString()}. Disposal: {removalPlan.permanent ? 'permanent files' : 'Recycle Bin'}.</p>
+          <ul>{#each removalPlan.items as item (item.id)}<li>{item.name}: {item.action.toLowerCase()} ({item.reasonCode.toLowerCase()}); {item.state.toLowerCase()}{item.resultCode ? ` (${item.resultCode.toLowerCase()})` : ''}{#if item.recoveryPath}<br />Possible recovery location: <code>{item.recoveryPath}</code>{/if}</li>{/each}</ul>
+          {#if removalEnabled && removalPlan.state === 'DRAFT'}
+            <button type="button" disabled={removalBusy} onclick={() => void approveRemoval()}>Approve this plan</button>
+          {/if}
+          {#if removalEnabled && removalPlan.state === 'APPROVED'}
+            <p role="alert">Executing may {removalPlan.permanent ? 'permanently delete eligible managed files' : 'move eligible managed files and directories to the Recycle Bin'} and detach associations. Changed or uncertain items are preserved for review.</p>
+            {#if removalPlan.permanent}<label><input type="checkbox" bind:checked={permanentConfirmation} /> I understand that permanent deletion cannot be undone</label>{/if}
+            <label for="removal-confirmation">Type the plan ID to execute</label>
+            <input id="removal-confirmation" bind:value={removalConfirmation} autocomplete="off" />
+            <button type="button" disabled={removalBusy || removalConfirmation !== removalPlan.id || (removalPlan.permanent && !permanentConfirmation)} onclick={() => void executeRemoval()}>Execute cleanup</button>
+          {/if}
+          {#if removalEnabled && removalPlan.state === 'PARTIAL' && removalPlan.runId}
+            <p role="alert">The cleanup outcome is uncertain. Inspect the original path, Recycle Bin, and any recovery location before closing. Closing releases the lock and keeps unresolved outcomes marked unknown.</p>
+            <label for="removal-confirmation">Type the run ID to close with preservation</label>
+            <input id="removal-confirmation" bind:value={removalConfirmation} autocomplete="off" />
+            <button type="button" disabled={removalBusy || removalConfirmation !== removalPlan.runId} onclick={() => void closeUncertainRemoval()}>Close uncertain run</button>
+          {/if}
         {/if}
       </section>
       <section aria-label="Categories">

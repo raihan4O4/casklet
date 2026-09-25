@@ -5,6 +5,7 @@ use std::time::{SystemTime, UNIX_EPOCH};
 pub mod diagnostics;
 pub mod operation;
 pub mod projection;
+pub mod removal;
 pub mod resource;
 
 /// Returns linked lower-layer markers for a dependency-direction smoke test.

@@ -7,6 +7,7 @@ use std::{fs, path::PathBuf, time::Duration};
 mod diagnostics;
 mod operations;
 mod projection;
+mod removal;
 mod resource_storage;
 mod resources;
 
@@ -40,7 +41,7 @@ impl SqliteCasks {
                     .map_err(|e| e.to_string())?;
                 transaction.commit().map_err(|e| e.to_string())?;
             }
-            1..=3 => {}
+            1..=6 => {}
             _ => return Err(format!("unsupported database schema version: {version}")),
         }
         if version == 1 || version == 0 {
@@ -60,6 +61,40 @@ impl SqliteCasks {
                 .map_err(|e| e.to_string())?;
             transaction
                 .execute_batch("PRAGMA user_version=3")
+                .map_err(|e| e.to_string())?;
+            transaction.commit().map_err(|e| e.to_string())?;
+        }
+        if version <= 3 {
+            let transaction = connection.transaction().map_err(|e| e.to_string())?;
+            transaction
+                .execute_batch(include_str!("../../../migrations/0004_removal_plans.sql"))
+                .map_err(|e| e.to_string())?;
+            transaction
+                .execute_batch("PRAGMA user_version=4")
+                .map_err(|e| e.to_string())?;
+            transaction.commit().map_err(|e| e.to_string())?;
+        }
+        if version <= 4 {
+            let transaction = connection.transaction().map_err(|e| e.to_string())?;
+            transaction
+                .execute_batch(include_str!(
+                    "../../../migrations/0005_removal_execution.sql"
+                ))
+                .map_err(|e| e.to_string())?;
+            transaction
+                .execute_batch("PRAGMA user_version=5")
+                .map_err(|e| e.to_string())?;
+            transaction.commit().map_err(|e| e.to_string())?;
+        }
+        if version <= 5 {
+            let transaction = connection.transaction().map_err(|e| e.to_string())?;
+            transaction
+                .execute_batch(include_str!(
+                    "../../../migrations/0006_permanent_disposal.sql"
+                ))
+                .map_err(|e| e.to_string())?;
+            transaction
+                .execute_batch("PRAGMA user_version=6")
                 .map_err(|e| e.to_string())?;
             transaction.commit().map_err(|e| e.to_string())?;
         }
@@ -164,6 +199,7 @@ pub fn development_service() -> Result<CaskService<SqliteCasks, LocalStorage>, S
     );
     let repository = SqliteCasks::open(root.join("db/casklet.db"))?;
     repository.detect_abandoned_operations()?;
+    repository.detect_abandoned_removals()?;
     let service = CaskService {
         repository,
         storage: LocalStorage::new(root.join("casks")),
@@ -181,11 +217,356 @@ mod tests {
         GetCask, GetResource, GetStorageSummary, ListCasks, ListResources,
     };
     use casklet_contracts::{
+        ApproveRemovalPlan, CloseRemovalRun, CreateRemovalPlan, ExecuteRemovalPlan, GetRemovalPlan,
+    };
+    use casklet_contracts::{
         CancelOperation, CreateDiagnosticsBundle, ListOperations, PreserveOperation,
         RecoverOperation,
     };
     use casklet_domain::resource::IntakeMode;
     use casklet_domain::resource::Resource;
+
+    #[cfg(windows)]
+    #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "directory planning and both stale-plan boundaries"
+    )]
+    fn managed_directory_plan_detects_nested_change_before_approval() {
+        let root = std::env::temp_dir().join(format!("casklet-m4-dir-{}", uuid::Uuid::new_v4()));
+        let source = root.join("source-directory");
+        fs::create_dir_all(source.join("nested")).unwrap();
+        fs::write(source.join("nested").join("note.txt"), b"original").unwrap();
+        let service = CaskService {
+            repository: SqliteCasks::open(root.join("state.db")).unwrap(),
+            storage: LocalStorage::new(root.join("casks")),
+        };
+        let cask = service
+            .create(
+                &CreateCask {
+                    version: CONTRACT_VERSION,
+                    name: "Directory".into(),
+                },
+                "test",
+            )
+            .unwrap();
+        let managed = service
+            .add_resource(
+                &AddResource {
+                    version: CONTRACT_VERSION,
+                    cask_id: cask.id.clone(),
+                    source_path: source.to_string_lossy().into_owned(),
+                    mode: AddMode::Copy,
+                    category_key: "other".into(),
+                },
+                "test",
+                &|_, _| {},
+            )
+            .unwrap();
+        let permanent_plan = service
+            .create_removal_plan(
+                &CreateRemovalPlan {
+                    version: CONTRACT_VERSION,
+                    cask_id: cask.id.clone(),
+                    resource_ids: vec![managed.id.clone()],
+                    category_key: None,
+                    permanent: true,
+                },
+                "test",
+            )
+            .unwrap();
+        assert_eq!(permanent_plan.items[0].action, "PRESERVE");
+        assert_eq!(
+            permanent_plan.items[0].reason_code,
+            "PERMANENT_DIRECTORY_UNSUPPORTED"
+        );
+        let plan = service
+            .create_removal_plan(
+                &CreateRemovalPlan {
+                    version: CONTRACT_VERSION,
+                    cask_id: cask.id.clone(),
+                    resource_ids: vec![managed.id.clone()],
+                    category_key: None,
+                    permanent: false,
+                },
+                "test",
+            )
+            .unwrap();
+        assert_eq!(plan.items[0].action, "TRASH");
+        let approved = service
+            .create_removal_plan(
+                &CreateRemovalPlan {
+                    version: CONTRACT_VERSION,
+                    cask_id: cask.id,
+                    resource_ids: vec![managed.id],
+                    category_key: None,
+                    permanent: false,
+                },
+                "test",
+            )
+            .unwrap();
+        service
+            .approve_removal_plan(
+                &ApproveRemovalPlan {
+                    version: CONTRACT_VERSION,
+                    id: approved.id.clone(),
+                    plan_hash: approved.plan_hash.clone(),
+                },
+                "test",
+            )
+            .unwrap();
+        fs::write(
+            std::path::Path::new(&managed.path)
+                .join("nested")
+                .join("note.txt"),
+            b"changed",
+        )
+        .unwrap();
+        assert_eq!(
+            service
+                .approve_removal_plan(
+                    &ApproveRemovalPlan {
+                        version: CONTRACT_VERSION,
+                        id: plan.id,
+                        plan_hash: plan.plan_hash,
+                    },
+                    "test"
+                )
+                .unwrap_err()
+                .code,
+            "PLAN_CHANGED"
+        );
+        let result = service
+            .execute_removal_plan(
+                &ExecuteRemovalPlan {
+                    version: CONTRACT_VERSION,
+                    id: approved.id,
+                    plan_hash: approved.plan_hash,
+                    confirm_permanent: false,
+                },
+                "test",
+            )
+            .unwrap();
+        assert_eq!(
+            result.items[0].result_code.as_deref(),
+            Some("REVALIDATION_FAILED")
+        );
+        assert!(std::path::Path::new(&managed.path).exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "full directory cleanup setup and journal assertion"
+    )]
+    fn approved_directory_cleanup_uses_journal_and_preserves_source() {
+        struct FakeDirectoryTrash {
+            storage: LocalStorage,
+            stash: PathBuf,
+        }
+        impl casklet_application::removal::RemovalInspection for FakeDirectoryTrash {
+            fn verify_managed(
+                &self,
+                root: &str,
+                candidate: &casklet_application::removal::RemovalCandidate,
+            ) -> Option<String> {
+                casklet_application::removal::RemovalInspection::verify_managed(
+                    &self.storage,
+                    root,
+                    candidate,
+                )
+            }
+            fn trash_verified(
+                &self,
+                root: &str,
+                candidate: &casklet_application::removal::RemovalCandidate,
+                identity: &str,
+                _run_id: &str,
+                _item_id: &str,
+            ) -> Result<(), String> {
+                if candidate.kind != "DIRECTORY"
+                    || self.verify_managed(root, candidate).as_deref() != Some(identity)
+                {
+                    return Err("directory changed".into());
+                }
+                fs::rename(&candidate.path, &self.stash).map_err(|e| e.to_string())
+            }
+        }
+        let root =
+            std::env::temp_dir().join(format!("casklet-m4-dir-run-{}", uuid::Uuid::new_v4()));
+        let source = root.join("source-directory");
+        fs::create_dir_all(source.join("nested")).unwrap();
+        fs::write(source.join("nested").join("note.txt"), b"original").unwrap();
+        let storage_root = root.join("casks");
+        let repository = SqliteCasks::open(root.join("state.db")).unwrap();
+        let service = CaskService {
+            repository: repository.clone(),
+            storage: LocalStorage::new(storage_root.clone()),
+        };
+        let cask = service
+            .create(
+                &CreateCask {
+                    version: CONTRACT_VERSION,
+                    name: "Directory".into(),
+                },
+                "test",
+            )
+            .unwrap();
+        let managed = service
+            .add_resource(
+                &AddResource {
+                    version: CONTRACT_VERSION,
+                    cask_id: cask.id.clone(),
+                    source_path: source.to_string_lossy().into_owned(),
+                    mode: AddMode::Copy,
+                    category_key: "other".into(),
+                },
+                "test",
+                &|_, _| {},
+            )
+            .unwrap();
+        let plan = service
+            .create_removal_plan(
+                &CreateRemovalPlan {
+                    version: CONTRACT_VERSION,
+                    cask_id: cask.id,
+                    resource_ids: vec![managed.id],
+                    category_key: None,
+                    permanent: false,
+                },
+                "test",
+            )
+            .unwrap();
+        assert_eq!(plan.items[0].action, "TRASH");
+        service
+            .approve_removal_plan(
+                &ApproveRemovalPlan {
+                    version: CONTRACT_VERSION,
+                    id: plan.id.clone(),
+                    plan_hash: plan.plan_hash.clone(),
+                },
+                "test",
+            )
+            .unwrap();
+        let stash = root.join("fake-recycle-directory");
+        let executor = CaskService {
+            repository,
+            storage: FakeDirectoryTrash {
+                storage: LocalStorage::new(storage_root),
+                stash: stash.clone(),
+            },
+        };
+        let result = executor
+            .execute_removal_plan(
+                &ExecuteRemovalPlan {
+                    version: CONTRACT_VERSION,
+                    id: plan.id,
+                    plan_hash: plan.plan_hash,
+                    confirm_permanent: false,
+                },
+                "test",
+            )
+            .unwrap();
+        assert_eq!(result.items[0].result_code.as_deref(), Some("TRASHED"));
+        assert!(stash.join("nested").join("note.txt").exists());
+        assert!(!std::path::Path::new(&managed.path).exists());
+        assert!(source.join("nested").join("note.txt").exists());
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn permanent_file_requires_opt_in_and_confirmation() {
+        let root =
+            std::env::temp_dir().join(format!("casklet-m4-permanent-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let source = root.join("source.txt");
+        fs::write(&source, b"keep source").unwrap();
+        let service = CaskService {
+            repository: SqliteCasks::open(root.join("state.db")).unwrap(),
+            storage: LocalStorage::new(root.join("casks")),
+        };
+        let cask = service
+            .create(
+                &CreateCask {
+                    version: CONTRACT_VERSION,
+                    name: "Permanent".into(),
+                },
+                "test",
+            )
+            .unwrap();
+        let managed = service
+            .add_resource(
+                &AddResource {
+                    version: CONTRACT_VERSION,
+                    cask_id: cask.id.clone(),
+                    source_path: source.to_string_lossy().into_owned(),
+                    mode: AddMode::Copy,
+                    category_key: "other".into(),
+                },
+                "test",
+                &|_, _| {},
+            )
+            .unwrap();
+        let external_link = root.join("external-hard-link.txt");
+        fs::hard_link(&managed.path, &external_link).unwrap();
+        let plan = service
+            .create_removal_plan(
+                &CreateRemovalPlan {
+                    version: CONTRACT_VERSION,
+                    cask_id: cask.id,
+                    resource_ids: vec![managed.id],
+                    category_key: None,
+                    permanent: true,
+                },
+                "test",
+            )
+            .unwrap();
+        assert_eq!(plan.items[0].action, "DELETE_PERMANENTLY");
+        service
+            .approve_removal_plan(
+                &ApproveRemovalPlan {
+                    version: CONTRACT_VERSION,
+                    id: plan.id.clone(),
+                    plan_hash: plan.plan_hash.clone(),
+                },
+                "test",
+            )
+            .unwrap();
+        let request = ExecuteRemovalPlan {
+            version: CONTRACT_VERSION,
+            id: plan.id,
+            plan_hash: plan.plan_hash,
+            confirm_permanent: false,
+        };
+        assert_eq!(
+            service
+                .execute_removal_plan(&request, "test")
+                .unwrap_err()
+                .code,
+            "PERMANENT_CONFIRMATION_REQUIRED"
+        );
+        assert!(std::path::Path::new(&managed.path).exists());
+        let result = service
+            .execute_removal_plan(
+                &ExecuteRemovalPlan {
+                    confirm_permanent: true,
+                    ..request
+                },
+                "test",
+            )
+            .unwrap();
+        assert_eq!(
+            result.items[0].result_code.as_deref(),
+            Some("PERMANENTLY_DELETED")
+        );
+        assert!(!std::path::Path::new(&managed.path).exists());
+        assert!(source.exists());
+        assert_eq!(fs::read(&external_link).unwrap(), b"keep source");
+        fs::remove_dir_all(root).unwrap();
+    }
     #[test]
     fn migration_and_restart() {
         let root = std::env::temp_dir().join(format!("casklet-m1-{}", uuid::Uuid::new_v4()));
@@ -225,7 +606,7 @@ mod tests {
             .unwrap()
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(schema_version, 3);
+        assert_eq!(schema_version, 6);
         assert_eq!(
             reopened
                 .list(
@@ -262,6 +643,1075 @@ mod tests {
                 .exists()
         );
         drop(reopened);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "integration fixture covers persistence, copy, reference, and immutable preview"
+    )]
+    fn removal_preview_tracks_verified_files_and_preserves_replacements() {
+        let root = std::env::temp_dir().join(format!("casklet-m4-plan-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let service = CaskService {
+            repository: SqliteCasks::open(root.join("state.db")).unwrap(),
+            storage: LocalStorage::new(root.join("casks")),
+        };
+        let cask = service
+            .create(
+                &CreateCask {
+                    version: CONTRACT_VERSION,
+                    name: "Plan test".into(),
+                },
+                "test",
+            )
+            .unwrap();
+        let source = root.join("source.txt");
+        fs::write(&source, b"managed").unwrap();
+        let managed = service
+            .add_resource(
+                &AddResource {
+                    version: CONTRACT_VERSION,
+                    cask_id: cask.id.clone(),
+                    source_path: source.to_string_lossy().into_owned(),
+                    mode: AddMode::Copy,
+                    category_key: "other".into(),
+                },
+                "test",
+                &|_, _| {},
+            )
+            .unwrap();
+        let reference = service
+            .add_resource(
+                &AddResource {
+                    version: CONTRACT_VERSION,
+                    cask_id: cask.id.clone(),
+                    source_path: source.to_string_lossy().into_owned(),
+                    mode: AddMode::Reference,
+                    category_key: "other".into(),
+                },
+                "test",
+                &|_, _| {},
+            )
+            .unwrap();
+        let plan = service
+            .create_removal_plan(
+                &CreateRemovalPlan {
+                    version: CONTRACT_VERSION,
+                    cask_id: cask.id.clone(),
+                    resource_ids: vec![],
+                    category_key: None,
+                    permanent: false,
+                },
+                "test",
+            )
+            .unwrap();
+        assert_eq!(plan.items.len(), 2);
+        assert_eq!(
+            plan.items
+                .iter()
+                .find(|i| i.resource_id == managed.id)
+                .unwrap()
+                .action,
+            "TRASH"
+        );
+        assert_eq!(
+            plan.items
+                .iter()
+                .find(|i| i.resource_id == reference.id)
+                .unwrap()
+                .action,
+            "DETACH"
+        );
+        assert_eq!(plan.plan_hash.len(), 64);
+        let loaded = service
+            .get_removal_plan(
+                &GetRemovalPlan {
+                    version: CONTRACT_VERSION,
+                    id: plan.id.clone(),
+                },
+                "test",
+            )
+            .unwrap();
+        assert_eq!(loaded.plan_hash, plan.plan_hash);
+        assert_eq!(loaded.items.len(), 2);
+        assert_eq!(
+            service
+                .approve_removal_plan(
+                    &ApproveRemovalPlan {
+                        version: CONTRACT_VERSION,
+                        id: plan.id.clone(),
+                        plan_hash: plan.plan_hash.clone(),
+                    },
+                    "test"
+                )
+                .unwrap()
+                .state,
+            "APPROVED"
+        );
+        assert!(
+            service
+                .approve_removal_plan(
+                    &ApproveRemovalPlan {
+                        version: CONTRACT_VERSION,
+                        id: plan.id.clone(),
+                        plan_hash: "wrong".into(),
+                    },
+                    "test"
+                )
+                .is_err()
+        );
+        assert!(std::path::Path::new(&managed.path).exists());
+        assert!(source.exists());
+        let pending = service
+            .create_removal_plan(
+                &CreateRemovalPlan {
+                    version: CONTRACT_VERSION,
+                    cask_id: cask.id.clone(),
+                    resource_ids: vec![managed.id.clone()],
+                    category_key: None,
+                    permanent: false,
+                },
+                "test",
+            )
+            .unwrap();
+        fs::remove_file(&managed.path).unwrap();
+        fs::write(&managed.path, b"managed").unwrap();
+        assert_eq!(
+            service
+                .approve_removal_plan(
+                    &ApproveRemovalPlan {
+                        version: CONTRACT_VERSION,
+                        id: pending.id,
+                        plan_hash: pending.plan_hash,
+                    },
+                    "test"
+                )
+                .unwrap_err()
+                .code,
+            "PLAN_CHANGED"
+        );
+        let replaced = service
+            .create_removal_plan(
+                &CreateRemovalPlan {
+                    version: CONTRACT_VERSION,
+                    cask_id: cask.id.clone(),
+                    resource_ids: vec![managed.id.clone()],
+                    category_key: None,
+                    permanent: false,
+                },
+                "test",
+            )
+            .unwrap();
+        assert_eq!(replaced.items[0].action, "PRESERVE");
+        assert_eq!(
+            loaded
+                .items
+                .iter()
+                .find(|i| i.resource_id == managed.id)
+                .unwrap()
+                .action,
+            "TRASH"
+        );
+        assert_eq!(
+            service
+                .create_removal_plan(
+                    &CreateRemovalPlan {
+                        version: CONTRACT_VERSION,
+                        cask_id: cask.id,
+                        resource_ids: vec![managed.id.clone(), managed.id],
+                        category_key: None,
+                        permanent: false,
+                    },
+                    "test"
+                )
+                .unwrap_err()
+                .code,
+            "INVALID_SCOPE"
+        );
+        let connection = service.repository.connection().unwrap();
+        connection
+            .execute(
+                "UPDATE removal_plan_items SET expected_path='tampered' WHERE id=?1",
+                [&plan.items[0].id],
+            )
+            .unwrap();
+        drop(connection);
+        assert!(
+            service
+                .get_removal_plan(
+                    &GetRemovalPlan {
+                        version: CONTRACT_VERSION,
+                        id: plan.id,
+                    },
+                    "test"
+                )
+                .is_err()
+        );
+        drop(service);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "integration fixture covers journal uncertainty and mutation lock after restart"
+    )]
+    fn interrupted_removal_run_keeps_its_lock_and_unknown_item() {
+        let root = std::env::temp_dir().join(format!("casklet-m4-run-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let service = CaskService {
+            repository: SqliteCasks::open(root.join("state.db")).unwrap(),
+            storage: LocalStorage::new(root.join("casks")),
+        };
+        let cask = service
+            .create(
+                &CreateCask {
+                    version: CONTRACT_VERSION,
+                    name: "Recovery".into(),
+                },
+                "test",
+            )
+            .unwrap();
+        let source = root.join("source.txt");
+        fs::write(&source, b"keep").unwrap();
+        let managed = service
+            .add_resource(
+                &AddResource {
+                    version: CONTRACT_VERSION,
+                    cask_id: cask.id.clone(),
+                    source_path: source.to_string_lossy().into_owned(),
+                    mode: AddMode::Copy,
+                    category_key: "other".into(),
+                },
+                "test",
+                &|_, _| {},
+            )
+            .unwrap();
+        let plan = service
+            .create_removal_plan(
+                &CreateRemovalPlan {
+                    version: CONTRACT_VERSION,
+                    cask_id: cask.id.clone(),
+                    resource_ids: vec![managed.id.clone()],
+                    category_key: None,
+                    permanent: false,
+                },
+                "test",
+            )
+            .unwrap();
+        let run_id = uuid::Uuid::new_v4().to_string();
+        let connection = service.repository.connection().unwrap();
+        connection
+            .execute(
+                "UPDATE removal_plans SET state='EXECUTING' WHERE id=?1",
+                [&plan.id],
+            )
+            .unwrap();
+        connection.execute("INSERT INTO removal_runs(id,plan_id,cask_id,state,owner_pid,started_at_ms,updated_at_ms) VALUES (?1,?2,?3,'RUNNING','4294967295',1,1)", params![run_id,plan.id,cask.id]).unwrap();
+        connection
+            .execute(
+                "INSERT INTO removal_locks(cask_id,run_id,acquired_at_ms) VALUES (?1,?2,1)",
+                params![cask.id, run_id],
+            )
+            .unwrap();
+        connection
+            .execute(
+                "UPDATE removal_plan_items SET run_id=?1,started_at_ms=1 WHERE id=?2",
+                params![run_id, plan.items[0].id],
+            )
+            .unwrap();
+        drop(connection);
+        service
+            .repository
+            .detect_abandoned_removals_with(|_| false)
+            .unwrap();
+        let connection = service.repository.connection().unwrap();
+        let state: String = connection
+            .query_row(
+                "SELECT state FROM removal_runs WHERE id=?1",
+                [&run_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let item_state: String = connection
+            .query_row(
+                "SELECT state FROM removal_plan_items WHERE id=?1",
+                [&plan.items[0].id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let lock_count: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM removal_locks WHERE cask_id=?1",
+                [&cask.id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(state, "RECOVERY_REQUIRED");
+        assert_eq!(item_state, "UNKNOWN");
+        assert_eq!(lock_count, 1);
+        assert!(std::path::Path::new(&managed.path).exists());
+        drop(connection);
+        assert!(
+            service
+                .add_resource(
+                    &AddResource {
+                        version: CONTRACT_VERSION,
+                        cask_id: cask.id,
+                        source_path: source.to_string_lossy().into_owned(),
+                        mode: AddMode::Copy,
+                        category_key: "other".into(),
+                    },
+                    "test",
+                    &|_, _| {}
+                )
+                .is_err()
+        );
+        drop(service);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "integration fixture checks approval, per-item journal, and lifecycle"
+    )]
+    fn approved_cleanup_uses_journal_and_preserves_reference_source() {
+        struct FakeTrash {
+            storage: LocalStorage,
+            stash: PathBuf,
+        }
+        impl casklet_application::removal::RemovalInspection for FakeTrash {
+            fn verify_managed(
+                &self,
+                root: &str,
+                candidate: &casklet_application::removal::RemovalCandidate,
+            ) -> Option<String> {
+                casklet_application::removal::RemovalInspection::verify_managed(
+                    &self.storage,
+                    root,
+                    candidate,
+                )
+            }
+            fn trash_verified(
+                &self,
+                root: &str,
+                candidate: &casklet_application::removal::RemovalCandidate,
+                identity: &str,
+                _run_id: &str,
+                _item_id: &str,
+            ) -> Result<(), String> {
+                if self.verify_managed(root, candidate).as_deref() != Some(identity) {
+                    return Err("identity changed".into());
+                }
+                fs::rename(&candidate.path, &self.stash).map_err(|e| e.to_string())
+            }
+        }
+        let root =
+            std::env::temp_dir().join(format!("casklet-m4-execute-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let repository = SqliteCasks::open(root.join("state.db")).unwrap();
+        let storage_root = root.join("casks");
+        let service = CaskService {
+            repository: repository.clone(),
+            storage: LocalStorage::new(storage_root.clone()),
+        };
+        let cask = service
+            .create(
+                &CreateCask {
+                    version: CONTRACT_VERSION,
+                    name: "Cleanup".into(),
+                },
+                "test",
+            )
+            .unwrap();
+        let source = root.join("source.txt");
+        fs::write(&source, b"retain this source").unwrap();
+        let managed = service
+            .add_resource(
+                &AddResource {
+                    version: CONTRACT_VERSION,
+                    cask_id: cask.id.clone(),
+                    source_path: source.to_string_lossy().into_owned(),
+                    mode: AddMode::Copy,
+                    category_key: "other".into(),
+                },
+                "test",
+                &|_, _| {},
+            )
+            .unwrap();
+        let _reference = service
+            .add_resource(
+                &AddResource {
+                    version: CONTRACT_VERSION,
+                    cask_id: cask.id.clone(),
+                    source_path: source.to_string_lossy().into_owned(),
+                    mode: AddMode::Reference,
+                    category_key: "other".into(),
+                },
+                "test",
+                &|_, _| {},
+            )
+            .unwrap();
+        let plan = service
+            .create_removal_plan(
+                &CreateRemovalPlan {
+                    version: CONTRACT_VERSION,
+                    cask_id: cask.id.clone(),
+                    resource_ids: vec![],
+                    category_key: None,
+                    permanent: false,
+                },
+                "test",
+            )
+            .unwrap();
+        service
+            .approve_removal_plan(
+                &ApproveRemovalPlan {
+                    version: CONTRACT_VERSION,
+                    id: plan.id.clone(),
+                    plan_hash: plan.plan_hash.clone(),
+                },
+                "test",
+            )
+            .unwrap();
+        let stash = root.join("fake-recycle.txt");
+        let executor = CaskService {
+            repository: repository.clone(),
+            storage: FakeTrash {
+                storage: LocalStorage::new(storage_root),
+                stash: stash.clone(),
+            },
+        };
+        let result = executor
+            .execute_removal_plan(
+                &ExecuteRemovalPlan {
+                    version: CONTRACT_VERSION,
+                    id: plan.id,
+                    plan_hash: plan.plan_hash,
+                    confirm_permanent: false,
+                },
+                "test",
+            )
+            .unwrap();
+        assert_eq!(result.state, "COMPLETE");
+        assert!(result.items.iter().all(|item| item.state == "SUCCEEDED"));
+        assert!(!std::path::Path::new(&managed.path).exists());
+        assert!(stash.exists());
+        assert!(source.exists());
+        assert_eq!(
+            repository.get(&cask.id).unwrap().unwrap().state,
+            CaskState::Destroyed
+        );
+        drop(executor);
+        drop(service);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "integration fixture checks replacement and hard-link swaps after approval"
+    )]
+    fn execution_preserves_replaced_file_and_hard_link_swap_after_approval() {
+        struct NoTrash(LocalStorage);
+        impl casklet_application::removal::RemovalInspection for NoTrash {
+            fn verify_managed(
+                &self,
+                root: &str,
+                candidate: &casklet_application::removal::RemovalCandidate,
+            ) -> Option<String> {
+                casklet_application::removal::RemovalInspection::verify_managed(
+                    &self.0, root, candidate,
+                )
+            }
+            fn trash_verified(
+                &self,
+                _root: &str,
+                _candidate: &casklet_application::removal::RemovalCandidate,
+                _identity: &str,
+                _run_id: &str,
+                _item_id: &str,
+            ) -> Result<(), String> {
+                panic!("changed file must never reach trash")
+            }
+        }
+        for hard_link in [false, true] {
+            let root =
+                std::env::temp_dir().join(format!("casklet-m4-swap-{}", uuid::Uuid::new_v4()));
+            fs::create_dir_all(&root).unwrap();
+            let repository = SqliteCasks::open(root.join("state.db")).unwrap();
+            let storage_root = root.join("casks");
+            let service = CaskService {
+                repository: repository.clone(),
+                storage: LocalStorage::new(storage_root.clone()),
+            };
+            let cask = service
+                .create(
+                    &CreateCask {
+                        version: CONTRACT_VERSION,
+                        name: "Swap".into(),
+                    },
+                    "test",
+                )
+                .unwrap();
+            let source = root.join("source.txt");
+            fs::write(&source, b"same bytes").unwrap();
+            let managed = service
+                .add_resource(
+                    &AddResource {
+                        version: CONTRACT_VERSION,
+                        cask_id: cask.id.clone(),
+                        source_path: source.to_string_lossy().into_owned(),
+                        mode: AddMode::Copy,
+                        category_key: "other".into(),
+                    },
+                    "test",
+                    &|_, _| {},
+                )
+                .unwrap();
+            let plan = service
+                .create_removal_plan(
+                    &CreateRemovalPlan {
+                        version: CONTRACT_VERSION,
+                        cask_id: cask.id.clone(),
+                        resource_ids: vec![],
+                        category_key: None,
+                        permanent: false,
+                    },
+                    "test",
+                )
+                .unwrap();
+            service
+                .approve_removal_plan(
+                    &ApproveRemovalPlan {
+                        version: CONTRACT_VERSION,
+                        id: plan.id.clone(),
+                        plan_hash: plan.plan_hash.clone(),
+                    },
+                    "test",
+                )
+                .unwrap();
+            fs::remove_file(&managed.path).unwrap();
+            if hard_link {
+                fs::hard_link(&source, &managed.path).unwrap();
+            } else {
+                fs::write(&managed.path, b"same bytes").unwrap();
+            }
+            let executor = CaskService {
+                repository: repository.clone(),
+                storage: NoTrash(LocalStorage::new(storage_root)),
+            };
+            let result = executor
+                .execute_removal_plan(
+                    &ExecuteRemovalPlan {
+                        version: CONTRACT_VERSION,
+                        id: plan.id,
+                        plan_hash: plan.plan_hash,
+                        confirm_permanent: false,
+                    },
+                    "test",
+                )
+                .unwrap();
+            assert_eq!(result.items[0].state, "PRESERVED");
+            assert_eq!(
+                result.items[0].result_code.as_deref(),
+                Some("REVALIDATION_FAILED")
+            );
+            assert!(std::path::Path::new(&managed.path).exists());
+            assert_eq!(
+                repository.get(&cask.id).unwrap().unwrap().state,
+                CaskState::PartiallyDestroyed
+            );
+            drop(executor);
+            drop(service);
+            fs::remove_dir_all(root).unwrap();
+        }
+    }
+
+    #[cfg(windows)]
+    #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "integration fixture tests a junction swap between approval and execution"
+    )]
+    fn execution_preserves_junction_swap_after_approval() {
+        struct NoTrash(LocalStorage);
+        impl casklet_application::removal::RemovalInspection for NoTrash {
+            fn verify_managed(
+                &self,
+                root: &str,
+                candidate: &casklet_application::removal::RemovalCandidate,
+            ) -> Option<String> {
+                casklet_application::removal::RemovalInspection::verify_managed(
+                    &self.0, root, candidate,
+                )
+            }
+            fn trash_verified(
+                &self,
+                _root: &str,
+                _candidate: &casklet_application::removal::RemovalCandidate,
+                _identity: &str,
+                _run_id: &str,
+                _item_id: &str,
+            ) -> Result<(), String> {
+                panic!("junction must never reach trash")
+            }
+        }
+        let root =
+            std::env::temp_dir().join(format!("casklet-m4-junction-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let repository = SqliteCasks::open(root.join("state.db")).unwrap();
+        let storage_root = root.join("casks");
+        let service = CaskService {
+            repository: repository.clone(),
+            storage: LocalStorage::new(storage_root.clone()),
+        };
+        let cask = service
+            .create(
+                &CreateCask {
+                    version: CONTRACT_VERSION,
+                    name: "Junction".into(),
+                },
+                "test",
+            )
+            .unwrap();
+        let source = root.join("source.txt");
+        fs::write(&source, b"managed bytes").unwrap();
+        let managed = service
+            .add_resource(
+                &AddResource {
+                    version: CONTRACT_VERSION,
+                    cask_id: cask.id.clone(),
+                    source_path: source.to_string_lossy().into_owned(),
+                    mode: AddMode::Copy,
+                    category_key: "other".into(),
+                },
+                "test",
+                &|_, _| {},
+            )
+            .unwrap();
+        let plan = service
+            .create_removal_plan(
+                &CreateRemovalPlan {
+                    version: CONTRACT_VERSION,
+                    cask_id: cask.id.clone(),
+                    resource_ids: vec![],
+                    category_key: None,
+                    permanent: false,
+                },
+                "test",
+            )
+            .unwrap();
+        service
+            .approve_removal_plan(
+                &ApproveRemovalPlan {
+                    version: CONTRACT_VERSION,
+                    id: plan.id.clone(),
+                    plan_hash: plan.plan_hash.clone(),
+                },
+                "test",
+            )
+            .unwrap();
+        let external = root.join("external");
+        fs::create_dir(&external).unwrap();
+        fs::write(external.join("keep.txt"), b"keep").unwrap();
+        fs::remove_file(&managed.path).unwrap();
+        let junction = std::path::Path::new(&managed.path);
+        let output = std::process::Command::new("cmd")
+            .args(["/C", "mklink", "/J"])
+            .arg(junction)
+            .arg(&external)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let executor = CaskService {
+            repository,
+            storage: NoTrash(LocalStorage::new(storage_root)),
+        };
+        let result = executor
+            .execute_removal_plan(
+                &ExecuteRemovalPlan {
+                    version: CONTRACT_VERSION,
+                    id: plan.id,
+                    plan_hash: plan.plan_hash,
+                    confirm_permanent: false,
+                },
+                "test",
+            )
+            .unwrap();
+        assert_eq!(result.items[0].state, "PRESERVED");
+        assert_eq!(fs::read(external.join("keep.txt")).unwrap(), b"keep");
+        fs::remove_dir(junction).unwrap();
+        drop(executor);
+        drop(service);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "fault fixture verifies uncertain external outcome and retained lock"
+    )]
+    fn uncertain_trash_outcome_keeps_recovery_lock() {
+        struct MoveThenFail {
+            storage: LocalStorage,
+            stash: PathBuf,
+        }
+        impl casklet_application::removal::RemovalInspection for MoveThenFail {
+            fn verify_managed(
+                &self,
+                root: &str,
+                candidate: &casklet_application::removal::RemovalCandidate,
+            ) -> Option<String> {
+                casklet_application::removal::RemovalInspection::verify_managed(
+                    &self.storage,
+                    root,
+                    candidate,
+                )
+            }
+            fn trash_verified(
+                &self,
+                root: &str,
+                candidate: &casklet_application::removal::RemovalCandidate,
+                identity: &str,
+                _run_id: &str,
+                _item_id: &str,
+            ) -> Result<(), String> {
+                if self.verify_managed(root, candidate).as_deref() != Some(identity) {
+                    return Err("changed".into());
+                }
+                fs::rename(&candidate.path, &self.stash).map_err(|e| e.to_string())?;
+                Err("simulated uncertain external result".into())
+            }
+        }
+        let root =
+            std::env::temp_dir().join(format!("casklet-m4-uncertain-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let repository = SqliteCasks::open(root.join("state.db")).unwrap();
+        let storage_root = root.join("casks");
+        let service = CaskService {
+            repository: repository.clone(),
+            storage: LocalStorage::new(storage_root.clone()),
+        };
+        let cask = service
+            .create(
+                &CreateCask {
+                    version: CONTRACT_VERSION,
+                    name: "Uncertain".into(),
+                },
+                "test",
+            )
+            .unwrap();
+        let source = root.join("source.txt");
+        fs::write(&source, b"keep source").unwrap();
+        let managed = service
+            .add_resource(
+                &AddResource {
+                    version: CONTRACT_VERSION,
+                    cask_id: cask.id.clone(),
+                    source_path: source.to_string_lossy().into_owned(),
+                    mode: AddMode::Copy,
+                    category_key: "other".into(),
+                },
+                "test",
+                &|_, _| {},
+            )
+            .unwrap();
+        let plan = service
+            .create_removal_plan(
+                &CreateRemovalPlan {
+                    version: CONTRACT_VERSION,
+                    cask_id: cask.id.clone(),
+                    resource_ids: vec![],
+                    category_key: None,
+                    permanent: false,
+                },
+                "test",
+            )
+            .unwrap();
+        service
+            .approve_removal_plan(
+                &ApproveRemovalPlan {
+                    version: CONTRACT_VERSION,
+                    id: plan.id.clone(),
+                    plan_hash: plan.plan_hash.clone(),
+                },
+                "test",
+            )
+            .unwrap();
+        let stash = root.join("uncertain-stash.txt");
+        let executor = CaskService {
+            repository: repository.clone(),
+            storage: MoveThenFail {
+                storage: LocalStorage::new(storage_root),
+                stash: stash.clone(),
+            },
+        };
+        let result = executor
+            .execute_removal_plan(
+                &ExecuteRemovalPlan {
+                    version: CONTRACT_VERSION,
+                    id: plan.id,
+                    plan_hash: plan.plan_hash,
+                    confirm_permanent: false,
+                },
+                "test",
+            )
+            .unwrap();
+        assert_eq!(result.state, "PARTIAL");
+        assert_eq!(result.items[0].state, "UNKNOWN");
+        assert_eq!(
+            repository.get(&cask.id).unwrap().unwrap().state,
+            CaskState::RecoveryRequired
+        );
+        let connection = repository.connection().unwrap();
+        let locks: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM removal_locks WHERE cask_id=?1",
+                [&cask.id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(locks, 1);
+        assert!(stash.exists());
+        assert!(!std::path::Path::new(&managed.path).exists());
+        assert!(source.exists());
+        drop(connection);
+        let closed = executor
+            .close_uncertain_removal(
+                &CloseRemovalRun {
+                    version: CONTRACT_VERSION,
+                    run_id: result.run_id.unwrap(),
+                },
+                "test",
+            )
+            .unwrap();
+        assert_eq!(closed.items[0].state, "UNKNOWN");
+        assert_eq!(
+            closed.items[0].result_code.as_deref(),
+            Some("CLOSED_UNRESOLVED")
+        );
+        assert_eq!(
+            repository.get(&cask.id).unwrap().unwrap().state,
+            CaskState::PartiallyDestroyed
+        );
+        let connection = repository.connection().unwrap();
+        let remaining_locks: i64 = connection
+            .query_row(
+                "SELECT COUNT(*) FROM removal_locks WHERE cask_id=?1",
+                [&cask.id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(remaining_locks, 0);
+        assert!(stash.exists());
+        drop(connection);
+        drop(executor);
+        drop(service);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn removal_hard_exit_helper() {
+        let Ok(root_text) = std::env::var("CASKLET_TEST_REMOVAL_EXIT_ROOT") else {
+            return;
+        };
+        #[expect(
+            clippy::items_after_statements,
+            reason = "fault adapter is local to the helper"
+        )]
+        struct ExitAfterQuarantine(LocalStorage);
+        #[expect(
+            clippy::items_after_statements,
+            reason = "fault adapter is local to the helper"
+        )]
+        impl casklet_application::removal::RemovalInspection for ExitAfterQuarantine {
+            fn verify_managed(
+                &self,
+                root: &str,
+                candidate: &casklet_application::removal::RemovalCandidate,
+            ) -> Option<String> {
+                casklet_application::removal::RemovalInspection::verify_managed(
+                    &self.0, root, candidate,
+                )
+            }
+            fn trash_verified(
+                &self,
+                root: &str,
+                candidate: &casklet_application::removal::RemovalCandidate,
+                identity: &str,
+                run_id: &str,
+                item_id: &str,
+            ) -> Result<(), String> {
+                assert_eq!(
+                    self.verify_managed(root, candidate).as_deref(),
+                    Some(identity)
+                );
+                let quarantine = std::path::Path::new(root)
+                    .join(".casklet")
+                    .join("removal-staging")
+                    .join(run_id)
+                    .join(item_id);
+                fs::create_dir_all(quarantine.parent().unwrap()).unwrap();
+                fs::rename(&candidate.path, &quarantine).unwrap();
+                std::process::exit(74);
+            }
+        }
+        let root = PathBuf::from(root_text);
+        let service = CaskService {
+            repository: SqliteCasks::open(root.join("state.db")).unwrap(),
+            storage: ExitAfterQuarantine(LocalStorage::new(root.join("casks"))),
+        };
+        let plan_id = std::env::var("CASKLET_TEST_REMOVAL_EXIT_PLAN").unwrap();
+        let hash = std::env::var("CASKLET_TEST_REMOVAL_EXIT_HASH").unwrap();
+        let _ = service.execute_removal_plan(
+            &ExecuteRemovalPlan {
+                version: CONTRACT_VERSION,
+                id: plan_id,
+                plan_hash: hash,
+                confirm_permanent: false,
+            },
+            "test",
+        );
+        panic!("removal fault point was not reached");
+    }
+
+    #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "child-process fault test verifies the real durable boundary after quarantine"
+    )]
+    fn hard_exit_after_quarantine_requires_preserved_recovery() {
+        let root = std::env::temp_dir().join(format!("casklet-m4-exit-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let repository = SqliteCasks::open(root.join("state.db")).unwrap();
+        let service = CaskService {
+            repository: repository.clone(),
+            storage: LocalStorage::new(root.join("casks")),
+        };
+        let cask = service
+            .create(
+                &CreateCask {
+                    version: CONTRACT_VERSION,
+                    name: "Crash".into(),
+                },
+                "test",
+            )
+            .unwrap();
+        let source = root.join("source.txt");
+        fs::write(&source, b"crash-safe").unwrap();
+        let managed = service
+            .add_resource(
+                &AddResource {
+                    version: CONTRACT_VERSION,
+                    cask_id: cask.id.clone(),
+                    source_path: source.to_string_lossy().into_owned(),
+                    mode: AddMode::Copy,
+                    category_key: "other".into(),
+                },
+                "test",
+                &|_, _| {},
+            )
+            .unwrap();
+        let plan = service
+            .create_removal_plan(
+                &CreateRemovalPlan {
+                    version: CONTRACT_VERSION,
+                    cask_id: cask.id.clone(),
+                    resource_ids: vec![],
+                    category_key: None,
+                    permanent: false,
+                },
+                "test",
+            )
+            .unwrap();
+        service
+            .approve_removal_plan(
+                &ApproveRemovalPlan {
+                    version: CONTRACT_VERSION,
+                    id: plan.id.clone(),
+                    plan_hash: plan.plan_hash.clone(),
+                },
+                "test",
+            )
+            .unwrap();
+        drop(service);
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "tests::removal_hard_exit_helper", "--nocapture"])
+            .env("CASKLET_TEST_REMOVAL_EXIT_ROOT", &root)
+            .env("CASKLET_TEST_REMOVAL_EXIT_PLAN", &plan.id)
+            .env("CASKLET_TEST_REMOVAL_EXIT_HASH", &plan.plan_hash)
+            .output()
+            .unwrap();
+        assert_eq!(
+            output.status.code(),
+            Some(74),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let repository = SqliteCasks::open(root.join("state.db")).unwrap();
+        repository
+            .detect_abandoned_removals_with(|_| false)
+            .unwrap();
+        let recovered =
+            casklet_application::removal::RemovalRepository::get_plan(&repository, &plan.id)
+                .unwrap()
+                .unwrap();
+        assert_eq!(recovered.state, "PARTIAL");
+        assert_eq!(recovered.items[0].state, "UNKNOWN");
+        let quarantine = std::path::Path::new(&cask.managed_storage_root)
+            .join(".casklet")
+            .join("removal-staging")
+            .join(recovered.run_id.as_deref().unwrap())
+            .join(&recovered.items[0].id);
+        assert!(quarantine.exists());
+        assert!(!std::path::Path::new(&managed.path).exists());
+        assert!(source.exists());
+        let service = CaskService {
+            repository,
+            storage: LocalStorage::new(root.join("casks")),
+        };
+        let closed = service
+            .close_uncertain_removal(
+                &CloseRemovalRun {
+                    version: CONTRACT_VERSION,
+                    run_id: recovered.run_id.unwrap(),
+                },
+                "test",
+            )
+            .unwrap();
+        assert_eq!(closed.items[0].state, "UNKNOWN");
+        assert_eq!(
+            closed.items[0].result_code.as_deref(),
+            Some("CLOSED_UNRESOLVED")
+        );
+        assert_eq!(
+            closed.items[0].recovery_path.as_deref(),
+            Some(quarantine.to_string_lossy().as_ref())
+        );
+        assert!(quarantine.exists());
+        fs::rename(&quarantine, &managed.path).unwrap();
+        let retry = service
+            .create_removal_plan(
+                &CreateRemovalPlan {
+                    version: CONTRACT_VERSION,
+                    cask_id: cask.id,
+                    resource_ids: vec![managed.id],
+                    category_key: None,
+                    permanent: false,
+                },
+                "test",
+            )
+            .unwrap();
+        assert_eq!(retry.items[0].action, "TRASH");
+        drop(service);
         fs::remove_dir_all(root).unwrap();
     }
 

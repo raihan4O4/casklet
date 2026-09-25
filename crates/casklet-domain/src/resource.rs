@@ -69,6 +69,7 @@ pub struct Resource {
     pub size_measurement: &'static str,
     pub unknown_entries: u64,
     pub created_at_ms: i64,
+    pub identity_key: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -127,6 +128,7 @@ impl Resource {
             size_measurement,
             unknown_entries,
             created_at_ms,
+            identity_key: None,
         })
     }
     #[must_use]
