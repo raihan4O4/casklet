@@ -1,9 +1,10 @@
 use casklet_contracts::{
     AddMode, AddResource, ApiError, CONTRACT_VERSION, CancelOperation, CaskView,
-    CategorizeResource, CategoryView, CreateCask, CreateCategory, CreateDiagnosticsBundle, GetCask,
-    GetOperation, GetResource, GetStorageSummary, ListCasks, ListCategories, ListOperations,
-    ListResources, OperationView, PreserveOperation, RecoverOperation, RecoveryInspection,
-    RecoveryStatus, ResourceView, StorageSummary,
+    CategorizeResource, CategoryView, CreateCask, CreateCategory, CreateDiagnosticsBundle,
+    CreateRemovalPlan, GetCask, GetOperation, GetRemovalPlan, GetResource, GetStorageSummary,
+    ListCasks, ListCategories, ListOperations, ListResources, OperationView, PreserveOperation,
+    RecoverOperation, RecoveryInspection, RecoveryStatus, RemovalPlanView, ResourceView,
+    StorageSummary,
 };
 use clap::{Parser, Subcommand, ValueEnum};
 use std::fmt::Write;
@@ -53,6 +54,10 @@ enum Command {
     Diagnostics {
         #[command(subcommand)]
         action: DiagnosticsAction,
+    },
+    Plan {
+        #[command(subcommand)]
+        action: PlanAction,
     },
 }
 
@@ -141,6 +146,20 @@ enum RecoveryAction {
 #[derive(Debug, Subcommand)]
 enum DiagnosticsAction {
     Bundle { output_path: String },
+}
+
+#[derive(Debug, Subcommand)]
+enum PlanAction {
+    Create {
+        cask_id: String,
+        #[arg(long, conflicts_with = "category")]
+        resource: Vec<String>,
+        #[arg(long)]
+        category: Option<String>,
+    },
+    Get {
+        id: String,
+    },
 }
 
 #[expect(
@@ -383,6 +402,35 @@ fn main() -> ExitCode {
                 Output::Table => format!("Wrote diagnostics to {output_path}\n"),
                 Output::Json => format!("{}\n", serde_json::json!({"outputPath":output_path})),
             }),
+        Command::Plan {
+            action:
+                PlanAction::Create {
+                    cask_id,
+                    resource,
+                    category,
+                },
+        } => service
+            .create_removal_plan(
+                &CreateRemovalPlan {
+                    version: CONTRACT_VERSION,
+                    cask_id,
+                    resource_ids: resource,
+                    category_key: category,
+                },
+                &correlation_id,
+            )
+            .map(|plan| render_plan(&plan, cli.output)),
+        Command::Plan {
+            action: PlanAction::Get { id },
+        } => service
+            .get_removal_plan(
+                &GetRemovalPlan {
+                    version: CONTRACT_VERSION,
+                    id,
+                },
+                &correlation_id,
+            )
+            .map(|plan| render_plan(&plan, cli.output)),
     };
     match result {
         Ok(output) => {
@@ -392,6 +440,34 @@ fn main() -> ExitCode {
         Err(error) => {
             render_error(&error, cli.output);
             ExitCode::FAILURE
+        }
+    }
+}
+
+fn render_plan(plan: &RemovalPlanView, output: Output) -> String {
+    match output {
+        Output::Json => format!(
+            "{}\n",
+            serde_json::to_string(plan).expect("Plan DTO is serializable")
+        ),
+        Output::Table => {
+            let mut result = format!(
+                "Plan {} ({}; expires {})\n",
+                plan.id,
+                plan.state.to_ascii_lowercase(),
+                plan.expires_at_ms
+            );
+            for item in &plan.items {
+                writeln!(
+                    result,
+                    "{}: {} ({})",
+                    item.name,
+                    item.action.to_ascii_lowercase(),
+                    item.reason_code.to_ascii_lowercase()
+                )
+                .expect("String write");
+            }
+            result
         }
     }
 }

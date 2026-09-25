@@ -14,7 +14,7 @@ Core principle:
 
 ## Current phase
 
-The initial design program is approved. Milestones 0–2 are complete and merged into `develop`. Milestone 3 — durable operations and recovery — is implemented locally on `codex/durable-operations-recovery` and awaiting user smoke testing and review.
+The initial design program is approved. Milestones 0–2 are complete and merged into `develop`. Milestone 3 — durable operations and recovery — is in PR #6 and awaiting user smoke testing and review. Milestone 4 — removal planning and safe cleanup — has begun on `codex/removal-plans-safe-cleanup`, based on the Milestone 3 branch.
 
 - Phase 1 — Requirements: approved.
 - Phase 2 — Cross-platform and installation workflow: approved.
@@ -139,4 +139,4 @@ Exact dependencies will be approved during repository/tooling design; do not add
 
 ## Current implementation milestone
 
-Milestone 0 — Reproducible foundation — and Milestone 1 — Cask walking skeleton — are complete. Milestone 2 — Resource intake and inspection — merged into `develop` as PR #5. Milestone 3 includes operation/step journals, persistent locks, progress/cancellation, startup abandonment detection, explicit intake recovery or preserved close, manifest projection retry, CLI/desktop recovery views, and path-free diagnostics. Forced-exit tests cover each intake boundary and manifest backup restoration is tested. A live desktop cancellation/reconnect smoke test remains before approval. See `docs/engineering/milestone-3-operations-recovery.md` and ADR 0010. Keep `main` unchanged until planned milestone integration.
+Milestone 0 — Reproducible foundation — and Milestone 1 — Cask walking skeleton — are complete. Milestone 2 — Resource intake and inspection — merged into `develop` as PR #5. Milestone 3 PR #6 includes durable operations and recovery; a live desktop cancellation/reconnect smoke test remains before approval. Milestone 4 currently provides durable, immutable removal previews through the CLI and desktop, with conservative eligibility and no destructive endpoint. Legacy managed resources lack a recorded filesystem identity and are preserved in previews (ADR 0011). Approval, execution, crash recovery, and independent security review remain. See `docs/engineering/milestone-4-safe-cleanup.md`. Keep `main` unchanged until planned milestone integration.

@@ -4,7 +4,7 @@
   import { getCurrentWindow } from '@tauri-apps/api/window';
   import { open, save } from '@tauri-apps/plugin-dialog';
   import { onMount } from 'svelte';
-  import type { AddMode, ApiError, CaskView, CategoryView, ResourceView, StorageSummary, RecoveryStatus, RecoveryInspection, OperationView } from '../contracts/generated/casklet';
+  import type { AddMode, ApiError, CaskView, CategoryView, ResourceView, StorageSummary, RecoveryStatus, RecoveryInspection, OperationView, RemovalPlanView } from '../contracts/generated/casklet';
   import { CONTRACT_VERSION } from '../contracts/generated/casklet';
 
   let casks: CaskView[] = $state([]);
@@ -25,6 +25,22 @@
   let recoveryInspection: RecoveryInspection | null = $state(null);
   let activeOperation = $state('');
   let operations: OperationView[] = $state([]);
+  let removalPlan: RemovalPlanView | null = $state(null);
+  let removalCategory = $state('');
+
+  async function previewRemoval(resourceIds: string[] = []) {
+    if (!selected) return;
+    try {
+      removalPlan = await invoke<RemovalPlanView>('create_removal_plan', { request: {
+        version: CONTRACT_VERSION, caskId: selected.id, resourceIds,
+        categoryKey: resourceIds.length ? null : (removalCategory || null),
+      } });
+      error = '';
+    } catch (cause) { error = message(cause); }
+  }
+  function previewSelectedResource() {
+    if (selectedResource) void previewRemoval([selectedResource.id]);
+  }
 
   function message(cause: unknown): string {
     const api = cause as Partial<ApiError>;
@@ -77,7 +93,7 @@
     busy = true;
     try {
       selected = await invoke<CaskView>('create_cask', { request: { version: CONTRACT_VERSION, name } });
-      pendingPath = ''; pendingMode = ''; selectedResource = null;
+      pendingPath = ''; pendingMode = ''; selectedResource = null; removalPlan = null;
       name = '';
       await refresh();
       await refreshResources();
@@ -86,7 +102,7 @@
     finally { busy = false; }
   }
   async function inspect(id: string) {
-    try { selected = await invoke<CaskView>('get_cask', { request: { version: CONTRACT_VERSION, id } }); pendingPath = ''; pendingMode = ''; selectedResource = null; error = ''; await refreshResources(); }
+    try { selected = await invoke<CaskView>('get_cask', { request: { version: CONTRACT_VERSION, id } }); pendingPath = ''; pendingMode = ''; selectedResource = null; removalPlan = null; error = ''; await refreshResources(); }
     catch (cause) { error = message(cause); }
   }
   async function refreshResources() {
@@ -233,6 +249,21 @@
           <dl><dt>Name</dt><dd>{selectedResource.name}</dd><dt>Location</dt><dd>{selectedResource.path}</dd>
             <dt>Management</dt><dd>{selectedResource.management}</dd><dt>Availability</dt><dd>{selectedResource.availability}</dd>
             <dt>Size</dt><dd>{selectedResource.sizeBytes ?? 'Unknown'} ({selectedResource.sizeMeasurement})</dd></dl>
+        {/if}
+      </section>
+      <section aria-label="Removal preview">
+        <h3>Cleanup preview</h3>
+        <p>Review what Casklet could detach, preserve, or move to trash. This preview does not change files or associations.</p>
+        <label for="removal-category">Scope</label>
+        <select id="removal-category" bind:value={removalCategory}>
+          <option value="">Whole Cask</option>
+          {#each categories as category (category.key)}<option value={category.key}>{category.name}</option>{/each}
+        </select>
+        <button type="button" onclick={() => void previewRemoval()}>Create cleanup preview</button>
+        {#if selectedResource}<button type="button" onclick={previewSelectedResource}>Preview selected resource</button>{/if}
+        {#if removalPlan}
+          <p>Plan {removalPlan.id} expires {new Date(removalPlan.expiresAtMs).toLocaleString()}.</p>
+          <ul>{#each removalPlan.items as item (item.id)}<li>{item.name}: {item.action.toLowerCase()} ({item.reasonCode.toLowerCase()})</li>{/each}</ul>
         {/if}
       </section>
       <section aria-label="Categories">

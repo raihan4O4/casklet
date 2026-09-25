@@ -30,7 +30,9 @@ pub fn run() {
             recovery_status,
             inspect_recovery,
             retry_manifests,
-            create_diagnostics_bundle
+            create_diagnostics_bundle,
+            create_removal_plan,
+            get_removal_plan
         ])
         .run(tauri::generate_context!())
         .expect("failed to run Casklet desktop");
@@ -220,4 +222,22 @@ fn create_diagnostics_bundle(
     request: casklet_contracts::CreateDiagnosticsBundle,
 ) -> Result<(), casklet_contracts::ApiError> {
     service.create_diagnostics_bundle(&request, "desktop")
+}
+
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+fn create_removal_plan(
+    service: tauri::State<'_, Service>,
+    request: casklet_contracts::CreateRemovalPlan,
+) -> Result<casklet_contracts::RemovalPlanView, casklet_contracts::ApiError> {
+    service.create_removal_plan(&request, "desktop")
+}
+
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+fn get_removal_plan(
+    service: tauri::State<'_, Service>,
+    request: casklet_contracts::GetRemovalPlan,
+) -> Result<casklet_contracts::RemovalPlanView, casklet_contracts::ApiError> {
+    service.get_removal_plan(&request, "desktop")
 }

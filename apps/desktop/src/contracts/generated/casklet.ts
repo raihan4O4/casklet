@@ -27,3 +27,7 @@ export type RecoveryInspection = { version: number; operation: OperationView; mo
 export type CreateDiagnosticsBundle = { version: number; outputPath: string };
 export type DiagnosticEvent = { operationId: string | null; code: string; atMs: number };
 export type DiagnosticsBundle = { schemaVersion: number; generatedAtMs: number; operations: OperationView[]; pendingManifestCount: number; events: DiagnosticEvent[]; eventsTruncated: boolean };
+export type CreateRemovalPlan = { version: number; caskId: string; resourceIds: string[]; categoryKey: string | null };
+export type GetRemovalPlan = { version: number; id: string };
+export type RemovalPlanItemView = { id: string; resourceId: string; name: string; action: string; reasonCode: string; expectedSizeBytes: number | null };
+export type RemovalPlanView = { version: number; id: string; caskId: string; scope: string; categoryKey: string | null; state: string; planHash: string; createdAtMs: number; expiresAtMs: number; items: RemovalPlanItemView[] };
