@@ -27,6 +27,9 @@
   let operations: OperationView[] = $state([]);
   let removalPlan: RemovalPlanView | null = $state(null);
   let removalCategory = $state('');
+  let removalEnabled = $state(false);
+  let removalConfirmation = $state('');
+  let removalBusy = $state(false);
 
   async function previewRemoval(resourceIds: string[] = []) {
     if (!selected) return;
@@ -40,6 +43,45 @@
   }
   function previewSelectedResource() {
     if (selectedResource) void previewRemoval([selectedResource.id]);
+  }
+
+  async function approveRemoval() {
+    if (!removalPlan || !removalEnabled) return;
+    removalBusy = true;
+    try {
+      removalPlan = await invoke<RemovalPlanView>('approve_removal_plan', { request: {
+        version: CONTRACT_VERSION, id: removalPlan.id, planHash: removalPlan.planHash,
+      } });
+      error = '';
+    } catch (cause) { error = message(cause); }
+    finally { removalBusy = false; }
+  }
+  async function executeRemoval() {
+    if (!removalPlan || !removalEnabled || removalConfirmation !== removalPlan.id) return;
+    removalBusy = true;
+    try {
+      removalPlan = await invoke<RemovalPlanView>('execute_removal_plan', { request: {
+        version: CONTRACT_VERSION, id: removalPlan.id, planHash: removalPlan.planHash,
+      } });
+      removalConfirmation = '';
+      await refreshResources();
+      if (selected) selected = await invoke<CaskView>('get_cask', { request: { version: CONTRACT_VERSION, id: selected.id } });
+      error = '';
+    } catch (cause) { error = message(cause); }
+    finally { removalBusy = false; }
+  }
+  async function closeUncertainRemoval() {
+    if (!removalPlan?.runId || removalConfirmation !== removalPlan.runId) return;
+    removalBusy = true;
+    try {
+      removalPlan = await invoke<RemovalPlanView>('close_uncertain_removal', { request: {
+        version: CONTRACT_VERSION, runId: removalPlan.runId,
+      } });
+      removalConfirmation = '';
+      if (selected) selected = await invoke<CaskView>('get_cask', { request: { version: CONTRACT_VERSION, id: selected.id } });
+      error = '';
+    } catch (cause) { error = message(cause); }
+    finally { removalBusy = false; }
   }
 
   function message(cause: unknown): string {
@@ -147,6 +189,7 @@
   }
   onMount(() => {
     void refresh();
+    void invoke<boolean>('removal_capability').then((enabled) => { removalEnabled = enabled; }).catch(() => { removalEnabled = false; });
     let disposed = false;
     let unlistenDrop: (() => void) | undefined;
     let unlistenProgress: (() => void) | undefined;
@@ -262,8 +305,23 @@
         <button type="button" onclick={() => void previewRemoval()}>Create cleanup preview</button>
         {#if selectedResource}<button type="button" onclick={previewSelectedResource}>Preview selected resource</button>{/if}
         {#if removalPlan}
-          <p>Plan {removalPlan.id} expires {new Date(removalPlan.expiresAtMs).toLocaleString()}.</p>
-          <ul>{#each removalPlan.items as item (item.id)}<li>{item.name}: {item.action.toLowerCase()} ({item.reasonCode.toLowerCase()})</li>{/each}</ul>
+          <p>Plan {removalPlan.id} is {removalPlan.state.toLowerCase()} and expires {new Date(removalPlan.expiresAtMs).toLocaleString()}.</p>
+          <ul>{#each removalPlan.items as item (item.id)}<li>{item.name}: {item.action.toLowerCase()} ({item.reasonCode.toLowerCase()}); {item.state.toLowerCase()}{item.resultCode ? ` (${item.resultCode.toLowerCase()})` : ''}</li>{/each}</ul>
+          {#if removalEnabled && removalPlan.state === 'DRAFT'}
+            <button type="button" disabled={removalBusy} onclick={() => void approveRemoval()}>Approve this plan</button>
+          {/if}
+          {#if removalEnabled && removalPlan.state === 'APPROVED'}
+            <p role="alert">Executing may move eligible managed files to the Recycle Bin and detach associations. Changed or uncertain items are preserved for review.</p>
+            <label for="removal-confirmation">Type the plan ID to execute</label>
+            <input id="removal-confirmation" bind:value={removalConfirmation} autocomplete="off" />
+            <button type="button" disabled={removalBusy || removalConfirmation !== removalPlan.id} onclick={() => void executeRemoval()}>Execute cleanup</button>
+          {/if}
+          {#if removalEnabled && removalPlan.state === 'PARTIAL' && removalPlan.runId}
+            <p role="alert">The cleanup outcome is uncertain. Closing this run preserves unresolved items and releases its lock; inspect retained files before creating another plan.</p>
+            <label for="removal-confirmation">Type the run ID to close with preservation</label>
+            <input id="removal-confirmation" bind:value={removalConfirmation} autocomplete="off" />
+            <button type="button" disabled={removalBusy || removalConfirmation !== removalPlan.runId} onclick={() => void closeUncertainRemoval()}>Close and preserve</button>
+          {/if}
         {/if}
       </section>
       <section aria-label="Categories">

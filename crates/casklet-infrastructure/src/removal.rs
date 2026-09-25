@@ -71,7 +71,7 @@ fn load_plan_items(
     connection: &rusqlite::Connection,
     id: &str,
 ) -> Result<Vec<PlannedItem>, String> {
-    let mut stmt = connection.prepare("SELECT id,resource_id,name,action,reason_code,expected_size_bytes,expected_path,expected_kind,expected_identity,resource_revision,association_revision,other_associations FROM removal_plan_items WHERE plan_id=?1 ORDER BY sequence").map_err(|e|e.to_string())?;
+    let mut stmt = connection.prepare("SELECT id,resource_id,name,action,reason_code,expected_size_bytes,expected_path,expected_kind,expected_identity,resource_revision,association_revision,other_associations,state,result_code FROM removal_plan_items WHERE plan_id=?1 ORDER BY sequence").map_err(|e|e.to_string())?;
     stmt.query_map([id], |row| {
         Ok(PlannedItem {
             view: RemovalPlanItemView {
@@ -83,6 +83,8 @@ fn load_plan_items(
                 expected_size_bytes: row
                     .get::<_, Option<i64>>(5)?
                     .and_then(|n| u64::try_from(n).ok()),
+                state: row.get(12)?,
+                result_code: row.get(13)?,
             },
             path: row.get(6)?,
             kind: row.get(7)?,
@@ -121,7 +123,9 @@ impl RemovalRepository for SqliteCasks {
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .map_err(|e| e.to_string())?;
-        if current_revision != expected_revision || cask_state != "ACTIVE" {
+        if current_revision != expected_revision
+            || !matches!(cask_state.as_str(), "ACTIVE" | "PARTIALLY_DESTROYED")
+        {
             return Err("Cask changed after planning".into());
         }
         let item_count: i64 = transaction
@@ -145,6 +149,228 @@ impl RemovalRepository for SqliteCasks {
             return Err("Resource or association changed after planning".into());
         }
         transaction.execute("UPDATE removal_plans SET state='APPROVED',approved_at_ms=?2,revision=revision+1 WHERE id=?1 AND state='DRAFT'",params![id,now_ms]).map_err(|e|e.to_string())?;
+        transaction.commit().map_err(|e| e.to_string())
+    }
+
+    fn begin_execution(
+        &self,
+        id: &str,
+        hash: &str,
+        run_id: &str,
+        now_ms: i64,
+    ) -> Result<(), String> {
+        self.get_plan(id)?.ok_or("Removal plan not found")?;
+        let mut connection = self.connection()?;
+        let transaction = connection.transaction().map_err(|e| e.to_string())?;
+        let (cask_id, scope, category, revision, expires, stored_hash, state): (String,String,Option<String>,i64,i64,String,String) = transaction.query_row(
+            "SELECT cask_id,scope,category_key,based_on_cask_revision,expires_at_ms,plan_hash,state FROM removal_plans WHERE id=?1",[id],
+            |row|Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?,row.get(5)?,row.get(6)?)),
+        ).map_err(|e|e.to_string())?;
+        if state != "APPROVED" || stored_hash != hash || expires <= now_ms {
+            return Err("Removal approval is stale".into());
+        }
+        let (current_revision, cask_state): (i64, String) = transaction
+            .query_row(
+                "SELECT revision,state FROM casks WHERE id=?1",
+                [&cask_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .map_err(|e| e.to_string())?;
+        if current_revision != revision
+            || !matches!(cask_state.as_str(), "ACTIVE" | "PARTIALLY_DESTROYED")
+        {
+            return Err("Cask changed after approval".into());
+        }
+        let active_intake: i64 = transaction
+            .query_row(
+                "SELECT COUNT(*) FROM operation_locks WHERE lock_key=?1",
+                [format!("cask:{cask_id}:mutation")],
+                |row| row.get(0),
+            )
+            .map_err(|e| e.to_string())?;
+        if active_intake != 0 {
+            return Err("Cask has an active or unrecovered intake".into());
+        }
+        let item_count: i64 = transaction
+            .query_row(
+                "SELECT COUNT(*) FROM removal_plan_items WHERE plan_id=?1",
+                [id],
+                |row| row.get(0),
+            )
+            .map_err(|e| e.to_string())?;
+        if item_count == 0 {
+            return Err("Empty removal plan".into());
+        }
+        if scope != "RESOURCES" {
+            let current_count: i64 = transaction.query_row("SELECT COUNT(*) FROM resource_associations WHERE cask_id=?1 AND removed_at_ms IS NULL AND (?2 IS NULL OR category_key=?2)",params![cask_id,category],|row|row.get(0)).map_err(|e|e.to_string())?;
+            if current_count != item_count {
+                return Err("Removal scope changed after approval".into());
+            }
+        }
+        transaction.execute("INSERT INTO removal_runs(id,plan_id,cask_id,state,owner_pid,started_at_ms,updated_at_ms) VALUES (?1,?2,?3,'RUNNING',?4,?5,?5)",params![run_id,id,cask_id,std::process::id().to_string(),now_ms]).map_err(|e|e.to_string())?;
+        transaction
+            .execute(
+                "INSERT INTO removal_locks(cask_id,run_id,acquired_at_ms) VALUES (?1,?2,?3)",
+                params![cask_id, run_id, now_ms],
+            )
+            .map_err(|e| format!("Cask has an active or unrecovered removal: {e}"))?;
+        transaction.execute("UPDATE removal_plans SET state='EXECUTING',revision=revision+1 WHERE id=?1 AND state='APPROVED'",[id]).map_err(|e|e.to_string())?;
+        if scope == "CASK" {
+            transaction
+                .execute(
+                    "UPDATE casks SET state='DESTROYING',updated_at_ms=?2 WHERE id=?1",
+                    params![cask_id, now_ms],
+                )
+                .map_err(|e| e.to_string())?;
+        }
+        transaction.commit().map_err(|e| e.to_string())
+    }
+
+    fn start_item(&self, run_id: &str, item: &PlannedItem, now_ms: i64) -> Result<(), String> {
+        let mut connection = self.connection()?;
+        let transaction = connection.transaction().map_err(|e| e.to_string())?;
+        let current: i64 = transaction.query_row("SELECT COUNT(*) FROM removal_plan_items i JOIN removal_runs run ON run.plan_id=i.plan_id AND run.id=?1 AND run.state='RUNNING' JOIN removal_locks lock ON lock.run_id=run.id AND lock.cask_id=run.cask_id JOIN resources r ON r.id=i.resource_id JOIN resource_associations a ON a.resource_id=i.resource_id AND a.cask_id=run.cask_id AND a.removed_at_ms IS NULL JOIN resource_locations l ON l.resource_id=i.resource_id AND l.is_primary=1 AND l.retired_at_ms IS NULL WHERE i.id=?2 AND i.state='PENDING' AND i.started_at_ms IS NULL AND r.revision=i.resource_revision AND a.revision=i.association_revision AND r.kind=i.expected_kind AND l.path_display=i.expected_path AND l.identity_key IS i.expected_identity AND (SELECT COUNT(*) FROM resource_associations x WHERE x.resource_id=i.resource_id AND x.cask_id<>run.cask_id AND x.removed_at_ms IS NULL)=i.other_associations AND (i.action<>'TRASH' OR (r.management='MANAGED' AND l.containment='INTERNAL' AND r.provenance='ADDED_BY_CASKLET' AND a.relationship='OWNED' AND a.removal_policy='DELETE_WHEN_UNREFERENCED' AND r.availability='PRESENT' AND r.unknown_entries=0 AND i.other_associations=0 AND i.expected_identity IS NOT NULL))",params![run_id,item.view.id],|row|row.get(0)).map_err(|e|e.to_string())?;
+        if current != 1 {
+            return Err("Removal item changed before execution; recovery required".into());
+        }
+        let changed = transaction.execute("UPDATE removal_plan_items SET run_id=?2,started_at_ms=?3 WHERE id=?1 AND state='PENDING' AND run_id IS NULL",params![item.view.id,run_id,now_ms]).map_err(|e|e.to_string())?;
+        if changed != 1 {
+            return Err("Removal item already started".into());
+        }
+        transaction.commit().map_err(|e| e.to_string())
+    }
+
+    fn finish_item(
+        &self,
+        run_id: &str,
+        item: &PlannedItem,
+        state: &str,
+        result_code: &str,
+        now_ms: i64,
+    ) -> Result<(), String> {
+        if !matches!(state, "SUCCEEDED" | "PRESERVED" | "UNKNOWN") {
+            return Err("Invalid removal item outcome".into());
+        }
+        let mut connection = self.connection()?;
+        let transaction = connection.transaction().map_err(|e| e.to_string())?;
+        let changed = transaction.execute("UPDATE removal_plan_items SET state=?3,result_code=?4,finished_at_ms=?5 WHERE id=?1 AND run_id=?2 AND state='PENDING' AND started_at_ms IS NOT NULL",params![item.view.id,run_id,state,result_code,now_ms]).map_err(|e|e.to_string())?;
+        if changed != 1 {
+            return Err("Removal item boundary changed".into());
+        }
+        if state == "SUCCEEDED" {
+            if item.view.action != "TRASH" && item.view.action != "DETACH" {
+                return Err("Invalid successful action".into());
+            }
+            let cask_id: String = transaction
+                .query_row(
+                    "SELECT cask_id FROM removal_runs WHERE id=?1",
+                    [run_id],
+                    |row| row.get(0),
+                )
+                .map_err(|e| e.to_string())?;
+            let associations = transaction.execute("UPDATE resource_associations SET removed_at_ms=?3,revision=revision+1 WHERE cask_id=?1 AND resource_id=?2 AND removed_at_ms IS NULL",params![cask_id,item.view.resource_id,now_ms]).map_err(|e|e.to_string())?;
+            if associations != 1 {
+                return Err("Resource association changed during cleanup".into());
+            }
+            if item.view.action == "TRASH" {
+                transaction.execute("UPDATE resources SET availability='MISSING',revision=revision+1 WHERE id=?1",[&item.view.resource_id]).map_err(|e|e.to_string())?;
+                transaction.execute("UPDATE resource_locations SET retired_at_ms=?2 WHERE resource_id=?1 AND is_primary=1 AND retired_at_ms IS NULL",params![item.view.resource_id,now_ms]).map_err(|e|e.to_string())?;
+            }
+            transaction.execute("INSERT INTO projection_jobs(cask_id,target_revision,state,updated_at_ms) VALUES (?1,1,'PENDING',?2) ON CONFLICT(cask_id) DO UPDATE SET target_revision=target_revision+1,state='PENDING',updated_at_ms=excluded.updated_at_ms",params![cask_id,now_ms]).map_err(|e|e.to_string())?;
+        }
+        transaction
+            .execute(
+                "UPDATE removal_runs SET updated_at_ms=?2 WHERE id=?1",
+                params![run_id, now_ms],
+            )
+            .map_err(|e| e.to_string())?;
+        transaction.commit().map_err(|e| e.to_string())
+    }
+
+    fn finish_execution(&self, run_id: &str, now_ms: i64) -> Result<(), String> {
+        let mut connection = self.connection()?;
+        let transaction = connection.transaction().map_err(|e| e.to_string())?;
+        let (plan_id,cask_id,scope): (String,String,String) = transaction.query_row("SELECT run.plan_id,run.cask_id,p.scope FROM removal_runs run JOIN removal_plans p ON p.id=run.plan_id WHERE run.id=?1 AND run.state='RUNNING'",[run_id],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?))).map_err(|e|e.to_string())?;
+        let (pending,uncertain): (i64,i64) = transaction.query_row("SELECT SUM(CASE WHEN state='PENDING' THEN 1 ELSE 0 END),SUM(CASE WHEN state IN ('UNKNOWN','FAILED') THEN 1 ELSE 0 END) FROM removal_plan_items WHERE plan_id=?1",[&plan_id],|row|Ok((row.get(0)?,row.get(1)?))).map_err(|e|e.to_string())?;
+        if pending != 0 || uncertain != 0 {
+            transaction.execute("UPDATE removal_runs SET state='RECOVERY_REQUIRED',updated_at_ms=?2,error_code='INCOMPLETE' WHERE id=?1",params![run_id,now_ms]).map_err(|e|e.to_string())?;
+            transaction
+                .execute(
+                    "UPDATE removal_plans SET state='PARTIAL',revision=revision+1 WHERE id=?1",
+                    [&plan_id],
+                )
+                .map_err(|e| e.to_string())?;
+            if scope == "CASK" {
+                transaction
+                    .execute(
+                        "UPDATE casks SET state='RECOVERY_REQUIRED',updated_at_ms=?2 WHERE id=?1",
+                        params![cask_id, now_ms],
+                    )
+                    .map_err(|e| e.to_string())?;
+            }
+        } else {
+            transaction
+                .execute(
+                    "UPDATE removal_runs SET state='SUCCEEDED',updated_at_ms=?2 WHERE id=?1",
+                    params![run_id, now_ms],
+                )
+                .map_err(|e| e.to_string())?;
+            transaction
+                .execute(
+                    "UPDATE removal_plans SET state='COMPLETE',revision=revision+1 WHERE id=?1",
+                    [&plan_id],
+                )
+                .map_err(|e| e.to_string())?;
+            transaction
+                .execute("DELETE FROM removal_locks WHERE run_id=?1", [run_id])
+                .map_err(|e| e.to_string())?;
+            if scope == "CASK" {
+                let remaining: i64 = transaction.query_row("SELECT COUNT(*) FROM resource_associations WHERE cask_id=?1 AND removed_at_ms IS NULL",[&cask_id],|row|row.get(0)).map_err(|e|e.to_string())?;
+                let state = if remaining == 0 {
+                    "DESTROYED"
+                } else {
+                    "PARTIALLY_DESTROYED"
+                };
+                transaction.execute("UPDATE casks SET state=?2,updated_at_ms=?3,revision=revision+1 WHERE id=?1",params![cask_id,state,now_ms]).map_err(|e|e.to_string())?;
+            }
+        }
+        transaction.commit().map_err(|e| e.to_string())
+    }
+
+    fn close_uncertain_preserved(&self, run_id: &str, now_ms: i64) -> Result<String, String> {
+        let mut connection = self.connection()?;
+        let transaction = connection.transaction().map_err(|e| e.to_string())?;
+        let (plan_id,cask_id,scope): (String,String,String) = transaction.query_row("SELECT run.plan_id,run.cask_id,p.scope FROM removal_runs run JOIN removal_plans p ON p.id=run.plan_id WHERE run.id=?1 AND run.state='RECOVERY_REQUIRED'",[run_id],|row|Ok((row.get(0)?,row.get(1)?,row.get(2)?))).map_err(|e|e.to_string())?;
+        transaction.execute("UPDATE removal_plan_items SET state='PRESERVED',result_code='CLOSED_PRESERVED',finished_at_ms=?2 WHERE plan_id=?1 AND state IN ('UNKNOWN','PENDING','FAILED')",params![plan_id,now_ms]).map_err(|e|e.to_string())?;
+        transaction
+            .execute(
+                "UPDATE removal_runs SET state='CLOSED_PRESERVED',updated_at_ms=?2 WHERE id=?1",
+                params![run_id, now_ms],
+            )
+            .map_err(|e| e.to_string())?;
+        transaction
+            .execute(
+                "UPDATE removal_plans SET state='COMPLETE',revision=revision+1 WHERE id=?1",
+                [&plan_id],
+            )
+            .map_err(|e| e.to_string())?;
+        transaction
+            .execute("DELETE FROM removal_locks WHERE run_id=?1", [run_id])
+            .map_err(|e| e.to_string())?;
+        if scope == "CASK" {
+            transaction.execute("UPDATE casks SET state='PARTIALLY_DESTROYED',updated_at_ms=?2,revision=revision+1 WHERE id=?1",params![cask_id,now_ms]).map_err(|e|e.to_string())?;
+        }
+        transaction.commit().map_err(|e| e.to_string())?;
+        Ok(plan_id)
+    }
+
+    fn mark_execution_uncertain(&self, run_id: &str, now_ms: i64) -> Result<(), String> {
+        let mut connection = self.connection()?;
+        let transaction = connection.transaction().map_err(|e| e.to_string())?;
+        transaction.execute("UPDATE removal_plan_items SET state='UNKNOWN',result_code='INTERNAL_ERROR',finished_at_ms=?2 WHERE run_id=?1 AND state='PENDING' AND started_at_ms IS NOT NULL",params![run_id,now_ms]).map_err(|e|e.to_string())?;
+        transaction.execute("UPDATE removal_runs SET state='RECOVERY_REQUIRED',error_code='INTERNAL_ERROR',updated_at_ms=?2 WHERE id=?1 AND state='RUNNING'",params![run_id,now_ms]).map_err(|e|e.to_string())?;
+        transaction.execute("UPDATE removal_plans SET state='PARTIAL',revision=revision+1 WHERE id=(SELECT plan_id FROM removal_runs WHERE id=?1) AND state='EXECUTING'",[run_id]).map_err(|e|e.to_string())?;
+        transaction.execute("UPDATE casks SET state='RECOVERY_REQUIRED' WHERE id=(SELECT cask_id FROM removal_runs WHERE id=?1) AND state='DESTROYING'",[run_id]).map_err(|e|e.to_string())?;
         transaction.commit().map_err(|e| e.to_string())
     }
 
@@ -245,6 +471,14 @@ impl RemovalRepository for SqliteCasks {
             return Ok(None);
         };
         let snapshots = load_plan_items(&connection, id)?;
+        let run_id: Option<String> = connection
+            .query_row(
+                "SELECT id FROM removal_runs WHERE plan_id=?1 ORDER BY started_at_ms DESC LIMIT 1",
+                [id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|e| e.to_string())?;
         let view = RemovalPlanView {
             version: CONTRACT_VERSION,
             id: id.into(),
@@ -253,6 +487,7 @@ impl RemovalRepository for SqliteCasks {
             category_key,
             state,
             plan_hash: stored_hash,
+            run_id,
             created_at_ms,
             expires_at_ms,
             items: snapshots.iter().map(|item| item.view.clone()).collect(),
@@ -274,6 +509,9 @@ impl RemovalInspection for LocalStorage {
         let kind = ResourceKind::from_code(&candidate.kind)?;
         let root = Path::new(cask_root);
         let target = Path::new(&candidate.path);
+        if root.parent() != Some(self.root.as_path()) {
+            return None;
+        }
         let extension = Path::new(&candidate.name)
             .extension()
             .and_then(|e| e.to_str())
@@ -307,6 +545,46 @@ impl RemovalInspection for LocalStorage {
             return None;
         }
         Some(current)
+    }
+
+    fn trash_verified(
+        &self,
+        cask_root: &str,
+        candidate: &RemovalCandidate,
+        expected_identity: &str,
+        run_id: &str,
+        item_id: &str,
+    ) -> Result<(), String> {
+        if candidate.kind != "FILE"
+            || uuid::Uuid::parse_str(run_id).is_err()
+            || uuid::Uuid::parse_str(item_id).is_err()
+        {
+            return Err("Only identified managed files may be trashed".into());
+        }
+        if self.verify_managed(cask_root, candidate).as_deref() != Some(expected_identity) {
+            return Err("Managed file identity changed before trash".into());
+        }
+        let root = Path::new(cask_root);
+        let quarantine = root
+            .join(".casklet")
+            .join("removal-staging")
+            .join(run_id)
+            .join(item_id);
+        let parent = quarantine.parent().ok_or("Invalid quarantine path")?;
+        fs::create_dir_all(parent).map_err(|e| e.to_string())?;
+        check_components(parent)?;
+        if fs::symlink_metadata(&quarantine).is_ok() {
+            return Err("Quarantine destination is occupied".into());
+        }
+        check_components(Path::new(&candidate.path))?;
+        fs::rename(&candidate.path, &quarantine).map_err(|e| e.to_string())?;
+        let observed = self.inspect(&quarantine.to_string_lossy(), &|_, _| {})?;
+        if observed.recordable_identity.as_deref() != Some(expected_identity)
+            || observed.kind != ResourceKind::File
+        {
+            return Err("Quarantined file identity differs; item retained for recovery".into());
+        }
+        trash::delete(&quarantine).map_err(|e| e.to_string())
     }
 }
 
@@ -361,6 +639,7 @@ impl SqliteCasks {
                     [&run_id],
                 )
                 .map_err(|e| e.to_string())?;
+            transaction.execute("UPDATE casks SET state='RECOVERY_REQUIRED' WHERE id=(SELECT cask_id FROM removal_runs WHERE id=?1) AND state='DESTROYING'",[&run_id]).map_err(|e|e.to_string())?;
             transaction.commit().map_err(|e| e.to_string())?;
         }
         Ok(())

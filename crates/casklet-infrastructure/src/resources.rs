@@ -104,6 +104,16 @@ impl ResourceRepository for SqliteCasks {
     fn commit_resource(&self, resource: &Resource, op_id: Option<&str>) -> Result<(), String> {
         let mut connection = self.connection()?;
         let transaction = connection.transaction().map_err(|e| e.to_string())?;
+        let locked: i64 = transaction
+            .query_row(
+                "SELECT COUNT(*) FROM removal_locks WHERE cask_id=?1",
+                [&resource.cask_id],
+                |row| row.get(0),
+            )
+            .map_err(|e| e.to_string())?;
+        if locked != 0 {
+            return Err("Cask has an active or unrecovered removal".into());
+        }
         let size = resource
             .size_bytes
             .map(i64::try_from)
@@ -248,6 +258,10 @@ impl ResourceRepository for SqliteCasks {
     fn categorize(&self, id: &str, key: &str) -> Result<(), String> {
         let mut connection = self.connection()?;
         let transaction = connection.transaction().map_err(|e| e.to_string())?;
+        let locked: i64 = transaction.query_row("SELECT COUNT(*) FROM resource_associations a JOIN removal_locks l ON l.cask_id=a.cask_id WHERE a.resource_id=?1 AND a.removed_at_ms IS NULL",[id],|row|row.get(0)).map_err(|e|e.to_string())?;
+        if locked != 0 {
+            return Err("Cask has an active or unrecovered removal".into());
+        }
         let cask_id: String = transaction.query_row("SELECT cask_id FROM resource_associations WHERE resource_id=?1 AND removed_at_ms IS NULL",[id],|row|row.get(0)).map_err(|e|e.to_string())?;
         transaction.execute("UPDATE resource_associations SET category_key=?2,revision=revision+1 WHERE resource_id=?1 AND removed_at_ms IS NULL", params![id,key]).map_err(|e| e.to_string())?;
         transaction.execute("INSERT INTO projection_jobs(cask_id,target_revision,state,updated_at_ms) VALUES (?1,1,'PENDING',CAST(unixepoch('subsec')*1000 AS INTEGER)) ON CONFLICT(cask_id) DO UPDATE SET target_revision=target_revision+1,state='PENDING'",[cask_id]).map_err(|e| e.to_string())?;

@@ -1,8 +1,8 @@
 //! Read-only removal planning. Only the core can generate a plan and its items.
 use crate::{CaskRepository, CaskService};
 use casklet_contracts::{
-    ApiError, ApproveRemovalPlan, CONTRACT_VERSION, CreateRemovalPlan, GetRemovalPlan,
-    RemovalPlanItemView, RemovalPlanView,
+    ApiError, ApproveRemovalPlan, CONTRACT_VERSION, CloseRemovalRun, CreateRemovalPlan,
+    ExecuteRemovalPlan, GetRemovalPlan, RemovalPlanItemView, RemovalPlanView,
 };
 use casklet_domain::removal::{RemovalEvidence, propose};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -61,11 +61,52 @@ pub trait RemovalRepository {
     /// # Errors
     /// Rejects an expired or changed snapshot before persisting approval.
     fn approve_plan(&self, id: &str, hash: &str, now_ms: i64) -> Result<(), String>;
+    /// # Errors
+    /// Claims the Cask mutation lock and writes the durable run before external work.
+    fn begin_execution(
+        &self,
+        id: &str,
+        hash: &str,
+        run_id: &str,
+        now_ms: i64,
+    ) -> Result<(), String>;
+    /// # Errors
+    /// Revalidates database preconditions and records the item boundary.
+    fn start_item(&self, run_id: &str, item: &PlannedItem, now_ms: i64) -> Result<(), String>;
+    /// # Errors
+    /// Records an outcome and any association change in one transaction.
+    fn finish_item(
+        &self,
+        run_id: &str,
+        item: &PlannedItem,
+        state: &str,
+        result_code: &str,
+        now_ms: i64,
+    ) -> Result<(), String>;
+    /// # Errors
+    /// Summarizes the journal, retaining uncertain locks or closing a complete run.
+    fn finish_execution(&self, run_id: &str, now_ms: i64) -> Result<(), String>;
+    /// # Errors
+    /// Retains the lock and marks any started item uncertain after an internal error.
+    fn mark_execution_uncertain(&self, run_id: &str, now_ms: i64) -> Result<(), String>;
+    /// # Errors
+    /// Keeps uncertain data and closes its mutation lock only by explicit preserved resolution.
+    fn close_uncertain_preserved(&self, run_id: &str, now_ms: i64) -> Result<String, String>;
 }
 
 pub trait RemovalInspection {
     /// Returns current identity evidence only for an exact managed allocation.
     fn verify_managed(&self, cask_root: &str, candidate: &RemovalCandidate) -> Option<String>;
+    /// # Errors
+    /// Moves only an exactly verified managed file to the platform trash.
+    fn trash_verified(
+        &self,
+        cask_root: &str,
+        candidate: &RemovalCandidate,
+        expected_identity: &str,
+        run_id: &str,
+        item_id: &str,
+    ) -> Result<(), String>;
 }
 
 fn error(code: &str, message: &str, correlation_id: &str) -> ApiError {
@@ -108,7 +149,10 @@ impl<R: CaskRepository + RemovalRepository, S: RemovalInspection> CaskService<R,
             .get(&request.cask_id)
             .map_err(|_| error("PERSISTENCE", "Could not load Cask", correlation_id))?
             .ok_or_else(|| error("NOT_FOUND", "Cask not found", correlation_id))?;
-        if cask.state != casklet_domain::CaskState::Active {
+        if !matches!(
+            cask.state,
+            casklet_domain::CaskState::Active | casklet_domain::CaskState::PartiallyDestroyed
+        ) {
             return Err(error(
                 "CASK_READ_ONLY",
                 "Cask is not active",
@@ -187,6 +231,8 @@ impl<R: CaskRepository + RemovalRepository, S: RemovalInspection> CaskService<R,
                         action: action.code().into(),
                         reason_code: reason.into(),
                         expected_size_bytes: candidate.size_bytes,
+                        state: "PENDING".into(),
+                        result_code: None,
                     },
                     path: candidate.path,
                     kind: candidate.kind,
@@ -205,6 +251,7 @@ impl<R: CaskRepository + RemovalRepository, S: RemovalInspection> CaskService<R,
             category_key: request.category_key.clone(),
             state: "DRAFT".into(),
             plan_hash: String::new(),
+            run_id: None,
             created_at_ms: now,
             expires_at_ms: now.saturating_add(15 * 60 * 1000),
             items: items.iter().map(|item| item.view.clone()).collect(),
@@ -323,6 +370,181 @@ impl<R: CaskRepository + RemovalRepository, S: RemovalInspection> CaskService<R,
             &GetRemovalPlan {
                 version: request.version,
                 id: request.id.clone(),
+            },
+            correlation_id,
+        )
+    }
+
+    /// Executes only the approved snapshot; uncertain external outcomes retain the run lock.
+    /// # Errors
+    /// Returns validation or persistence errors.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "journal boundaries and per-item outcomes are kept visible in one use case"
+    )]
+    pub fn execute_removal_plan(
+        &self,
+        request: &ExecuteRemovalPlan,
+        correlation_id: &str,
+    ) -> Result<RemovalPlanView, ApiError> {
+        if request.version != CONTRACT_VERSION {
+            return Err(error(
+                "UNSUPPORTED_VERSION",
+                "Contract version mismatch",
+                correlation_id,
+            ));
+        }
+        let plan = self.get_removal_plan(
+            &GetRemovalPlan {
+                version: request.version,
+                id: request.id.clone(),
+            },
+            correlation_id,
+        )?;
+        if plan.state != "APPROVED" || plan.plan_hash != request.plan_hash {
+            return Err(error(
+                "PLAN_NOT_EXECUTABLE",
+                "Approve this exact plan first",
+                correlation_id,
+            ));
+        }
+        let cask = self
+            .repository
+            .get(&plan.cask_id)
+            .map_err(|_| error("PERSISTENCE", "Could not load Cask", correlation_id))?
+            .ok_or_else(|| error("NOT_FOUND", "Cask not found", correlation_id))?;
+        let now = i64::try_from(
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map_err(|_| error("CLOCK", "Clock unavailable", correlation_id))?
+                .as_millis(),
+        )
+        .map_err(|_| error("CLOCK", "Clock unavailable", correlation_id))?;
+        let run_id = Uuid::new_v4().to_string();
+        self.repository
+            .begin_execution(&plan.id, &plan.plan_hash, &run_id, now)
+            .map_err(|e| error("PLAN_NOT_EXECUTABLE", &e, correlation_id))?;
+        let work =
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| -> Result<(), ApiError> {
+                let items = self
+                    .repository
+                    .plan_items(&plan.id)
+                    .map_err(|e| error("RECOVERY_REQUIRED", &e, correlation_id))?;
+                for item in items {
+                    let candidates = self
+                        .repository
+                        .candidates(&plan.cask_id)
+                        .map_err(|e| error("RECOVERY_REQUIRED", &e, correlation_id))?;
+                    let candidate = candidates
+                        .iter()
+                        .find(|candidate| candidate.id == item.view.resource_id);
+                    let verified = if item.view.action == "TRASH" {
+                        candidate.and_then(|candidate| {
+                            self.storage
+                                .verify_managed(&cask.managed_storage_root, candidate)
+                        }) == item.identity
+                            && item.identity.is_some()
+                    } else {
+                        true
+                    };
+                    self.repository
+                        .start_item(&run_id, &item, now)
+                        .map_err(|e| error("RECOVERY_REQUIRED", &e, correlation_id))?;
+                    let (state, result) = match item.view.action.as_str() {
+                        "PRESERVE" => ("PRESERVED", "PLAN_PRESERVE"),
+                        "DETACH" => ("SUCCEEDED", "DETACHED"),
+                        "TRASH" if !verified => ("PRESERVED", "REVALIDATION_FAILED"),
+                        "TRASH" => {
+                            let Some(candidate) = candidate else {
+                                unreachable!("verified target exists")
+                            };
+                            let Some(identity) = &item.identity else {
+                                unreachable!("verified identity exists")
+                            };
+                            if std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                                self.storage.trash_verified(
+                                    &cask.managed_storage_root,
+                                    candidate,
+                                    identity,
+                                    &run_id,
+                                    &item.view.id,
+                                )
+                            }))
+                            .is_ok_and(|result| result.is_ok())
+                            {
+                                ("SUCCEEDED", "TRASHED")
+                            } else {
+                                ("UNKNOWN", "TRASH_OUTCOME_UNCERTAIN")
+                            }
+                        }
+                        _ => ("UNKNOWN", "INVALID_ACTION"),
+                    };
+                    self.repository
+                        .finish_item(&run_id, &item, state, result, now)
+                        .map_err(|e| error("RECOVERY_REQUIRED", &e, correlation_id))?;
+                    if state == "UNKNOWN" {
+                        break;
+                    }
+                }
+                self.repository
+                    .finish_execution(&run_id, now)
+                    .map_err(|e| error("RECOVERY_REQUIRED", &e, correlation_id))?;
+                Ok(())
+            }));
+        match work {
+            Ok(Ok(())) => {}
+            Ok(Err(problem)) => {
+                let _ = self.repository.mark_execution_uncertain(&run_id, now);
+                return Err(problem);
+            }
+            Err(_) => {
+                let _ = self.repository.mark_execution_uncertain(&run_id, now);
+                return Err(error(
+                    "RECOVERY_REQUIRED",
+                    "Cleanup worker interrupted; inspect recovery",
+                    correlation_id,
+                ));
+            }
+        }
+        self.get_removal_plan(
+            &GetRemovalPlan {
+                version: request.version,
+                id: plan.id,
+            },
+            correlation_id,
+        )
+    }
+
+    /// Closes an uncertain run while retaining every unresolved resource.
+    /// # Errors
+    /// Returns validation or persistence errors.
+    pub fn close_uncertain_removal(
+        &self,
+        request: &CloseRemovalRun,
+        correlation_id: &str,
+    ) -> Result<RemovalPlanView, ApiError> {
+        if request.version != CONTRACT_VERSION {
+            return Err(error(
+                "UNSUPPORTED_VERSION",
+                "Contract version mismatch",
+                correlation_id,
+            ));
+        }
+        let now = i64::try_from(
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map_err(|_| error("CLOCK", "Clock unavailable", correlation_id))?
+                .as_millis(),
+        )
+        .map_err(|_| error("CLOCK", "Clock unavailable", correlation_id))?;
+        let plan_id = self
+            .repository
+            .close_uncertain_preserved(&request.run_id, now)
+            .map_err(|e| error("RECOVERY_REQUIRED", &e, correlation_id))?;
+        self.get_removal_plan(
+            &GetRemovalPlan {
+                version: request.version,
+                id: plan_id,
             },
             correlation_id,
         )

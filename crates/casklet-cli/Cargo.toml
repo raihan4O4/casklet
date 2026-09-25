@@ -9,6 +9,9 @@ publish.workspace = true
 name = "casklet"
 path = "src/main.rs"
 
+[features]
+reviewed-removal = []
+
 [dependencies]
 casklet-application = { path = "../casklet-application", version = "=0.0.0" }
 casklet-contracts = { version = "0.0.0", path = "../casklet-contracts" }

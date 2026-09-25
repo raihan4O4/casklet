@@ -271,6 +271,21 @@ pub struct ApproveRemovalPlan {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ExecuteRemovalPlan {
+    pub version: u32,
+    pub id: String,
+    pub plan_hash: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CloseRemovalRun {
+    pub version: u32,
+    pub run_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct RemovalPlanItemView {
     pub id: String,
     pub resource_id: String,
@@ -278,6 +293,8 @@ pub struct RemovalPlanItemView {
     pub action: String,
     pub reason_code: String,
     pub expected_size_bytes: Option<u64>,
+    pub state: String,
+    pub result_code: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -290,6 +307,7 @@ pub struct RemovalPlanView {
     pub category_key: Option<String>,
     pub state: String,
     pub plan_hash: String,
+    pub run_id: Option<String>,
     pub created_at_ms: i64,
     pub expires_at_ms: i64,
     pub items: Vec<RemovalPlanItemView>,
@@ -328,6 +346,8 @@ export type DiagnosticsBundle = { schemaVersion: number; generatedAtMs: number; 
 export type CreateRemovalPlan = { version: number; caskId: string; resourceIds: string[]; categoryKey: string | null };
 export type GetRemovalPlan = { version: number; id: string };
 export type ApproveRemovalPlan = { version: number; id: string; planHash: string };
-export type RemovalPlanItemView = { id: string; resourceId: string; name: string; action: string; reasonCode: string; expectedSizeBytes: number | null };
-export type RemovalPlanView = { version: number; id: string; caskId: string; scope: string; categoryKey: string | null; state: string; planHash: string; createdAtMs: number; expiresAtMs: number; items: RemovalPlanItemView[] };
+export type ExecuteRemovalPlan = { version: number; id: string; planHash: string };
+export type CloseRemovalRun = { version: number; runId: string };
+export type RemovalPlanItemView = { id: string; resourceId: string; name: string; action: string; reasonCode: string; expectedSizeBytes: number | null; state: string; resultCode: string | null };
+export type RemovalPlanView = { version: number; id: string; caskId: string; scope: string; categoryKey: string | null; state: string; planHash: string; runId: string | null; createdAtMs: number; expiresAtMs: number; items: RemovalPlanItemView[] };
 ";

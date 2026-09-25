@@ -6,6 +6,8 @@ use casklet_contracts::{
     RecoverOperation, RecoveryInspection, RecoveryStatus, RemovalPlanView, ResourceView,
     StorageSummary,
 };
+#[cfg(feature = "reviewed-removal")]
+use casklet_contracts::{ApproveRemovalPlan, CloseRemovalRun, ExecuteRemovalPlan};
 use clap::{Parser, Subcommand, ValueEnum};
 use std::fmt::Write;
 use std::process::ExitCode;
@@ -15,6 +17,9 @@ use std::process::ExitCode;
 struct Cli {
     #[arg(long, value_enum, default_value_t = Output::Table, global = true)]
     output: Output,
+    #[cfg(feature = "reviewed-removal")]
+    #[arg(long, global = true)]
+    no_input: bool,
     #[command(subcommand)]
     command: Command,
 }
@@ -159,6 +164,26 @@ enum PlanAction {
     },
     Get {
         id: String,
+    },
+    #[cfg(feature = "reviewed-removal")]
+    Approve {
+        id: String,
+        #[arg(long)]
+        hash: String,
+    },
+    #[cfg(feature = "reviewed-removal")]
+    Execute {
+        id: String,
+        #[arg(long)]
+        hash: String,
+        #[arg(long)]
+        yes: bool,
+    },
+    #[cfg(feature = "reviewed-removal")]
+    ClosePreserved {
+        run_id: String,
+        #[arg(long)]
+        yes: bool,
     },
 }
 
@@ -431,6 +456,48 @@ fn main() -> ExitCode {
                 &correlation_id,
             )
             .map(|plan| render_plan(&plan, cli.output)),
+        #[cfg(feature = "reviewed-removal")]
+        Command::Plan {
+            action: PlanAction::Approve { id, hash },
+        } => service
+            .approve_removal_plan(
+                &ApproveRemovalPlan {
+                    version: CONTRACT_VERSION,
+                    id,
+                    plan_hash: hash,
+                },
+                &correlation_id,
+            )
+            .map(|plan| render_plan(&plan, cli.output)),
+        #[cfg(feature = "reviewed-removal")]
+        Command::Plan {
+            action: PlanAction::Execute { id, hash, yes },
+        } => confirm_removal(&id, yes, cli.no_input)
+            .and_then(|()| {
+                service.execute_removal_plan(
+                    &ExecuteRemovalPlan {
+                        version: CONTRACT_VERSION,
+                        id,
+                        plan_hash: hash,
+                    },
+                    &correlation_id,
+                )
+            })
+            .map(|plan| render_plan(&plan, cli.output)),
+        #[cfg(feature = "reviewed-removal")]
+        Command::Plan {
+            action: PlanAction::ClosePreserved { run_id, yes },
+        } => confirm_removal(&run_id, yes, cli.no_input)
+            .and_then(|()| {
+                service.close_uncertain_removal(
+                    &CloseRemovalRun {
+                        version: CONTRACT_VERSION,
+                        run_id,
+                    },
+                    &correlation_id,
+                )
+            })
+            .map(|plan| render_plan(&plan, cli.output)),
     };
     match result {
         Ok(output) => {
@@ -444,6 +511,40 @@ fn main() -> ExitCode {
     }
 }
 
+#[cfg(feature = "reviewed-removal")]
+fn confirm_removal(id: &str, yes: bool, no_input: bool) -> Result<(), ApiError> {
+    if yes {
+        return Ok(());
+    }
+    if no_input {
+        return Err(ApiError {
+            version: CONTRACT_VERSION,
+            code: "CONFIRMATION_REQUIRED".into(),
+            message: "Pass --yes to run without input".into(),
+            correlation_id: "cli".into(),
+        });
+    }
+    eprintln!("Review the plan first. Type {id} to confirm this cleanup action:");
+    let mut answer = String::new();
+    std::io::stdin()
+        .read_line(&mut answer)
+        .map_err(|_| ApiError {
+            version: CONTRACT_VERSION,
+            code: "INPUT_FAILED".into(),
+            message: "Could not read confirmation".into(),
+            correlation_id: "cli".into(),
+        })?;
+    if answer.trim() != id {
+        return Err(ApiError {
+            version: CONTRACT_VERSION,
+            code: "CANCELLED".into(),
+            message: "Confirmation did not match".into(),
+            correlation_id: "cli".into(),
+        });
+    }
+    Ok(())
+}
+
 fn render_plan(plan: &RemovalPlanView, output: Output) -> String {
     match output {
         Output::Json => format!(
@@ -452,18 +553,26 @@ fn render_plan(plan: &RemovalPlanView, output: Output) -> String {
         ),
         Output::Table => {
             let mut result = format!(
-                "Plan {} ({}; expires {})\n",
+                "Plan {} ({}; expires {})\nHash: {}\n",
                 plan.id,
                 plan.state.to_ascii_lowercase(),
-                plan.expires_at_ms
+                plan.expires_at_ms,
+                plan.plan_hash,
             );
+            if let Some(run_id) = &plan.run_id {
+                writeln!(result, "Run: {run_id}").expect("String write");
+            }
             for item in &plan.items {
                 writeln!(
                     result,
-                    "{}: {} ({})",
+                    "{}: {} ({}) [{}{}]",
                     item.name,
                     item.action.to_ascii_lowercase(),
-                    item.reason_code.to_ascii_lowercase()
+                    item.reason_code.to_ascii_lowercase(),
+                    item.state.to_ascii_lowercase(),
+                    item.result_code
+                        .as_ref()
+                        .map_or_else(String::new, |code| format!("; {code}")),
                 )
                 .expect("String write");
             }
