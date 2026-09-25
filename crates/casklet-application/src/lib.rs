@@ -2,6 +2,7 @@
 use casklet_contracts::{ApiError, CONTRACT_VERSION, CaskView, CreateCask, GetCask, ListCasks};
 use casklet_domain::{Cask, DomainError};
 use std::time::{SystemTime, UNIX_EPOCH};
+pub mod resource;
 
 /// Returns linked lower-layer markers for a dependency-direction smoke test.
 #[must_use]
@@ -31,7 +32,7 @@ pub trait ManagedStorage {
     fn initialize(&self, cask: &Cask) -> Result<(), String>;
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct CaskService<R, S> {
     pub repository: R,
     pub storage: S,

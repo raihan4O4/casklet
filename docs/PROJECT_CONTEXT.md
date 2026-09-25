@@ -14,7 +14,7 @@ Core principle:
 
 ## Current phase
 
-The initial design program is approved. Milestone 0 is complete. Milestone 1 is locally complete on `codex/cask-create-list-inspect`; Milestone 2 is ready to begin after review of that branch.
+The initial design program is approved. Milestones 0 and 1 are complete and merged into `develop`. Milestone 2 implementation is complete on `codex/resource-intake-inspection` and proposed for review against `develop`. Milestone 3 — durable operations and recovery — is next after that review.
 
 - Phase 1 — Requirements: approved.
 - Phase 2 — Cross-platform and installation workflow: approved.
@@ -139,4 +139,4 @@ Exact dependencies will be approved during repository/tooling design; do not add
 
 ## Current implementation milestone
 
-Milestone 0 — Reproducible foundation: complete on 2026-09-24. The local Windows bootstrap, shared quality gate, frozen frontend install, CLI startup, and desktop startup passed on 2026-09-23. Both CI jobs passed on merged `main` at `ac5700e`. A fresh `windows-2025` GitHub runner then followed the documented bootstrap procedure, installed the pinned Rust toolchain, and passed `cargo xtask bootstrap-check` and the full Windows quality gate in [run 36010734018](https://github.com/raihan4O4/casklet/actions/runs/36010734018); `dependency-policy` passed in the same run. Milestone 1 — Cask walking skeleton — is locally complete on `codex/cask-create-list-inspect`: creation, listing, inspection, SQLite migration, empty storage and manifest projection, generated contracts, CLI process test, GUI component smoke test, and the full Windows `cargo xtask check` gate passed. The CLI uses the approved `casklet cask create|list|get` routes, with concise human output by default and explicit JSON output. Milestone 2 — Resource intake and inspection — is the next implementation milestone after branch review. Keep `main` unchanged until the planned milestone integration; see `docs/engineering/delivery-roadmap-v0.1.md`.
+Milestone 0 — Reproducible foundation: complete on 2026-09-24, including a clean Windows runner bootstrap and quality gate in [run 36010734018](https://github.com/raihan4O4/casklet/actions/runs/36010734018). Milestone 1 — Cask walking skeleton — is complete and merged into `develop`: creation, listing, inspection, SQLite migration, empty manifest projection, CLI and GUI smoke tests. Milestone 2 — Resource intake and inspection — is locally complete on `codex/resource-intake-inspection`: resource/category schema, explicit copy/move/reference routes, bounded inspection, managed staging, inventory and storage queries, GUI picker/drop review, and safety tests. The branch is proposed for PR review; it is not yet merged. See `docs/engineering/milestone-2-resource-intake.md` and ADR 0009. Milestone 3 will add unfinished-intake reconciliation and manifest projection retries. Keep `main` unchanged until planned milestone integration.

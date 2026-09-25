@@ -8,6 +8,7 @@ publish.workspace = true
 [dependencies]
 casklet-contracts = { path = "../casklet-contracts", version = "=0.0.0" }
 casklet-domain = { path = "../casklet-domain", version = "=0.0.0" }
+uuid = { version = "1.26.1", features = ["v4"] }
 
 [lints]
 workspace = true

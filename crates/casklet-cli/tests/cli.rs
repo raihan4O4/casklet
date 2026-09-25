@@ -41,3 +41,44 @@ fn create_list_get_across_processes() {
     assert_eq!(item["id"], id);
     fs::remove_dir_all(root).unwrap();
 }
+
+#[test]
+fn resource_commands_keep_human_output_brief_and_require_mode() {
+    let root = std::env::temp_dir().join(format!("casklet-cli-resource-{}", std::process::id()));
+    fs::create_dir_all(&root).unwrap();
+    let binary = env!("CARGO_BIN_EXE_casklet");
+    let run = |args: &[&str]| {
+        Command::new(binary)
+            .args(args)
+            .env("CASKLET_DEV_ROOT", &root)
+            .output()
+            .unwrap()
+    };
+    assert!(run(&["cask", "create", "My Work"]).status.success());
+    let listed = run(&["--output", "json", "cask", "list"]);
+    let items: serde_json::Value = serde_json::from_slice(&listed.stdout).unwrap();
+    let id = items[0]["id"].as_str().unwrap();
+    let source = root.join("notes.txt");
+    fs::write(&source, b"notes").unwrap();
+    let source_text = source.to_string_lossy().into_owned();
+    let missing_mode = run(&["resource", "add", id, &source_text]);
+    assert!(!missing_mode.status.success());
+    assert!(source.exists());
+    let added = run(&["resource", "add", id, &source_text, "--mode", "reference"]);
+    assert!(
+        added.status.success(),
+        "{}",
+        String::from_utf8_lossy(&added.stderr)
+    );
+    assert_eq!(
+        String::from_utf8(added.stdout).unwrap(),
+        "Referenced: notes.txt\n"
+    );
+    let resources = run(&["resource", "list", id]);
+    assert_eq!(
+        String::from_utf8(resources.stdout).unwrap(),
+        "notes.txt (referenced)\n"
+    );
+    assert!(source.exists());
+    fs::remove_dir_all(root).unwrap();
+}
