@@ -1,0 +1,405 @@
+//! Resource intake use cases. Filesystem behavior remains behind a port.
+use crate::{CaskRepository, CaskService};
+use casklet_contracts::{
+    AddMode, AddResource, ApiError, CONTRACT_VERSION, CategorizeResource, CategoryView,
+    CreateCategory, GetResource, GetStorageSummary, ListCategories, ListResources, ResourceView,
+    StorageSummary,
+};
+use casklet_domain::{
+    Cask, CaskState,
+    resource::{IntakeMode, Resource, ResourceKind},
+};
+use std::{
+    sync::Arc,
+    time::{SystemTime, UNIX_EPOCH},
+};
+use uuid::Uuid;
+
+#[derive(Debug, Clone)]
+pub struct Observation {
+    pub source_path: String,
+    pub name: String,
+    pub kind: ResourceKind,
+    pub size_bytes: Option<u64>,
+    pub unknown_entries: u64,
+    pub identity: String,
+    pub file_identity: Arc<dyn FileIdentity>,
+}
+
+pub trait FileIdentity: std::fmt::Debug + Send + Sync {
+    /// # Errors
+    /// Returns an I/O error when the path cannot be inspected.
+    fn matches_path(&self, path: &str) -> Result<bool, String>;
+}
+
+#[derive(Debug, Clone)]
+pub struct IntakePaths {
+    pub staging: String,
+    pub final_path: String,
+}
+
+pub trait ResourceRepository {
+    /// # Errors
+    /// Returns a persistence error.
+    fn category_exists(&self, cask_id: &str, key: &str) -> Result<bool, String>;
+    /// # Errors
+    /// Returns a persistence error.
+    fn create_category(&self, cask_id: &str, key: &str, name: &str) -> Result<(), String>;
+    /// # Errors
+    /// Returns a persistence error.
+    fn list_categories(&self, cask_id: &str) -> Result<Vec<CategoryView>, String>;
+    /// # Errors
+    /// Returns a persistence error.
+    fn begin_intake(
+        &self,
+        op_id: &str,
+        resource: &Resource,
+        mode: IntakeMode,
+        source: &str,
+        staging: &str,
+        final_path: &str,
+    ) -> Result<(), String>;
+    /// # Errors
+    /// Returns a persistence error.
+    fn commit_resource(&self, resource: &Resource, op_id: Option<&str>) -> Result<(), String>;
+    /// # Errors
+    /// Returns a persistence error.
+    fn complete_intake(&self, op_id: &str) -> Result<(), String>;
+    /// # Errors
+    /// Returns a persistence error.
+    fn list_resources(&self, cask_id: &str) -> Result<Vec<ResourceView>, String>;
+    /// # Errors
+    /// Returns a persistence error.
+    fn get_resource(&self, id: &str) -> Result<Option<ResourceView>, String>;
+    /// # Errors
+    /// Returns a persistence error.
+    fn categorize(&self, id: &str, key: &str) -> Result<(), String>;
+}
+
+pub trait ResourceStorage {
+    /// # Errors
+    /// Returns a filesystem validation or inspection error.
+    fn inspect(&self, source: &str, progress: &dyn Fn(u64, u64)) -> Result<Observation, String>;
+    fn availability(&self, path: &str, kind: ResourceKind) -> &'static str;
+    fn allocate(&self, cask: &Cask, resource_id: &str, name: &str) -> IntakePaths;
+    /// # Errors
+    /// Returns a copy or verification error. Staging is retained for recovery.
+    fn materialize(
+        &self,
+        observed: &Observation,
+        paths: &IntakePaths,
+        mode: IntakeMode,
+        progress: &dyn Fn(u64, u64),
+    ) -> Result<(), String>;
+}
+
+impl<R: CaskRepository + ResourceRepository, S: ResourceStorage> CaskService<R, S> {
+    /// # Errors
+    /// Returns validation, persistence, or filesystem errors with a correlation ID.
+    pub fn add_resource(
+        &self,
+        request: &AddResource,
+        correlation_id: &str,
+        progress: &dyn Fn(u64, u64),
+    ) -> Result<ResourceView, ApiError> {
+        check(request.version, correlation_id)?;
+        let cask = self
+            .repository
+            .get(&request.cask_id)
+            .map_err(|e| err("PERSISTENCE", e, correlation_id))?
+            .ok_or_else(|| err("NOT_FOUND", "Cask not found".into(), correlation_id))?;
+        if cask.state != CaskState::Active {
+            return Err(err(
+                "CASK_READ_ONLY",
+                "Cask is not active".into(),
+                correlation_id,
+            ));
+        }
+        if !self
+            .repository
+            .category_exists(&cask.id, &request.category_key)
+            .map_err(|e| err("PERSISTENCE", e, correlation_id))?
+        {
+            return Err(err(
+                "INVALID_CATEGORY",
+                "Category is unavailable for this Cask".into(),
+                correlation_id,
+            ));
+        }
+        let mode = match request.mode {
+            AddMode::Copy => IntakeMode::Copy,
+            AddMode::Move => IntakeMode::Move,
+            AddMode::Reference => IntakeMode::Reference,
+        };
+        let observed = self
+            .storage
+            .inspect(&request.source_path, progress)
+            .map_err(|e| err("SOURCE", e, correlation_id))?;
+        let now = i64::try_from(
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map_err(|e| err("CLOCK", e.to_string(), correlation_id))?
+                .as_millis(),
+        )
+        .map_err(|e| err("CLOCK", e.to_string(), correlation_id))?;
+        let mut resource = Resource::new(
+            cask.id.clone(),
+            observed.name.clone(),
+            observed.source_path.clone(),
+            observed.kind,
+            mode,
+            request.category_key.clone(),
+            observed.size_bytes,
+            observed.unknown_entries,
+            now,
+        )
+        .map_err(|e| err("INVALID_RESOURCE", format!("{e:?}"), correlation_id))?;
+        if mode == IntakeMode::Reference {
+            self.repository
+                .commit_resource(&resource, None)
+                .map_err(|e| err("PERSISTENCE", e, correlation_id))?;
+        } else {
+            let paths = self.storage.allocate(&cask, &resource.id, &resource.name);
+            resource.path.clone_from(&paths.final_path);
+            let op_id = Uuid::new_v4().to_string();
+            self.repository
+                .begin_intake(
+                    &op_id,
+                    &resource,
+                    mode,
+                    &observed.source_path,
+                    &paths.staging,
+                    &paths.final_path,
+                )
+                .map_err(|e| err("PERSISTENCE", e, correlation_id))?;
+            self.storage
+                .materialize(&observed, &paths, mode, progress)
+                .map_err(|e| err("INTAKE_RECOVERY_REQUIRED", e, correlation_id))?;
+            self.repository
+                .commit_resource(&resource, Some(&op_id))
+                .map_err(|e| err("INTAKE_RECOVERY_REQUIRED", e, correlation_id))?;
+            self.repository
+                .complete_intake(&op_id)
+                .map_err(|e| err("PERSISTENCE", e, correlation_id))?;
+        }
+        self.repository
+            .get_resource(&resource.id)
+            .map_err(|e| err("PERSISTENCE", e, correlation_id))?
+            .ok_or_else(|| {
+                err(
+                    "PERSISTENCE",
+                    "Resource disappeared after registration".into(),
+                    correlation_id,
+                )
+            })
+    }
+
+    /// # Errors
+    /// Returns a typed query or persistence error.
+    pub fn list_resources(
+        &self,
+        request: &ListResources,
+        correlation_id: &str,
+    ) -> Result<Vec<ResourceView>, ApiError> {
+        check(request.version, correlation_id)?;
+        let mut resources = self
+            .repository
+            .list_resources(&request.cask_id)
+            .map_err(|e| err("PERSISTENCE", e, correlation_id))?;
+        for resource in &mut resources {
+            self.refresh_availability(resource, correlation_id)?;
+        }
+        Ok(resources)
+    }
+    /// # Errors
+    /// Returns a typed query or persistence error.
+    pub fn get_resource(
+        &self,
+        request: &GetResource,
+        correlation_id: &str,
+    ) -> Result<ResourceView, ApiError> {
+        check(request.version, correlation_id)?;
+        let mut resource = self
+            .repository
+            .get_resource(&request.id)
+            .map_err(|e| err("PERSISTENCE", e, correlation_id))?
+            .ok_or_else(|| err("NOT_FOUND", "Resource not found".into(), correlation_id))?;
+        self.refresh_availability(&mut resource, correlation_id)?;
+        Ok(resource)
+    }
+    /// # Errors
+    /// Returns a typed validation or persistence error.
+    pub fn create_category(
+        &self,
+        request: &CreateCategory,
+        correlation_id: &str,
+    ) -> Result<CategoryView, ApiError> {
+        check(request.version, correlation_id)?;
+        let cask = self
+            .repository
+            .get(&request.cask_id)
+            .map_err(|e| err("PERSISTENCE", e, correlation_id))?
+            .ok_or_else(|| err("NOT_FOUND", "Cask not found".into(), correlation_id))?;
+        if cask.state != CaskState::Active {
+            return Err(err(
+                "CASK_READ_ONLY",
+                "Cask is not active".into(),
+                correlation_id,
+            ));
+        }
+        let name = request.name.trim();
+        if name.is_empty() || name.chars().count() > 80 || name.chars().any(char::is_control) {
+            return Err(err(
+                "INVALID_CATEGORY",
+                "Category name must contain 1–80 non-control characters".into(),
+                correlation_id,
+            ));
+        }
+        let key = format!("custom:{}", Uuid::new_v4());
+        self.repository
+            .create_category(&cask.id, &key, name)
+            .map_err(|e| err("PERSISTENCE", e, correlation_id))?;
+        Ok(CategoryView {
+            version: CONTRACT_VERSION,
+            key,
+            name: name.into(),
+            is_builtin: false,
+        })
+    }
+    /// # Errors
+    /// Returns a typed query or persistence error.
+    pub fn list_categories(
+        &self,
+        request: &ListCategories,
+        correlation_id: &str,
+    ) -> Result<Vec<CategoryView>, ApiError> {
+        check(request.version, correlation_id)?;
+        self.repository
+            .list_categories(&request.cask_id)
+            .map_err(|e| err("PERSISTENCE", e, correlation_id))
+    }
+    /// # Errors
+    /// Returns a typed validation or persistence error.
+    pub fn categorize_resource(
+        &self,
+        request: &CategorizeResource,
+        correlation_id: &str,
+    ) -> Result<ResourceView, ApiError> {
+        check(request.version, correlation_id)?;
+        let resource = self
+            .repository
+            .get_resource(&request.resource_id)
+            .map_err(|e| err("PERSISTENCE", e, correlation_id))?
+            .ok_or_else(|| err("NOT_FOUND", "Resource not found".into(), correlation_id))?;
+        let cask = self
+            .repository
+            .get(&resource.cask_id)
+            .map_err(|e| err("PERSISTENCE", e, correlation_id))?
+            .ok_or_else(|| err("NOT_FOUND", "Cask not found".into(), correlation_id))?;
+        if cask.state != CaskState::Active {
+            return Err(err(
+                "CASK_READ_ONLY",
+                "Cask is not active".into(),
+                correlation_id,
+            ));
+        }
+        if !self
+            .repository
+            .category_exists(&resource.cask_id, &request.category_key)
+            .map_err(|e| err("PERSISTENCE", e, correlation_id))?
+        {
+            return Err(err(
+                "INVALID_CATEGORY",
+                "Category is unavailable for this Cask".into(),
+                correlation_id,
+            ));
+        }
+        self.repository
+            .categorize(&request.resource_id, &request.category_key)
+            .map_err(|e| err("PERSISTENCE", e, correlation_id))?;
+        self.repository
+            .get_resource(&request.resource_id)
+            .map_err(|e| err("PERSISTENCE", e, correlation_id))?
+            .ok_or_else(|| err("NOT_FOUND", "Resource not found".into(), correlation_id))
+    }
+    /// # Errors
+    /// Returns a typed query or persistence error.
+    pub fn storage_summary(
+        &self,
+        request: &GetStorageSummary,
+        correlation_id: &str,
+    ) -> Result<StorageSummary, ApiError> {
+        check(request.version, correlation_id)?;
+        let items = self.list_resources(
+            &ListResources {
+                version: request.version,
+                cask_id: request.cask_id.clone(),
+            },
+            correlation_id,
+        )?;
+        let mut managed = 0_u64;
+        let mut referenced = 0_u64;
+        let mut unknown = 0_u64;
+        for item in items {
+            unknown = unknown.saturating_add(item.unknown_entries);
+            if item.availability != "PRESENT" {
+                unknown = unknown.saturating_add(1);
+                continue;
+            }
+            if let Some(size) = item.size_bytes {
+                if item.management == "MANAGED" {
+                    managed = managed.saturating_add(size);
+                } else {
+                    referenced = referenced.saturating_add(size);
+                }
+            } else {
+                unknown = unknown.saturating_add(1);
+            }
+        }
+        Ok(StorageSummary {
+            version: CONTRACT_VERSION,
+            managed_logical_bytes: managed,
+            referenced_logical_bytes: referenced,
+            physical_bytes: None,
+            reclaimable_min_bytes: 0,
+            reclaimable_max_bytes: managed,
+            unknown_entries: unknown,
+        })
+    }
+
+    fn refresh_availability(
+        &self,
+        resource: &mut ResourceView,
+        correlation_id: &str,
+    ) -> Result<(), ApiError> {
+        let kind = ResourceKind::from_code(&resource.kind).ok_or_else(|| {
+            err(
+                "PERSISTENCE",
+                "Resource kind is invalid".into(),
+                correlation_id,
+            )
+        })?;
+        resource.availability = self.storage.availability(&resource.path, kind).into();
+        Ok(())
+    }
+}
+
+fn check(version: u32, correlation_id: &str) -> Result<(), ApiError> {
+    if version == CONTRACT_VERSION {
+        Ok(())
+    } else {
+        Err(err(
+            "UNSUPPORTED_VERSION",
+            format!("Expected contract version {CONTRACT_VERSION}"),
+            correlation_id,
+        ))
+    }
+}
+fn err(code: &str, message: String, correlation_id: &str) -> ApiError {
+    ApiError {
+        version: CONTRACT_VERSION,
+        code: code.into(),
+        message,
+        correlation_id: correlation_id.into(),
+    }
+}

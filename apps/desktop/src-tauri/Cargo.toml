@@ -17,6 +17,7 @@ casklet-application = { path = "../../../crates/casklet-application", version = 
 casklet-contracts = { path = "../../../crates/casklet-contracts", version = "0.0.0" }
 casklet-infrastructure = { path = "../../../crates/casklet-infrastructure", version = "=0.0.0" }
 tauri = { version = "=2.11.1", features = [] }
+tauri-plugin-dialog = "=2.6.0"
 
 [lints]
 workspace = true
