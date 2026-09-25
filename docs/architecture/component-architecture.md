@@ -180,39 +180,39 @@ The application API uses commands for mutations and queries for reads. This is a
 ### Commands
 
 ```text
-CreateCask
-RenameCask
-ArchiveCask
-RestoreCask
-AddResource
-RecategorizeResource
-RemoveResource
-InstallApplication
-AssociateInstallation
-ExportCask
-CreateRemovalPlan
-ApproveRemovalPlan
-ExecuteRemovalPlan
-CancelOperation
-RecoverOperation
+casklet cask create
+casklet cask rename
+casklet cask archive
+casklet cask restore
+casklet resource add
+casklet resource categorize
+casklet resource remove
+casklet app install
+casklet app associate
+casklet cask export
+casklet plan create
+casklet plan approve
+casklet plan execute
+casklet operation cancel
+casklet operation recover
 ```
 
 ### Queries
 
 ```text
-GetCask
-ListCasks
-ListResources
-GetResource
-GetStorageSummary
-ListCategories
-SearchProviderPackages
-ListInstalledApplications
-GetInstallation
-GetOperation
-ListOperations
-GetRemovalPlan
-GetRecoveryStatus
+casklet cask get
+casklet cask list
+casklet resource list
+casklet resource get
+casklet storage summary
+casklet category list
+casklet package search
+casklet app list
+casklet app get
+casklet operation get
+casklet operation list
+casklet plan get
+casklet recovery status
 ```
 
 Each request and response is a dedicated typed data-transfer object. Presentation DTOs may combine fields for display, but domain entities are not serialized directly across the Tauri boundary.

@@ -10,9 +10,9 @@ body {
   min-height: 100vh;
 }
 main {
-  max-width: 40rem;
+  max-width: 48rem;
   margin: 0 auto;
-  padding: 20vh 2rem 2rem;
+  padding: 3rem 2rem;
 }
 h1 {
   font-size: clamp(3rem, 10vw, 6rem);
@@ -28,4 +28,64 @@ p {
   font-weight: 700;
   letter-spacing: 0.12em;
   text-transform: uppercase;
+}
+form,
+section {
+  margin-top: 2rem;
+}
+label {
+  display: block;
+  margin-bottom: 0.5rem;
+}
+.form-row {
+  display: flex;
+  gap: 0.5rem;
+}
+input {
+  flex: 1;
+  min-width: 0;
+  padding: 0.7rem;
+  border-radius: 0.4rem;
+  border: 1px solid #74917a;
+  background: #edf5ef;
+  color: #17211b;
+  font: inherit;
+}
+button {
+  padding: 0.7rem 1rem;
+  border: 0;
+  border-radius: 0.4rem;
+  background: #8ed7a4;
+  color: #102115;
+  font: inherit;
+  cursor: pointer;
+}
+button:disabled {
+  opacity: 0.6;
+  cursor: wait;
+}
+.cask-link {
+  background: transparent;
+  color: #8ed7a4;
+  padding: 0.4rem 0;
+  text-align: left;
+}
+ul {
+  list-style: none;
+  padding: 0;
+}
+li {
+  border-bottom: 1px solid #405747;
+}
+dl {
+  display: grid;
+  grid-template-columns: 9rem 1fr;
+  gap: 0.5rem;
+}
+dd {
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.error {
+  color: #ffb9b9;
 }

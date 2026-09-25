@@ -46,8 +46,18 @@ fn generate_contracts() -> Result<(), String> {
     if !target.is_dir() {
         return Err("generated-contract directory is missing".into());
     }
-    println!("No product DTOs exist yet; generation is intentionally a no-op.");
-    Ok(())
+    std::fs::write(target.join("casklet.ts"), casklet_contracts::TYPESCRIPT)
+        .map_err(|error| error.to_string())
+}
+
+fn check_contracts() -> Result<(), String> {
+    let generated = std::fs::read_to_string("apps/desktop/src/contracts/generated/casklet.ts")
+        .map_err(|error| error.to_string())?;
+    if generated == casklet_contracts::TYPESCRIPT {
+        Ok(())
+    } else {
+        Err("generated contracts differ; run cargo xtask generate-contracts".into())
+    }
 }
 
 fn check() -> Result<(), String> {
@@ -65,12 +75,23 @@ fn check() -> Result<(), String> {
         ],
     )?;
     run("cargo", &["test", "--workspace", "--all-features"])?;
-    run("cargo", &["build", "--workspace", "--all-features"])?;
+    // Windows cannot replace the running xtask.exe during its own quality gate.
+    run(
+        "cargo",
+        &[
+            "build",
+            "--workspace",
+            "--exclude",
+            "xtask",
+            "--all-features",
+        ],
+    )?;
     run_pnpm(&["format:check"])?;
     run_pnpm(&["lint"])?;
     run_pnpm(&["check"])?;
+    run_pnpm(&["test"])?;
     run_pnpm(&["build"])?;
-    generate_contracts()
+    check_contracts()
 }
 
 fn main() -> ExitCode {
