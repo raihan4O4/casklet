@@ -32,6 +32,52 @@
   let permanentPlan = $state(false);
   let permanentConfirmation = $state(false);
   let removalBusy = $state(false);
+  let recoveryManifestPath = $state('');
+  let recoveryManifestPreview = $state('');
+  let discoveredManifests = $state('');
+
+  async function scanRecoveryManifests() {
+    try {
+      discoveredManifests = await invoke<string>('scan_recovery_manifests');
+      if (!discoveredManifests) discoveredManifests = 'No local manifests found.';
+      error = '';
+    } catch (cause) { discoveredManifests = ''; error = message(cause); }
+  }
+  async function recoverDiscoveredManifests() {
+    try {
+      progress = await invoke<string>('recover_discovered_manifests');
+      discoveredManifests = '';
+      await refresh();
+    } catch (cause) { error = message(cause); }
+  }
+
+  async function exportCask(format: 'json' | 'markdown', machine = false) {
+    if (!selected) return;
+    try {
+      const outputPath = await save({ defaultPath: `${selected.name}-inventory.${format === 'json' ? 'json' : 'md'}` });
+      if (!outputPath) return;
+      await invoke('export_cask', { caskId: selected.id, outputPath, format, machine });
+      progress = 'Inventory saved. Review it before sharing.';
+      error = '';
+    } catch (cause) { error = message(cause); }
+  }
+  async function chooseRecoveryManifest() {
+    try {
+      const path = await open({ multiple: false, filters: [{ name: 'Casklet manifest', extensions: ['json'] }] });
+      if (typeof path !== 'string') return;
+      recoveryManifestPath = path;
+      recoveryManifestPreview = await invoke<string>('preview_recovery_manifest', { path });
+      error = '';
+    } catch (cause) { recoveryManifestPreview = ''; error = message(cause); }
+  }
+  async function recoverFromManifest() {
+    if (!recoveryManifestPath || !recoveryManifestPreview) return;
+    try {
+      progress = await invoke<string>('recover_manifest', { path: recoveryManifestPath });
+      recoveryManifestPath = ''; recoveryManifestPreview = '';
+      await refresh();
+    } catch (cause) { error = message(cause); }
+  }
 
   async function previewRemoval(resourceIds: string[] = []) {
     if (!selected) return;
@@ -228,6 +274,16 @@
     <ul>{#each casks as cask (cask.id)}<li><button class="cask-link" onclick={() => void inspect(cask.id)}>{cask.name}</button></li>{/each}</ul>
   </section>
   <button type="button" onclick={() => void saveDiagnostics()}>Save diagnostics</button>
+  <button type="button" onclick={() => void chooseRecoveryManifest()}>Preview recovery manifest</button>
+  <button type="button" onclick={() => void scanRecoveryManifests()}>Scan local recovery manifests</button>
+  {#if discoveredManifests}
+    <pre>{discoveredManifests}</pre>
+    {#if discoveredManifests !== 'No local manifests found.'}<button type="button" onclick={() => void recoverDiscoveredManifests()}>Recover missing Casks as unverified metadata</button>{/if}
+  {/if}
+  {#if recoveryManifestPreview}
+    <p>{recoveryManifestPreview}</p>
+    <button type="button" onclick={() => void recoverFromManifest()}>Recover unverified metadata</button>
+  {/if}
   {#if operations.some((item) => item.state === 'RUNNING')}
     <section aria-label="Running operations"><h2>Running operations</h2><ul>
       {#each operations.filter((item) => item.state === 'RUNNING') as operation (operation.id)}
@@ -260,6 +316,9 @@
   {#if selected}
     <section aria-label="Cask details">
       <h2>{selected.name}</h2>
+      <button type="button" onclick={() => void exportCask('json')}>Export portable JSON</button>
+      <button type="button" onclick={() => void exportCask('markdown')}>Export report</button>
+      <button type="button" onclick={() => void exportCask('json', true)}>Export machine JSON</button>
       <dl><dt>ID</dt><dd>{selected.id}</dd><dt>State</dt><dd>{selected.state}</dd><dt>Created</dt><dd>{new Date(selected.createdAtMs).toLocaleString()}</dd><dt>Managed storage</dt><dd>{selected.managedStorageRoot}</dd></dl>
       <section aria-label="Resource intake">
         <h3>Add a resource</h3>

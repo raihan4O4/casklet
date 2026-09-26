@@ -8,8 +8,12 @@ use casklet_contracts::{
 };
 #[cfg(feature = "reviewed-removal")]
 use casklet_contracts::{ApproveRemovalPlan, CloseRemovalRun, ExecuteRemovalPlan};
+use casklet_infrastructure::inventory::{
+    ExportProfile, describe_manifests, discover_manifests, preview_manifest, write_export,
+};
 use clap::{Parser, Subcommand, ValueEnum};
 use std::fmt::Write;
+use std::path::Path;
 use std::process::ExitCode;
 
 #[derive(Debug, Parser)]
@@ -32,6 +36,18 @@ enum Output {
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    Export {
+        cask_id: String,
+        output_path: String,
+        #[arg(long, value_enum, default_value_t = ExportFormat::Json)]
+        format: ExportFormat,
+        #[arg(long)]
+        machine: bool,
+    },
+    Manifest {
+        #[command(subcommand)]
+        action: ManifestAction,
+    },
     Cask {
         #[command(subcommand)]
         action: CaskAction,
@@ -64,6 +80,20 @@ enum Command {
         #[command(subcommand)]
         action: PlanAction,
     },
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum ExportFormat {
+    Json,
+    Markdown,
+}
+
+#[derive(Debug, Subcommand)]
+enum ManifestAction {
+    Preview { path: String },
+    Recover { path: String },
+    Scan,
+    RecoverAll,
 }
 
 #[derive(Debug, Subcommand)]
@@ -207,6 +237,96 @@ fn main() -> ExitCode {
     };
     let correlation_id = uuid::Uuid::new_v4().to_string();
     let result = match cli.command {
+        Command::Export {
+            cask_id,
+            output_path,
+            format,
+            machine,
+        } => {
+            let profile = if machine {
+                ExportProfile::Machine
+            } else {
+                ExportProfile::Portable
+            };
+            let content = match format {
+                ExportFormat::Json => service
+                    .repository
+                    .export_inventory(&cask_id, profile)
+                    .and_then(|value| serde_json::to_vec_pretty(&value).map_err(|e| e.to_string())),
+                ExportFormat::Markdown => service
+                    .repository
+                    .export_report(&cask_id, profile)
+                    .map(String::into_bytes),
+            };
+            content
+                .and_then(|bytes| write_export(Path::new(&output_path), &bytes))
+                .map(|()| format!("Wrote {output_path}\n"))
+                .map_err(|message| ApiError {
+                    version: CONTRACT_VERSION,
+                    code: "EXPORT_FAILED".into(),
+                    message,
+                    correlation_id: correlation_id.clone(),
+                })
+        }
+        Command::Manifest {
+            action: ManifestAction::Preview { path },
+        } => preview_manifest(Path::new(&path))
+            .map(|preview| {
+                format!(
+                    "{}: {} resources ({} present, {} missing, {} unverified); {}\n",
+                    preview.cask_name,
+                    preview.resource_count,
+                    preview.observed_present,
+                    preview.observed_missing,
+                    preview.unverified,
+                    preview.warnings.join(" ")
+                )
+            })
+            .map_err(|message| ApiError {
+                version: CONTRACT_VERSION,
+                code: "MANIFEST_INVALID".into(),
+                message,
+                correlation_id: correlation_id.clone(),
+            }),
+        Command::Manifest {
+            action: ManifestAction::Recover { path },
+        } => service
+            .repository
+            .recover_manifest(&service.storage, Path::new(&path))
+            .map(|preview| {
+                format!(
+                    "Recovered {} as unverified, detach-only metadata ({} resources).\n",
+                    preview.cask_name, preview.resource_count
+                )
+            })
+            .map_err(|message| ApiError {
+                version: CONTRACT_VERSION,
+                code: "RECOVERY_FAILED".into(),
+                message,
+                correlation_id: correlation_id.clone(),
+            }),
+        Command::Manifest {
+            action: ManifestAction::Scan,
+        } => discover_manifests(&service.storage)
+            .map(|items| describe_manifests(&items))
+            .map_err(|message| ApiError {
+                version: CONTRACT_VERSION,
+                code: "MANIFEST_INVALID".into(),
+                message,
+                correlation_id: correlation_id.clone(),
+            }),
+        Command::Manifest {
+            action: ManifestAction::RecoverAll,
+        } => service
+            .repository
+            .recover_discovered(&service.storage)
+            .map(|items| format!("Recovered {} Casks as unverified metadata.\n", items.len()))
+            .map_err(|message| ApiError {
+                version: CONTRACT_VERSION,
+                code: "RECOVERY_FAILED".into(),
+                message,
+                correlation_id: correlation_id.clone(),
+            }),
         Command::Cask {
             action: CaskAction::Create { name },
         } => service
