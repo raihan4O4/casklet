@@ -4,7 +4,7 @@
   import { getCurrentWindow } from '@tauri-apps/api/window';
   import { open, save } from '@tauri-apps/plugin-dialog';
   import { onMount } from 'svelte';
-  import type { AddMode, ApiError, CaskView, CategoryView, ResourceView, StorageSummary, RecoveryStatus, RecoveryInspection, OperationView, RemovalPlanView } from '../contracts/generated/casklet';
+  import type { AddMode, ApiError, CaskView, CategoryView, ResourceView, StorageSummary, RecoveryStatus, RecoveryInspection, OperationView, RemovalPlanView, PortableZipPreview, PortableInstallationView } from '../contracts/generated/casklet';
   import { CONTRACT_VERSION } from '../contracts/generated/casklet';
 
   let casks: CaskView[] = $state([]);
@@ -32,6 +32,47 @@
   let permanentPlan = $state(false);
   let permanentConfirmation = $state(false);
   let removalBusy = $state(false);
+  let portablePreview: PortableZipPreview | null = $state(null);
+  let portablePath = $state('');
+  let portableExe = $state('');
+  let portableName = $state('');
+  let portableVersion = $state('');
+  let portableItems: PortableInstallationView[] = $state([]);
+  let portableBusy = $state(false);
+
+  async function inspectPortableArchive() {
+    try {
+      const path = await open({ multiple:false, filters:[{name:'ZIP archive',extensions:['zip']}] });
+      if (typeof path !== 'string') return;
+      portableBusy = true;
+      portablePreview = await invoke<PortableZipPreview>('inspect_portable_zip', {request:{version:CONTRACT_VERSION,archivePath:path}});
+      portablePath = path;
+      portableExe = portablePreview.executablePaths.length === 1 ? portablePreview.executablePaths[0] : '';
+      portableName = path.split(/[\\/]/).pop()?.replace(/\.zip$/i,'') ?? '';
+      error = '';
+    } catch (cause) {portablePreview=null;error=message(cause);}
+    finally {portableBusy=false;}
+  }
+  async function installPortableArchive() {
+    if (!selected || !portablePreview || !portableExe || !portableName.trim()) return;
+    portableBusy = true;
+    try {
+      await invoke<PortableInstallationView>('install_portable_zip',{request:{version:CONTRACT_VERSION,caskId:selected.id,
+        archivePath:portablePath,archiveSha256:portablePreview.archiveSha256,applicationName:portableName,
+        applicationVersion:portableVersion.trim() || null,executableRelativePath:portableExe}});
+      portablePreview=null;portablePath='';portableExe='';portableVersion='';
+      progress='Portable application installed. Launch only if you trust its source.';
+      await refreshResources();await refreshOperations();error='';
+    } catch (cause) {error=message(cause);await refreshRecovery();}
+    finally {portableBusy=false;}
+  }
+  async function launchPortable(item: PortableInstallationView) {
+    try { await invoke('launch_portable_installation',{request:{version:CONTRACT_VERSION,installationId:item.installationId}});progress=`Started ${item.applicationName}.`;error=''; }
+    catch (cause) {error=message(cause);}
+  }
+  async function previewPortableRemoval(item: PortableInstallationView) {
+    await previewRemoval([item.resourceId]);
+  }
   let recoveryManifestPath = $state('');
   let recoveryManifestPreview = $state('');
   let discoveredManifests = $state('');
@@ -202,6 +243,7 @@
     if (!selected) return;
     const caskId = selected.id;
     resources = await invoke<ResourceView[]>('list_resources', { request: { version: CONTRACT_VERSION, caskId } });
+    portableItems = await invoke<PortableInstallationView[]>('list_portable_installations', {request:{version:CONTRACT_VERSION,caskId}});
     categories = await invoke<CategoryView[]>('list_categories', { request: { version: CONTRACT_VERSION, caskId } });
     summary = await invoke<StorageSummary>('storage_summary', { request: { version: CONTRACT_VERSION, caskId } });
   }
@@ -320,6 +362,34 @@
       <button type="button" onclick={() => void exportCask('markdown')}>Export report</button>
       <button type="button" onclick={() => void exportCask('json', true)}>Export machine JSON</button>
       <dl><dt>ID</dt><dd>{selected.id}</dd><dt>State</dt><dd>{selected.state}</dd><dt>Created</dt><dd>{new Date(selected.createdAtMs).toLocaleString()}</dd><dt>Managed storage</dt><dd>{selected.managedStorageRoot}</dd></dl>
+      <section aria-label="Portable applications">
+        <h3>Portable applications</h3>
+        <p>Review a ZIP before installing it. Portable applications are not sandboxed; launch only software you trust.</p>
+        <button type="button" disabled={portableBusy} onclick={() => void inspectPortableArchive()}>Inspect portable ZIP</button>
+        {#if portablePreview}
+          <div class="review">
+            <p><strong>Archive:</strong> {portablePath}</p>
+            <p><strong>SHA-256:</strong> {portablePreview.archiveSha256}</p>
+            <p>{portablePreview.fileCount} files, {portablePreview.expandedBytes} expanded bytes</p>
+            <label for="portable-name">Application name</label><input id="portable-name" bind:value={portableName} maxlength="120" />
+            <label for="portable-version">Version (optional)</label><input id="portable-version" bind:value={portableVersion} maxlength="80" />
+            <label for="portable-executable">Executable to launch</label>
+            <select id="portable-executable" bind:value={portableExe}>
+              <option value="">Choose executable</option>
+              {#each portablePreview.executablePaths as executable (executable)}<option value={executable}>{executable}</option>{/each}
+            </select>
+            <button type="button" disabled={portableBusy || !portableExe || !portableName.trim()} onclick={() => void installPortableArchive()}>Install into this Cask</button>
+          </div>
+        {/if}
+        {#if portableItems.length}
+          <ul>{#each portableItems as item (item.installationId)}
+            <li>{item.applicationName} {item.applicationVersion ?? ''} ({item.state}) — {item.executableRelativePath}
+              <button type="button" disabled={!item.canLaunch} onclick={() => void launchPortable(item)}>Launch</button>
+              <button type="button" disabled={!item.canPlanRemoval} onclick={() => void previewPortableRemoval(item)}>Preview removal</button>
+            </li>
+          {/each}</ul>
+        {/if}
+      </section>
       <section aria-label="Resource intake">
         <h3>Add a resource</h3>
         <p>Choose a file or folder, or drop one into this window. Review the action before adding it.</p>

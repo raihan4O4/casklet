@@ -21,6 +21,11 @@ pub fn run() {
             list_casks,
             get_cask,
             add_resource,
+            inspect_portable_zip,
+            install_portable_zip,
+            list_portable_installations,
+            get_portable_installation,
+            launch_portable_installation,
             list_resources,
             get_resource,
             create_category,
@@ -51,6 +56,81 @@ type Service = casklet_application::CaskService<
     casklet_infrastructure::SqliteCasks,
     casklet_infrastructure::LocalStorage,
 >;
+
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+fn inspect_portable_zip(
+    service: tauri::State<'_, Service>,
+    request: casklet_contracts::InspectPortableZip,
+) -> Result<casklet_contracts::PortableZipPreview, casklet_contracts::ApiError> {
+    service.inspect_portable_zip(&request, "desktop")
+}
+
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+async fn install_portable_zip(
+    app: tauri::AppHandle,
+    service: tauri::State<'_, Service>,
+    request: casklet_contracts::InstallPortableZip,
+) -> Result<casklet_contracts::PortableInstallationView, casklet_contracts::ApiError> {
+    let service = service.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        service.install_portable_zip(
+            &request,
+            "desktop",
+            &|done, total| {
+                let _ = app.emit("portable.progress", (done, total));
+            },
+            &|id| {
+                let _ = app.emit("operation.started", id);
+            },
+        )
+    })
+    .await
+    .map_err(|e| casklet_contracts::ApiError {
+        version: casklet_contracts::CONTRACT_VERSION,
+        code: "WORKER".into(),
+        message: e.to_string(),
+        correlation_id: "desktop".into(),
+    })?
+}
+
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+fn list_portable_installations(
+    service: tauri::State<'_, Service>,
+    request: casklet_contracts::ListPortableInstallations,
+) -> Result<Vec<casklet_contracts::PortableInstallationView>, casklet_contracts::ApiError> {
+    service.list_portable_installations(&request, "desktop")
+}
+
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+fn get_portable_installation(
+    service: tauri::State<'_, Service>,
+    request: casklet_contracts::GetPortableInstallation,
+) -> Result<casklet_contracts::PortableInstallationView, casklet_contracts::ApiError> {
+    service.get_portable_installation(&request, "desktop")
+}
+
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+async fn launch_portable_installation(
+    service: tauri::State<'_, Service>,
+    request: casklet_contracts::LaunchPortableInstallation,
+) -> Result<casklet_contracts::PortableInstallationView, casklet_contracts::ApiError> {
+    let service = service.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        service.launch_portable_installation(&request, "desktop")
+    })
+    .await
+    .map_err(|e| casklet_contracts::ApiError {
+        version: casklet_contracts::CONTRACT_VERSION,
+        code: "WORKER".into(),
+        message: e.to_string(),
+        correlation_id: "desktop".into(),
+    })?
+}
 
 fn inventory_error(message: String) -> casklet_contracts::ApiError {
     casklet_contracts::ApiError {

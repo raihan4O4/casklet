@@ -332,7 +332,9 @@ impl RemovalRepository for SqliteCasks {
             if matches!(item.view.action.as_str(), "TRASH" | "DELETE_PERMANENTLY") {
                 transaction.execute("UPDATE resources SET availability='MISSING',revision=revision+1 WHERE id=?1",[&item.view.resource_id]).map_err(|e|e.to_string())?;
                 transaction.execute("UPDATE resource_locations SET retired_at_ms=?2 WHERE resource_id=?1 AND is_primary=1 AND retired_at_ms IS NULL",params![item.view.resource_id,now_ms]).map_err(|e|e.to_string())?;
+                transaction.execute("UPDATE installations SET state='REMOVED',revision=revision+1 WHERE resource_id=?1 AND provider='PORTABLE_ZIP' AND state='INSTALLED'",[&item.view.resource_id]).map_err(|e|e.to_string())?;
             }
+            transaction.execute("UPDATE cask_installations SET removed_at_ms=?3,revision=revision+1 WHERE cask_id=?1 AND installation_id IN (SELECT id FROM installations WHERE resource_id=?2) AND removed_at_ms IS NULL",params![cask_id,item.view.resource_id,now_ms]).map_err(|e|e.to_string())?;
             transaction.execute("INSERT INTO projection_jobs(cask_id,target_revision,state,updated_at_ms) VALUES (?1,1,'PENDING',?2) ON CONFLICT(cask_id) DO UPDATE SET target_revision=target_revision+1,state='PENDING',updated_at_ms=excluded.updated_at_ms",params![cask_id,now_ms]).map_err(|e|e.to_string())?;
         }
         transaction

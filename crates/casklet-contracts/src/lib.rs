@@ -98,6 +98,78 @@ pub struct ResourceView {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct InspectPortableZip {
+    pub version: u32,
+    pub archive_path: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PortableZipPreview {
+    pub version: u32,
+    pub archive_sha256: String,
+    pub file_count: u32,
+    pub expanded_bytes: u64,
+    pub executable_paths: Vec<String>,
+    pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InstallPortableZip {
+    pub version: u32,
+    pub cask_id: String,
+    pub archive_path: String,
+    pub archive_sha256: String,
+    pub application_name: String,
+    pub application_version: Option<String>,
+    pub executable_relative_path: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListPortableInstallations {
+    pub version: u32,
+    pub cask_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GetPortableInstallation {
+    pub version: u32,
+    pub installation_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LaunchPortableInstallation {
+    pub version: u32,
+    pub installation_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PortableInstallationView {
+    pub version: u32,
+    pub application_id: String,
+    pub installation_id: String,
+    pub cask_id: String,
+    pub resource_id: String,
+    pub application_name: String,
+    pub application_version: Option<String>,
+    pub provider: String,
+    pub provenance: String,
+    pub relationship: String,
+    pub state: String,
+    pub root_path: String,
+    pub executable_relative_path: String,
+    pub source_sha256: String,
+    pub can_launch: bool,
+    pub can_plan_removal: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CreateCategory {
     pub version: u32,
     pub cask_id: String,
@@ -332,6 +404,13 @@ export type AddResource = { version: number; caskId: string; sourcePath: string;
 export type ListResources = { version: number; caskId: string };
 export type GetResource = { version: number; id: string };
 export type ResourceView = { version: number; id: string; caskId: string; name: string; path: string; kind: string; management: string; containment: string; availability: string; categoryKey: string; sizeBytes: number | null; sizeMeasurement: string; unknownEntries: number };
+export type InspectPortableZip = { version: number; archivePath: string };
+export type PortableZipPreview = { version: number; archiveSha256: string; fileCount: number; expandedBytes: number; executablePaths: string[]; warnings: string[] };
+export type InstallPortableZip = { version: number; caskId: string; archivePath: string; archiveSha256: string; applicationName: string; applicationVersion: string | null; executableRelativePath: string };
+export type ListPortableInstallations = { version: number; caskId: string };
+export type GetPortableInstallation = { version: number; installationId: string };
+export type LaunchPortableInstallation = { version: number; installationId: string };
+export type PortableInstallationView = { version: number; applicationId: string; installationId: string; caskId: string; resourceId: string; applicationName: string; applicationVersion: string | null; provider: string; provenance: string; relationship: string; state: string; rootPath: string; executableRelativePath: string; sourceSha256: string; canLaunch: boolean; canPlanRemoval: boolean };
 export type CreateCategory = { version: number; caskId: string; name: string };
 export type ListCategories = { version: number; caskId: string };
 export type CategoryView = { version: number; key: string; name: string; isBuiltin: boolean };
