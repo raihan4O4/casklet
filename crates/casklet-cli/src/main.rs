@@ -8,7 +8,9 @@ use casklet_contracts::{
 };
 #[cfg(feature = "reviewed-removal")]
 use casklet_contracts::{ApproveRemovalPlan, CloseRemovalRun, ExecuteRemovalPlan};
-use casklet_infrastructure::inventory::{ExportProfile, preview_manifest, write_export};
+use casklet_infrastructure::inventory::{
+    ExportProfile, describe_manifests, discover_manifests, preview_manifest, write_export,
+};
 use clap::{Parser, Subcommand, ValueEnum};
 use std::fmt::Write;
 use std::path::Path;
@@ -90,6 +92,8 @@ enum ExportFormat {
 enum ManifestAction {
     Preview { path: String },
     Recover { path: String },
+    Scan,
+    RecoverAll,
 }
 
 #[derive(Debug, Subcommand)]
@@ -269,9 +273,12 @@ fn main() -> ExitCode {
         } => preview_manifest(Path::new(&path))
             .map(|preview| {
                 format!(
-                    "{}: {} resources; {}\n",
+                    "{}: {} resources ({} present, {} missing, {} unverified); {}\n",
                     preview.cask_name,
                     preview.resource_count,
+                    preview.observed_present,
+                    preview.observed_missing,
+                    preview.unverified,
                     preview.warnings.join(" ")
                 )
             })
@@ -292,6 +299,28 @@ fn main() -> ExitCode {
                     preview.cask_name, preview.resource_count
                 )
             })
+            .map_err(|message| ApiError {
+                version: CONTRACT_VERSION,
+                code: "RECOVERY_FAILED".into(),
+                message,
+                correlation_id: correlation_id.clone(),
+            }),
+        Command::Manifest {
+            action: ManifestAction::Scan,
+        } => discover_manifests(&service.storage)
+            .map(|items| describe_manifests(&items))
+            .map_err(|message| ApiError {
+                version: CONTRACT_VERSION,
+                code: "MANIFEST_INVALID".into(),
+                message,
+                correlation_id: correlation_id.clone(),
+            }),
+        Command::Manifest {
+            action: ManifestAction::RecoverAll,
+        } => service
+            .repository
+            .recover_discovered(&service.storage)
+            .map(|items| format!("Recovered {} Casks as unverified metadata.\n", items.len()))
             .map_err(|message| ApiError {
                 version: CONTRACT_VERSION,
                 code: "RECOVERY_FAILED".into(),

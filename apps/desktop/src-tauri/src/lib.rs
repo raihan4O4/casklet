@@ -16,6 +16,8 @@ pub fn run() {
             export_cask,
             preview_recovery_manifest,
             recover_manifest,
+            scan_recovery_manifests,
+            recover_discovered_manifests,
             list_casks,
             get_cask,
             add_resource,
@@ -95,9 +97,12 @@ fn preview_recovery_manifest(path: String) -> Result<String, casklet_contracts::
     casklet_infrastructure::inventory::preview_manifest(std::path::Path::new(&path))
         .map(|preview| {
             format!(
-                "{}: {} resources. {}",
+                "{}: {} resources ({} present, {} missing, {} unverified). {}",
                 preview.cask_name,
                 preview.resource_count,
+                preview.observed_present,
+                preview.observed_missing,
+                preview.unverified,
                 preview.warnings.join(" ")
             )
         })
@@ -114,6 +119,28 @@ fn recover_manifest(
         .repository
         .recover_manifest(&service.storage, std::path::Path::new(&path))
         .map(|preview| format!("Recovered {} as unverified metadata.", preview.cask_name))
+        .map_err(inventory_error)
+}
+
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)] // Tauri command extractor requires owned arguments.
+fn scan_recovery_manifests(
+    service: tauri::State<'_, Service>,
+) -> Result<String, casklet_contracts::ApiError> {
+    casklet_infrastructure::inventory::discover_manifests(&service.storage)
+        .map(|items| casklet_infrastructure::inventory::describe_manifests(&items))
+        .map_err(inventory_error)
+}
+
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)] // Tauri command extractor requires owned arguments.
+fn recover_discovered_manifests(
+    service: tauri::State<'_, Service>,
+) -> Result<String, casklet_contracts::ApiError> {
+    service
+        .repository
+        .recover_discovered(&service.storage)
+        .map(|items| format!("Recovered {} Casks as unverified metadata.", items.len()))
         .map_err(inventory_error)
 }
 

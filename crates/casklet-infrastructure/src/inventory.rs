@@ -27,6 +27,9 @@ pub struct ManifestPreview {
     pub cask_id: String,
     pub cask_name: String,
     pub resource_count: usize,
+    pub observed_present: usize,
+    pub observed_missing: usize,
+    pub unverified: usize,
     pub warnings: Vec<String>,
 }
 
@@ -41,6 +44,10 @@ fn safe_text(s: &str, limit: usize) -> bool {
     !s.is_empty() && s.len() <= limit && !s.chars().any(char::is_control)
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "validation and read-only observations share the same bounded manifest snapshot"
+)]
 fn validate_manifest(path: &Path) -> Result<(Value, ManifestPreview), String> {
     let mut bytes = Vec::new();
     fs::File::open(path)
@@ -132,8 +139,36 @@ fn validate_manifest(path: &Path) -> Result<(Value, ManifestPreview), String> {
             return Err("Invalid size".into());
         }
     }
+    let cask_root = path.parent().and_then(Path::parent);
+    let mut observed_present = 0;
+    let mut observed_missing = 0;
+    let mut unverified = 0;
+    for resource in resources {
+        let Some(root) = cask_root else {
+            unverified += 1;
+            continue;
+        };
+        let resource_path = Path::new(field(resource, "path")?);
+        if resource["containment"] != "INTERNAL" || !resource_path.starts_with(root.join("content"))
+        {
+            unverified += 1;
+            continue;
+        }
+        match fs::symlink_metadata(resource_path) {
+            Ok(metadata)
+                if !metadata.file_type().is_symlink()
+                    && ((resource["kind"] == "FILE" && metadata.is_file())
+                        || (resource["kind"] == "DIRECTORY" && metadata.is_dir())) =>
+            {
+                observed_present += 1;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => observed_missing += 1,
+            _ => unverified += 1,
+        }
+    }
     let preview = ManifestPreview {
         cask_id: id.into(), cask_name: name.into(), resource_count: resources.len(),
+        observed_present, observed_missing, unverified,
         warnings: vec!["Manifest metadata is untrusted. Recovery records all resources as references with unknown availability and detach-only policy.".into()],
     };
     Ok((value, preview))
@@ -145,7 +180,80 @@ pub fn preview_manifest(path: &Path) -> Result<ManifestPreview, String> {
     validate_manifest(path).map(|(_, preview)| preview)
 }
 
+/// Finds only immediate UUID-named Cask directories in configured local storage.
+/// # Errors
+/// Rejects an unreadable root, more than 1,000 candidates, or any invalid manifest.
+pub fn discover_manifests(
+    storage: &LocalStorage,
+) -> Result<Vec<(PathBuf, ManifestPreview)>, String> {
+    if !storage.root.exists() {
+        return Ok(Vec::new());
+    }
+    let mut found = Vec::new();
+    for entry in fs::read_dir(&storage.root).map_err(|e| e.to_string())? {
+        let entry = entry.map_err(|e| e.to_string())?;
+        if !entry.file_type().map_err(|e| e.to_string())?.is_dir() {
+            continue;
+        }
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else {
+            continue;
+        };
+        if Uuid::parse_str(name).is_err() {
+            continue;
+        }
+        let manifest = entry.path().join(".casklet").join("manifest.json");
+        if !manifest.is_file() {
+            continue;
+        }
+        if found.len() >= 1_000 {
+            return Err("Too many Cask manifests".into());
+        }
+        let preview = preview_manifest(&manifest)?;
+        if preview.cask_id != name {
+            return Err("Manifest ID differs from Cask directory".into());
+        }
+        found.push((manifest, preview));
+    }
+    found.sort_by(|a, b| a.1.cask_id.cmp(&b.1.cask_id));
+    Ok(found)
+}
+
+#[must_use]
+pub fn describe_manifests(items: &[(PathBuf, ManifestPreview)]) -> String {
+    let mut result = String::new();
+    for (_, preview) in items {
+        writeln!(
+            result,
+            "{}: {} resources ({} present, {} missing, {} unverified)",
+            preview.cask_name,
+            preview.resource_count,
+            preview.observed_present,
+            preview.observed_missing,
+            preview.unverified
+        )
+        .expect("writing to String cannot fail");
+    }
+    result
+}
+
 impl SqliteCasks {
+    /// Recovers every missing Cask under configured storage. The command can be retried after a partial I/O failure.
+    /// # Errors
+    /// Rejects invalid manifests before changing the database; database failures may leave earlier Casks recovered.
+    pub fn recover_discovered(
+        &self,
+        storage: &LocalStorage,
+    ) -> Result<Vec<ManifestPreview>, String> {
+        let manifests = discover_manifests(storage)?;
+        let mut recovered = Vec::new();
+        for (path, preview) in manifests {
+            if self.get(&preview.cask_id)?.is_none() {
+                recovered.push(self.recover_manifest(storage, &path)?);
+            }
+        }
+        Ok(recovered)
+    }
     /// Returns a versioned, privacy-safe inventory. Machine exports explicitly include local IDs and paths.
     /// # Errors
     /// Returns a database or serialization error.
@@ -394,10 +502,18 @@ mod tests {
                 format!("{:x}", Sha256::digest(&bytes)),
             )
             .unwrap();
-            database
-                .recover_manifest(&storage, &metadata.join("manifest.json"))
-                .unwrap();
         }
+        let previews = discover_manifests(&storage).unwrap();
+        assert_eq!(previews.len(), 2);
+        assert_eq!(previews[0].1.unverified, 1);
+        let checksum = previews[1].0.with_file_name("manifest.sha256");
+        let original_checksum = fs::read(&checksum).unwrap();
+        fs::write(&checksum, "truncated").unwrap();
+        assert!(database.recover_discovered(&storage).is_err());
+        assert!(database.list().unwrap().is_empty());
+        fs::write(&checksum, original_checksum).unwrap();
+        assert_eq!(database.recover_discovered(&storage).unwrap().len(), 2);
+        assert!(database.recover_discovered(&storage).unwrap().is_empty());
         let connection = database.connection().unwrap();
         let actual: (String,String,i64) = connection.query_row(
             "SELECT r.management,r.availability,COUNT(a.id) FROM resources r JOIN resource_associations a ON a.resource_id=r.id WHERE r.id=?1 AND a.removal_policy='DETACH_ONLY' GROUP BY r.id",

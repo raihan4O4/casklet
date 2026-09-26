@@ -34,6 +34,22 @@
   let removalBusy = $state(false);
   let recoveryManifestPath = $state('');
   let recoveryManifestPreview = $state('');
+  let discoveredManifests = $state('');
+
+  async function scanRecoveryManifests() {
+    try {
+      discoveredManifests = await invoke<string>('scan_recovery_manifests');
+      if (!discoveredManifests) discoveredManifests = 'No local manifests found.';
+      error = '';
+    } catch (cause) { discoveredManifests = ''; error = message(cause); }
+  }
+  async function recoverDiscoveredManifests() {
+    try {
+      progress = await invoke<string>('recover_discovered_manifests');
+      discoveredManifests = '';
+      await refresh();
+    } catch (cause) { error = message(cause); }
+  }
 
   async function exportCask(format: 'json' | 'markdown', machine = false) {
     if (!selected) return;
@@ -259,6 +275,11 @@
   </section>
   <button type="button" onclick={() => void saveDiagnostics()}>Save diagnostics</button>
   <button type="button" onclick={() => void chooseRecoveryManifest()}>Preview recovery manifest</button>
+  <button type="button" onclick={() => void scanRecoveryManifests()}>Scan local recovery manifests</button>
+  {#if discoveredManifests}
+    <pre>{discoveredManifests}</pre>
+    {#if discoveredManifests !== 'No local manifests found.'}<button type="button" onclick={() => void recoverDiscoveredManifests()}>Recover missing Casks as unverified metadata</button>{/if}
+  {/if}
   {#if recoveryManifestPreview}
     <p>{recoveryManifestPreview}</p>
     <button type="button" onclick={() => void recoverFromManifest()}>Recover unverified metadata</button>
