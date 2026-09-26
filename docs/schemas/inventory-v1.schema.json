@@ -4,18 +4,25 @@
   "title": "Casklet inventory export v1",
   "type": "object",
   "additionalProperties": false,
-  "required": ["schemaVersion", "profile", "cask", "categories", "resources", "warnings"],
+  "required": [
+    "schemaVersion",
+    "profile",
+    "cask",
+    "categories",
+    "resources",
+    "warnings"
+  ],
   "properties": {
-    "schemaVersion": {"const": 1},
-    "profile": {"enum": ["portable", "machine"]},
+    "schemaVersion": { "const": 1 },
+    "profile": { "enum": ["portable", "machine"] },
     "cask": {
       "type": "object",
       "required": ["name", "state"],
       "properties": {
-        "name": {"type": "string"},
-        "state": {"type": "string"},
-        "id": {"type": "string", "format": "uuid"},
-        "managedStorageRoot": {"type": "string"}
+        "name": { "type": "string" },
+        "state": { "type": "string" },
+        "id": { "type": "string", "format": "uuid" },
+        "managedStorageRoot": { "type": "string" }
       },
       "additionalProperties": false
     },
@@ -24,7 +31,10 @@
       "items": {
         "type": "object",
         "required": ["key", "name"],
-        "properties": {"key": {"type": "string"}, "name": {"type": "string"}},
+        "properties": {
+          "key": { "type": "string" },
+          "name": { "type": "string" }
+        },
         "additionalProperties": false
       }
     },
@@ -32,32 +42,49 @@
       "type": "array",
       "items": {
         "type": "object",
-        "required": ["name", "kind", "management", "containment", "availability", "categoryKey", "sizeBytes", "sizeMeasurement"],
+        "required": [
+          "name",
+          "kind",
+          "management",
+          "containment",
+          "availability",
+          "categoryKey",
+          "sizeBytes",
+          "sizeMeasurement"
+        ],
         "properties": {
-          "name": {"type": "string"},
-          "kind": {"enum": ["FILE", "DIRECTORY"]},
-          "management": {"enum": ["MANAGED", "REFERENCED"]},
-          "containment": {"enum": ["INTERNAL", "EXTERNAL"]},
-          "availability": {"type": "string"},
-          "categoryKey": {"type": "string"},
-          "sizeBytes": {"type": ["integer", "null"], "minimum": 0},
-          "sizeMeasurement": {"type": "string"},
-          "relativePath": {"type": "string"},
-          "id": {"type": "string", "format": "uuid"},
-          "path": {"type": "string"}
+          "name": { "type": "string" },
+          "kind": { "enum": ["FILE", "DIRECTORY"] },
+          "management": { "enum": ["MANAGED", "REFERENCED"] },
+          "containment": { "enum": ["INTERNAL", "EXTERNAL"] },
+          "availability": { "type": "string" },
+          "categoryKey": { "type": "string" },
+          "sizeBytes": { "type": ["integer", "null"], "minimum": 0 },
+          "sizeMeasurement": { "type": "string" },
+          "relativePath": { "type": "string" },
+          "id": { "type": "string", "format": "uuid" },
+          "path": { "type": "string" }
         },
         "additionalProperties": false
       }
     },
-    "warnings": {"type": "array", "items": {"type": "string"}}
+    "warnings": { "type": "array", "items": { "type": "string" } }
   },
-  "allOf": [{
-    "if": {"properties": {"profile": {"const": "portable"}}},
-    "then": {
-      "properties": {
-        "cask": {"not": {"required": ["id"]}},
-        "resources": {"items": {"not": {"anyOf": [{"required": ["id"]}, {"required": ["path"]}]}}}
+  "allOf": [
+    {
+      "if": { "properties": { "profile": { "const": "portable" } } },
+      "then": {
+        "properties": {
+          "cask": { "not": { "required": ["id"] } },
+          "resources": {
+            "items": {
+              "not": {
+                "anyOf": [{ "required": ["id"] }, { "required": ["path"] }]
+              }
+            }
+          }
+        }
       }
     }
-  }]
+  ]
 }
