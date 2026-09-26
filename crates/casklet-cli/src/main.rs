@@ -1,10 +1,11 @@
 use casklet_contracts::{
     AddMode, AddResource, ApiError, CONTRACT_VERSION, CancelOperation, CaskView,
     CategorizeResource, CategoryView, CreateCask, CreateCategory, CreateDiagnosticsBundle,
-    CreateRemovalPlan, GetCask, GetOperation, GetRemovalPlan, GetResource, GetStorageSummary,
-    ListCasks, ListCategories, ListOperations, ListResources, OperationView, PreserveOperation,
-    RecoverOperation, RecoveryInspection, RecoveryStatus, RemovalPlanView, ResourceView,
-    StorageSummary,
+    CreateRemovalPlan, GetCask, GetOperation, GetPortableInstallation, GetRemovalPlan, GetResource,
+    GetStorageSummary, InspectPortableZip, InstallPortableZip, LaunchPortableInstallation,
+    ListCasks, ListCategories, ListOperations, ListPortableInstallations, ListResources,
+    OperationView, PortableInstallationView, PreserveOperation, RecoverOperation,
+    RecoveryInspection, RecoveryStatus, RemovalPlanView, ResourceView, StorageSummary,
 };
 #[cfg(feature = "reviewed-removal")]
 use casklet_contracts::{ApproveRemovalPlan, CloseRemovalRun, ExecuteRemovalPlan};
@@ -47,6 +48,10 @@ enum Command {
     Manifest {
         #[command(subcommand)]
         action: ManifestAction,
+    },
+    Portable {
+        #[command(subcommand)]
+        action: PortableAction,
     },
     Cask {
         #[command(subcommand)]
@@ -94,6 +99,34 @@ enum ManifestAction {
     Recover { path: String },
     Scan,
     RecoverAll,
+}
+
+#[derive(Debug, Subcommand)]
+enum PortableAction {
+    Inspect {
+        archive_path: String,
+    },
+    Install {
+        cask_id: String,
+        archive_path: String,
+        #[arg(long)]
+        hash: String,
+        #[arg(long)]
+        name: String,
+        #[arg(long)]
+        executable: String,
+        #[arg(long)]
+        app_version: Option<String>,
+    },
+    List {
+        cask_id: String,
+    },
+    Get {
+        installation_id: String,
+    },
+    Launch {
+        installation_id: String,
+    },
 }
 
 #[derive(Debug, Subcommand)]
@@ -237,6 +270,103 @@ fn main() -> ExitCode {
     };
     let correlation_id = uuid::Uuid::new_v4().to_string();
     let result = match cli.command {
+        Command::Portable {
+            action: PortableAction::Inspect { archive_path },
+        } => service
+            .inspect_portable_zip(
+                &InspectPortableZip {
+                    version: CONTRACT_VERSION,
+                    archive_path,
+                },
+                &correlation_id,
+            )
+            .map(|preview| match cli.output {
+                Output::Json => format!("{}\n", serde_json::to_string(&preview).unwrap()),
+                Output::Table => format!(
+                    "ZIP SHA-256: {}\n{} files; {} expanded bytes\nExecutables:\n{}\n",
+                    preview.archive_sha256,
+                    preview.file_count,
+                    preview.expanded_bytes,
+                    preview.executable_paths.join("\n")
+                ),
+            }),
+        Command::Portable {
+            action:
+                PortableAction::Install {
+                    cask_id,
+                    archive_path,
+                    hash,
+                    name,
+                    executable,
+                    app_version,
+                },
+        } => service
+            .install_portable_zip(
+                &InstallPortableZip {
+                    version: CONTRACT_VERSION,
+                    cask_id,
+                    archive_path,
+                    archive_sha256: hash,
+                    application_name: name,
+                    application_version: app_version,
+                    executable_relative_path: executable,
+                },
+                &correlation_id,
+                &|_, _| {},
+                &|_| {},
+            )
+            .map(|item| render_portable(&item, cli.output)),
+        Command::Portable {
+            action: PortableAction::List { cask_id },
+        } => service
+            .list_portable_installations(
+                &ListPortableInstallations {
+                    version: CONTRACT_VERSION,
+                    cask_id,
+                },
+                &correlation_id,
+            )
+            .map(|items| match cli.output {
+                Output::Json => format!("{}\n", serde_json::to_string(&items).unwrap()),
+                Output::Table => {
+                    use std::fmt::Write as _;
+                    items.iter().fold(String::new(), |mut output, item| {
+                        let _ = writeln!(
+                            output,
+                            "{} {} ({})",
+                            item.installation_id, item.application_name, item.state
+                        );
+                        output
+                    })
+                }
+            }),
+        Command::Portable {
+            action: PortableAction::Get { installation_id },
+        } => service
+            .get_portable_installation(
+                &GetPortableInstallation {
+                    version: CONTRACT_VERSION,
+                    installation_id,
+                },
+                &correlation_id,
+            )
+            .map(|item| render_portable(&item, cli.output)),
+        Command::Portable {
+            action: PortableAction::Launch { installation_id },
+        } => service
+            .launch_portable_installation(
+                &LaunchPortableInstallation {
+                    version: CONTRACT_VERSION,
+                    installation_id,
+                },
+                &correlation_id,
+            )
+            .map(|item| {
+                format!(
+                    "Started {} ({})\n",
+                    item.application_name, item.installation_id
+                )
+            }),
         Command::Export {
             cask_id,
             output_path,
@@ -947,6 +1077,23 @@ fn render_error(error: &ApiError, output: Output) {
         Output::Json => eprintln!(
             "{}",
             serde_json::to_string(error).expect("Error DTO is serializable")
+        ),
+    }
+}
+
+fn render_portable(item: &PortableInstallationView, output: Output) -> String {
+    match output {
+        Output::Json => format!(
+            "{}\n",
+            serde_json::to_string(item).expect("Portable DTO is serializable")
+        ),
+        Output::Table => format!(
+            "{}\nInstallation: {}\nState: {}\nExecutable: {}\nManaged resource: {}\n",
+            item.application_name,
+            item.installation_id,
+            item.state,
+            item.executable_relative_path,
+            item.resource_id
         ),
     }
 }

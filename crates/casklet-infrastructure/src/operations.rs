@@ -100,6 +100,7 @@ impl OperationRepository for SqliteCasks {
         if changed != 1 {
             return Err("Intake registration changed during recovery".into());
         }
+        transaction.execute("UPDATE portable_install_intents SET state='COMPLETE' WHERE operation_id=?1 AND state='REGISTERED'",[id]).map_err(|e|e.to_string())?;
         let changed = transaction.execute("UPDATE operations SET state='SUCCEEDED',current_step_code='COMPLETE',error_code=NULL,finished_at_ms=CAST(unixepoch('subsec')*1000 AS INTEGER),revision=revision+1 WHERE id=?1 AND state='RECOVERY_REQUIRED'",[id]).map_err(|e| e.to_string())?;
         if changed != 1 {
             return Err("Operation state changed during recovery".into());
@@ -150,7 +151,7 @@ impl OperationRepository for SqliteCasks {
     }
 
     fn intake_evidence(&self, id: &str) -> Result<Option<IntakeEvidence>, String> {
-        self.connection()?.query_row("SELECT mode,source_path,staging_path,final_path FROM intake_operations WHERE id=?1",[id],|row| Ok(IntakeEvidence { mode:row.get(0)?,source_path:row.get(1)?,staging_path:row.get(2)?,final_path:row.get(3)? }))
+        self.connection()?.query_row("SELECT CASE WHEN EXISTS(SELECT 1 FROM portable_install_intents p WHERE p.operation_id=i.id) THEN 'PORTABLE_ZIP' ELSE i.mode END,i.source_path,i.staging_path,i.final_path FROM intake_operations i WHERE i.id=?1",[id],|row| Ok(IntakeEvidence { mode:row.get(0)?,source_path:row.get(1)?,staging_path:row.get(2)?,final_path:row.get(3)? }))
             .optional().map_err(|e|e.to_string())
     }
     fn request_cancellation(&self, id: &str) -> Result<(), String> {
@@ -179,7 +180,7 @@ impl OperationRepository for SqliteCasks {
             String,
         );
         let row: Option<Row> = self.connection()?.query_row(
-            "SELECT i.resource_id,i.cask_id,i.mode,i.source_path,i.staging_path,i.final_path,i.resource_name,i.size_bytes,i.unknown_entries,i.created_at_ms,i.resource_kind,i.category_key FROM intake_operations i JOIN operations o ON o.id=i.id WHERE i.id=?1 AND i.state IN ('PLANNED','RECOVERY_REQUIRED') AND o.state='RECOVERY_REQUIRED' AND i.resource_name IS NOT NULL AND i.resource_kind IS NOT NULL AND i.category_key IS NOT NULL",
+            "SELECT i.resource_id,i.cask_id,i.mode,i.source_path,i.staging_path,i.final_path,i.resource_name,i.size_bytes,i.unknown_entries,i.created_at_ms,i.resource_kind,i.category_key FROM intake_operations i JOIN operations o ON o.id=i.id WHERE i.id=?1 AND i.state IN ('PLANNED','RECOVERY_REQUIRED') AND o.state='RECOVERY_REQUIRED' AND NOT EXISTS(SELECT 1 FROM portable_install_intents p WHERE p.operation_id=i.id) AND i.resource_name IS NOT NULL AND i.resource_kind IS NOT NULL AND i.category_key IS NOT NULL",
             [id],|row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?,row.get(5)?,row.get(6)?,row.get(7)?,row.get(8)?,row.get(9)?,row.get(10)?,row.get(11)?))
         ).optional().map_err(|e|e.to_string())?;
         row.map(

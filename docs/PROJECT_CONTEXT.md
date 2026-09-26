@@ -14,7 +14,7 @@ Core principle:
 
 ## Current phase
 
-The initial design program is approved. Milestones 0–3 are merged into `develop`. Milestone 4 — removal planning and safe cleanup — is on `codex/removal-plans-safe-cleanup` and requires independent security review before destructive functionality is enabled in public builds. Milestone 5 export and conservative manifest recovery is implemented in draft PR #8 on `codex/milestone-5-export-portability`, based on Milestone 4, pending review and integration.
+The initial design program is approved. Milestones 0–5 are merged into `develop`. Milestone 4 removal remains behind the disabled `reviewed-removal` feature and requires independent security review before destructive functionality is enabled in public builds. Milestone 6 portable ZIP application lifecycle is implemented on `codex/milestone-6-portable-apps` for review.
 
 - Phase 1 — Requirements: approved.
 - Phase 2 — Cross-platform and installation workflow: approved.
@@ -136,8 +136,9 @@ Exact dependencies will be approved during repository/tooling design; do not add
 - `docs/architecture/system-design-v0.1.md` — approved consolidated system design with context, component, data-flow, ER, trust-boundary, and sequence diagrams.
 - `docs/engineering/delivery-roadmap-v0.1.md` — Phase 8 vertical slices, acceptance gates, learning sequence, and release progression.
 - `docs/engineering/milestone-5-export-recovery.md` — export profiles, CLI and GUI workflows, compatibility, and conservative recovery boundary.
+- `docs/engineering/milestone-6-portable-apps.md` — ZIP validation, installation identity, launch verification, and removal integration.
 - `domain model.txt` — original detailed Phase 3 source; preserve through normalization review.
 
 ## Current implementation milestone
 
-Milestone 0 — Reproducible foundation — and Milestone 1 — Cask walking skeleton — are complete. Milestone 2 — Resource intake and inspection — merged into `develop` as PR #5. Milestone 3 durable operations and recovery merged into `develop` as PR #6. Milestone 4 has immutable previews and a journaled cleanup workflow behind the disabled `reviewed-removal` feature (ADR 0012). Newly staged managed files and fully scanned managed directories record Windows identity evidence; legacy records and unverifiable recovery items remain preserved (ADR 0011). Default builds have no destructive removal entry point. Real Windows file and directory Recycle Bin smoke tests passed, and adversarial replacement, hard-link, junction, quarantine, and crash tests pass. Independent security review remains required before the destructive feature can be enabled in a public build. Milestone 5 adds versioned portable and machine inventory exports, Markdown reports, checked manifest preview, bounded local discovery, read-only filesystem observations, and conservative metadata recovery with detach-only associations. The checked-in export fixture validates against its JSON Schema. Keep `main` unchanged until planned milestone integration.
+Milestones 0–5 are integrated into `develop`. Milestone 4 has immutable previews and journaled cleanup behind the disabled `reviewed-removal` feature (ADR 0012); independent security review remains required before enabling destructive functionality in public builds. Milestone 5 adds versioned inventory exports and conservative manifest recovery. Milestone 6 adds a bounded ZIP provider, distinct application/installation/location/association records, durable install intent, verified launch by installation ID, CLI and GUI workflows, and integration with the existing managed-resource removal plan. Keep `main` unchanged until planned milestone integration.

@@ -4,6 +4,7 @@ use casklet_domain::{Cask, DomainError};
 use std::time::{SystemTime, UNIX_EPOCH};
 pub mod diagnostics;
 pub mod operation;
+pub mod portable;
 pub mod projection;
 pub mod removal;
 pub mod resource;

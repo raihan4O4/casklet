@@ -2,6 +2,7 @@
 
 use uuid::Uuid;
 pub mod operation;
+pub mod portable;
 pub mod removal;
 pub mod resource;
 
