@@ -1,10 +1,11 @@
 //! SQLite and managed-storage adapters.
+use casklet_application::projection::ManifestProjection;
 use casklet_application::{CaskRepository, CaskService, ManagedStorage};
 use casklet_domain::{Cask, CaskState};
 use rusqlite::{Connection, params};
-use sha2::{Digest, Sha256};
 use std::{fs, path::PathBuf, time::Duration};
 mod diagnostics;
+pub mod inventory;
 mod operations;
 mod projection;
 mod removal;
@@ -180,13 +181,7 @@ impl ManagedStorage for LocalStorage {
         fs::create_dir_all(root.join("content")).map_err(|e| e.to_string())?;
         let metadata = root.join(".casklet");
         fs::create_dir_all(&metadata).map_err(|e| e.to_string())?;
-        let manifest = serde_json::json!({"schemaVersion":1,"cask":{"id":cask.id,"name":cask.name,"state":cask.state.code(),"createdAtMs":cask.created_at_ms},"resources":[],"applications":[]});
-        let bytes = serde_json::to_vec_pretty(&manifest).map_err(|e| e.to_string())?;
-        let temp = metadata.join("manifest.json.tmp");
-        let hash = format!("{:x}", Sha256::digest(&bytes));
-        fs::write(&temp, bytes).map_err(|e| e.to_string())?;
-        fs::rename(temp, metadata.join("manifest.json")).map_err(|e| e.to_string())?;
-        fs::write(metadata.join("manifest.sha256"), hash).map_err(|e| e.to_string())
+        self.project(cask, &[], &[])
     }
 }
 

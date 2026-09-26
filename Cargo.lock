@@ -358,6 +358,7 @@ dependencies = [
  "casklet-application",
  "casklet-contracts",
  "casklet-infrastructure",
+ "serde_json",
  "tauri",
  "tauri-build",
  "tauri-plugin-dialog",

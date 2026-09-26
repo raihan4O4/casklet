@@ -13,6 +13,9 @@ pub fn run() {
         .manage(service)
         .invoke_handler(tauri::generate_handler![
             create_cask,
+            export_cask,
+            preview_recovery_manifest,
+            recover_manifest,
             list_casks,
             get_cask,
             add_resource,
@@ -46,6 +49,73 @@ type Service = casklet_application::CaskService<
     casklet_infrastructure::SqliteCasks,
     casklet_infrastructure::LocalStorage,
 >;
+
+fn inventory_error(message: String) -> casklet_contracts::ApiError {
+    casklet_contracts::ApiError {
+        version: casklet_contracts::CONTRACT_VERSION,
+        code: "INVENTORY".into(),
+        message,
+        correlation_id: "desktop".into(),
+    }
+}
+
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)] // Tauri command extractor requires owned arguments.
+fn export_cask(
+    service: tauri::State<'_, Service>,
+    cask_id: String,
+    output_path: String,
+    format: String,
+    machine: bool,
+) -> Result<(), casklet_contracts::ApiError> {
+    use casklet_infrastructure::inventory::{ExportProfile, write_export};
+    let profile = if machine {
+        ExportProfile::Machine
+    } else {
+        ExportProfile::Portable
+    };
+    let bytes = match format.as_str() {
+        "json" => service
+            .repository
+            .export_inventory(&cask_id, profile)
+            .and_then(|value| serde_json::to_vec_pretty(&value).map_err(|e| e.to_string())),
+        "markdown" => service
+            .repository
+            .export_report(&cask_id, profile)
+            .map(String::into_bytes),
+        _ => Err("Unsupported export format".into()),
+    }
+    .map_err(inventory_error)?;
+    write_export(std::path::Path::new(&output_path), &bytes).map_err(inventory_error)
+}
+
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)] // Tauri command extractor requires owned arguments.
+fn preview_recovery_manifest(path: String) -> Result<String, casklet_contracts::ApiError> {
+    casklet_infrastructure::inventory::preview_manifest(std::path::Path::new(&path))
+        .map(|preview| {
+            format!(
+                "{}: {} resources. {}",
+                preview.cask_name,
+                preview.resource_count,
+                preview.warnings.join(" ")
+            )
+        })
+        .map_err(inventory_error)
+}
+
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)] // Tauri command extractor requires owned arguments.
+fn recover_manifest(
+    service: tauri::State<'_, Service>,
+    path: String,
+) -> Result<String, casklet_contracts::ApiError> {
+    service
+        .repository
+        .recover_manifest(&service.storage, std::path::Path::new(&path))
+        .map(|preview| format!("Recovered {} as unverified metadata.", preview.cask_name))
+        .map_err(inventory_error)
+}
 
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)] // Tauri command extractor requires owned arguments.
