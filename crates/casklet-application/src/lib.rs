@@ -3,6 +3,7 @@ use casklet_contracts::{ApiError, CONTRACT_VERSION, CaskView, CreateCask, GetCas
 use casklet_domain::{Cask, DomainError};
 use std::time::{SystemTime, UNIX_EPOCH};
 pub mod diagnostics;
+pub mod installer;
 pub mod operation;
 pub mod portable;
 pub mod projection;

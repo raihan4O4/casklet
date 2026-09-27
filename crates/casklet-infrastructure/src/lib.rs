@@ -5,6 +5,8 @@ use casklet_domain::{Cask, CaskState};
 use rusqlite::{Connection, params};
 use std::{fs, path::PathBuf, time::Duration};
 mod diagnostics;
+mod installer;
+mod installer_source;
 pub mod inventory;
 mod operations;
 mod portable;
@@ -51,7 +53,7 @@ impl SqliteCasks {
                     .map_err(|e| e.to_string())?;
                 transaction.commit().map_err(|e| e.to_string())?;
             }
-            1..=9 => {}
+            1..=10 => {}
             _ => return Err(format!("unsupported database schema version: {version}")),
         }
         if version == 1 || version == 0 {
@@ -141,6 +143,18 @@ impl SqliteCasks {
                 .map_err(|e| e.to_string())?;
             transaction
                 .execute_batch("PRAGMA user_version=9")
+                .map_err(|e| e.to_string())?;
+            transaction.commit().map_err(|e| e.to_string())?;
+        }
+        if version <= 9 {
+            let transaction = connection.transaction().map_err(|e| e.to_string())?;
+            transaction
+                .execute_batch(include_str!(
+                    "../../../migrations/0010_installer_artifacts.sql"
+                ))
+                .map_err(|e| e.to_string())?;
+            transaction
+                .execute_batch("PRAGMA user_version=10")
                 .map_err(|e| e.to_string())?;
             transaction.commit().map_err(|e| e.to_string())?;
         }
@@ -646,7 +660,7 @@ mod tests {
             .unwrap()
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(schema_version, 9);
+        assert_eq!(schema_version, 10);
         assert_eq!(
             reopened
                 .list(

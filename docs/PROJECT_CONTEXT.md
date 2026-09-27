@@ -14,7 +14,7 @@ Core principle:
 
 ## Current phase
 
-The initial design program is approved. Milestones 0–7 are merged into `develop`. Milestone 8 WinGet lifecycle is implemented on `codex/milestone-8-winget-lifecycle` for review. Milestone 4 removal and Milestone 8 uninstall remain behind the disabled `reviewed-removal` feature and require independent security review before destructive functionality is enabled in public builds.
+The initial design program is approved. Milestones 0–8 are merged into `develop`. Milestone 9 installer artifacts and cautious correlation are implemented on `codex/milestone-9-installer-artifacts` for review. Milestone 4 removal and Milestone 8 uninstall remain behind the disabled `reviewed-removal` feature and require independent security review before destructive functionality is enabled in public builds.
 
 - Phase 1 — Requirements: approved.
 - Phase 2 — Cross-platform and installation workflow: approved.
@@ -139,8 +139,9 @@ Exact dependencies will be approved during repository/tooling design; do not add
 - `docs/engineering/milestone-6-portable-apps.md` — ZIP validation, installation identity, launch verification, and removal integration.
 - `docs/engineering/milestone-7-windows-inventory.md` — Windows registration discovery, reconciliation, and detach-only association.
 - `docs/engineering/milestone-8-winget-lifecycle.md` — WinGet provider, exact ownership evidence, journal, and uninstall plan.
+- `docs/engineering/milestone-9-installer-artifacts.md` — MSI/EXE inspection, reviewed launch, candidate correlation, and acceptance evidence.
 - `domain model.txt` — original detailed Phase 3 source; preserve through normalization review.
 
 ## Current implementation milestone
 
-Milestones 0–7 are integrated into `develop`. Milestone 4 has immutable previews and journaled cleanup behind the disabled `reviewed-removal` feature (ADR 0012). Milestone 8 adds WinGet search and exact package review, typed provider execution, pre/post provider and Windows inventory correlation, durable operation recovery, and approved uninstall plans (ADR 0014). Uninstall remains feature gated pending independent security review. Keep `main` unchanged until planned milestone integration.
+Milestones 0–8 are integrated into `develop`. Milestone 4 has immutable previews and journaled cleanup behind the disabled `reviewed-removal` feature (ADR 0012). Milestone 8 adds WinGet lifecycle with uninstall feature gated pending independent security review (ADR 0014). Milestone 9 adds managed installer artifacts, read-only MSI/Authenticode inspection, explicit MSI/EXE launch, durable recovery, and review-only Windows installation candidates (ADR 0015). Real installer/UAC behavior still needs isolated manual validation before public release. Keep `main` unchanged until planned milestone integration.

@@ -369,6 +369,135 @@ pub struct WingetUninstallPlanView {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct InspectInstallerArtifact {
+    pub version: u32,
+    pub path: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InstallerInspection {
+    pub version: u32,
+    pub path: String,
+    pub format: String,
+    pub sha256: String,
+    pub size_bytes: u64,
+    pub signature_status: String,
+    pub signature_detail: Option<String>,
+    pub signer: Option<String>,
+    pub product_name: Option<String>,
+    pub publisher: Option<String>,
+    pub product_version: Option<String>,
+    pub product_code: Option<String>,
+    pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RegisterInstallerArtifact {
+    pub version: u32,
+    pub cask_id: String,
+    pub path: String,
+    pub expected_sha256: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListInstallerArtifacts {
+    pub version: u32,
+    pub cask_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InstallerArtifactView {
+    pub version: u32,
+    pub id: String,
+    pub cask_id: String,
+    pub resource_id: String,
+    pub source_path: String,
+    pub inspection: InstallerInspection,
+    pub registered_at_ms: i64,
+    pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LaunchInstallerArtifact {
+    pub version: u32,
+    pub artifact_id: String,
+    pub expected_sha256: String,
+    pub accept_execution_risk: bool,
+    pub allow_elevation: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InstallerCandidateView {
+    pub installation_id: String,
+    pub evidence_sha256: String,
+    pub name: String,
+    pub publisher: Option<String>,
+    pub display_version: Option<String>,
+    pub scope: String,
+    pub confidence: String,
+    pub evidence: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InstallerOperationView {
+    pub version: u32,
+    pub id: String,
+    pub artifact_id: String,
+    pub cask_id: String,
+    pub state: String,
+    pub exit_code: Option<i32>,
+    pub error_code: Option<String>,
+    pub candidates: Vec<InstallerCandidateView>,
+    pub confirmed_installation_id: Option<String>,
+    pub started_at_ms: i64,
+    pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GetInstallerOperation {
+    pub version: u32,
+    pub id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListInstallerOperations {
+    pub version: u32,
+    pub cask_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ConfirmInstallerCandidate {
+    pub version: u32,
+    pub operation_id: String,
+    pub installation_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CloseInstallerOperation {
+    pub version: u32,
+    pub id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CancelInstallerOperation {
+    pub version: u32,
+    pub id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CreateCategory {
     pub version: u32,
     pub cask_id: String,
@@ -632,6 +761,19 @@ export type CreateWingetUninstallPlan = { version: number; installationId: strin
 export type ApproveWingetUninstallPlan = { version: number; planId: string; planHash: string };
 export type ExecuteWingetUninstallPlan = { version: number; planId: string; planHash: string };
 export type WingetUninstallPlanView = { version: number; id: string; installationId: string; packageId: string; packageVersion: string; state: string; planHash: string; expiresAtMs: number; warnings: string[] };
+export type InspectInstallerArtifact = { version: number; path: string };
+export type InstallerInspection = { version: number; path: string; format: string; sha256: string; sizeBytes: number; signatureStatus: string; signatureDetail: string | null; signer: string | null; productName: string | null; publisher: string | null; productVersion: string | null; productCode: string | null; warnings: string[] };
+export type RegisterInstallerArtifact = { version: number; caskId: string; path: string; expectedSha256: string };
+export type ListInstallerArtifacts = { version: number; caskId: string };
+export type InstallerArtifactView = { version: number; id: string; caskId: string; resourceId: string; sourcePath: string; inspection: InstallerInspection; registeredAtMs: number; warnings: string[] };
+export type LaunchInstallerArtifact = { version: number; artifactId: string; expectedSha256: string; acceptExecutionRisk: boolean; allowElevation: boolean };
+export type InstallerCandidateView = { installationId: string; evidenceSha256: string; name: string; publisher: string | null; displayVersion: string | null; scope: string; confidence: string; evidence: string[] };
+export type InstallerOperationView = { version: number; id: string; artifactId: string; caskId: string; state: string; exitCode: number | null; errorCode: string | null; candidates: InstallerCandidateView[]; confirmedInstallationId: string | null; startedAtMs: number; warnings: string[] };
+export type GetInstallerOperation = { version: number; id: string };
+export type ListInstallerOperations = { version: number; caskId: string };
+export type ConfirmInstallerCandidate = { version: number; operationId: string; installationId: string };
+export type CloseInstallerOperation = { version: number; id: string };
+export type CancelInstallerOperation = { version: number; id: string };
 export type CreateCategory = { version: number; caskId: string; name: string };
 export type ListCategories = { version: number; caskId: string };
 export type CategoryView = { version: number; key: string; name: string; isBuiltin: boolean };

@@ -19,6 +19,11 @@ use casklet_contracts::{
     CreateWingetUninstallPlan, GetWingetOperation, InstallWingetPackage, ListWingetInstallations,
     ReviewWingetPackage, SearchWinget,
 };
+use casklet_contracts::{
+    CancelInstallerOperation, CloseInstallerOperation, ConfirmInstallerCandidate,
+    GetInstallerOperation, InspectInstallerArtifact, LaunchInstallerArtifact,
+    ListInstallerArtifacts, ListInstallerOperations, RegisterInstallerArtifact,
+};
 use casklet_infrastructure::inventory::{
     ExportProfile, describe_manifests, discover_manifests, preview_manifest, write_export,
 };
@@ -70,6 +75,10 @@ enum Command {
     Winget {
         #[command(subcommand)]
         action: WingetAction,
+    },
+    Installer {
+        #[command(subcommand)]
+        action: InstallerAction,
     },
     Cask {
         #[command(subcommand)]
@@ -214,6 +223,47 @@ enum WingetAction {
 }
 
 #[derive(Debug, Subcommand)]
+enum InstallerAction {
+    Inspect {
+        path: String,
+    },
+    Register {
+        cask_id: String,
+        path: String,
+        #[arg(long)]
+        hash: String,
+    },
+    List {
+        cask_id: String,
+    },
+    Launch {
+        artifact_id: String,
+        #[arg(long)]
+        hash: String,
+        #[arg(long)]
+        accept_risk: bool,
+        #[arg(long)]
+        allow_elevation: bool,
+    },
+    Operations {
+        cask_id: String,
+    },
+    Operation {
+        id: String,
+    },
+    Confirm {
+        operation_id: String,
+        installation_id: String,
+    },
+    Cancel {
+        id: String,
+    },
+    Close {
+        id: String,
+    },
+}
+
+#[derive(Debug, Subcommand)]
 enum CaskAction {
     Create { name: String },
     List,
@@ -354,6 +404,127 @@ fn main() -> ExitCode {
     };
     let correlation_id = uuid::Uuid::new_v4().to_string();
     let result = match cli.command {
+        Command::Installer {
+            action: InstallerAction::Inspect { path },
+        } => service
+            .inspect_installer_artifact(
+                &InspectInstallerArtifact {
+                    version: CONTRACT_VERSION,
+                    path,
+                },
+                &correlation_id,
+            )
+            .map(|v| format!("{}\n", serde_json::to_string_pretty(&v).unwrap())),
+        Command::Installer {
+            action:
+                InstallerAction::Register {
+                    cask_id,
+                    path,
+                    hash,
+                },
+        } => service
+            .register_installer_artifact(
+                &RegisterInstallerArtifact {
+                    version: CONTRACT_VERSION,
+                    cask_id,
+                    path,
+                    expected_sha256: hash,
+                },
+                &correlation_id,
+            )
+            .map(|v| format!("{}\n", serde_json::to_string_pretty(&v).unwrap())),
+        Command::Installer {
+            action: InstallerAction::List { cask_id },
+        } => service
+            .list_installer_artifacts(
+                &ListInstallerArtifacts {
+                    version: CONTRACT_VERSION,
+                    cask_id,
+                },
+                &correlation_id,
+            )
+            .map(|v| format!("{}\n", serde_json::to_string_pretty(&v).unwrap())),
+        Command::Installer {
+            action:
+                InstallerAction::Launch {
+                    artifact_id,
+                    hash,
+                    accept_risk,
+                    allow_elevation,
+                },
+        } => service
+            .launch_installer_artifact(
+                &LaunchInstallerArtifact {
+                    version: CONTRACT_VERSION,
+                    artifact_id,
+                    expected_sha256: hash,
+                    accept_execution_risk: accept_risk,
+                    allow_elevation,
+                },
+                &correlation_id,
+                &|id| eprintln!("Installer operation: {id}"),
+            )
+            .map(|v| format!("{}\n", serde_json::to_string_pretty(&v).unwrap())),
+        Command::Installer {
+            action: InstallerAction::Operations { cask_id },
+        } => service
+            .list_installer_operations(
+                &ListInstallerOperations {
+                    version: CONTRACT_VERSION,
+                    cask_id,
+                },
+                &correlation_id,
+            )
+            .map(|v| format!("{}\n", serde_json::to_string_pretty(&v).unwrap())),
+        Command::Installer {
+            action: InstallerAction::Operation { id },
+        } => service
+            .get_installer_operation(
+                &GetInstallerOperation {
+                    version: CONTRACT_VERSION,
+                    id,
+                },
+                &correlation_id,
+            )
+            .map(|v| format!("{}\n", serde_json::to_string_pretty(&v).unwrap())),
+        Command::Installer {
+            action:
+                InstallerAction::Confirm {
+                    operation_id,
+                    installation_id,
+                },
+        } => service
+            .confirm_installer_candidate(
+                &ConfirmInstallerCandidate {
+                    version: CONTRACT_VERSION,
+                    operation_id,
+                    installation_id,
+                },
+                &correlation_id,
+            )
+            .map(|v| format!("{}\n", serde_json::to_string_pretty(&v).unwrap())),
+        Command::Installer {
+            action: InstallerAction::Cancel { id },
+        } => service
+            .cancel_installer_operation(
+                &CancelInstallerOperation {
+                    version: CONTRACT_VERSION,
+                    id,
+                },
+                &correlation_id,
+            )
+            .map(|()| "Cancellation requested\n".into()),
+        Command::Installer {
+            action: InstallerAction::Close { id },
+        } => service
+            .close_installer_operation(
+                &CloseInstallerOperation {
+                    version: CONTRACT_VERSION,
+                    id,
+                },
+                &correlation_id,
+            )
+            .map(|()| "Installer outcome preserved and closed\n".into()),
         Command::Winget {
             action: WingetAction::Capabilities,
         } => Ok(format!(

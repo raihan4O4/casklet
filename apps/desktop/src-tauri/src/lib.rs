@@ -42,6 +42,15 @@ pub fn run() {
             create_winget_uninstall_plan,
             approve_winget_uninstall_plan,
             execute_winget_uninstall_plan,
+            inspect_installer_artifact,
+            register_installer_artifact,
+            list_installer_artifacts,
+            launch_installer_artifact,
+            list_installer_operations,
+            get_installer_operation,
+            confirm_installer_candidate,
+            cancel_installer_operation,
+            close_installer_operation,
             list_resources,
             get_resource,
             create_category,
@@ -72,6 +81,97 @@ type Service = casklet_application::CaskService<
     casklet_infrastructure::SqliteCasks,
     casklet_infrastructure::LocalStorage,
 >;
+
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+async fn inspect_installer_artifact(
+    service: tauri::State<'_, Service>,
+    request: casklet_contracts::InspectInstallerArtifact,
+) -> Result<casklet_contracts::InstallerInspection, casklet_contracts::ApiError> {
+    let service = service.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        service.inspect_installer_artifact(&request, "desktop")
+    })
+    .await
+    .map_err(|e| worker_error(&e))?
+}
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+async fn register_installer_artifact(
+    service: tauri::State<'_, Service>,
+    request: casklet_contracts::RegisterInstallerArtifact,
+) -> Result<casklet_contracts::InstallerArtifactView, casklet_contracts::ApiError> {
+    let service = service.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        service.register_installer_artifact(&request, "desktop")
+    })
+    .await
+    .map_err(|e| worker_error(&e))?
+}
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+fn list_installer_artifacts(
+    service: tauri::State<'_, Service>,
+    request: casklet_contracts::ListInstallerArtifacts,
+) -> Result<Vec<casklet_contracts::InstallerArtifactView>, casklet_contracts::ApiError> {
+    service.list_installer_artifacts(&request, "desktop")
+}
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+async fn launch_installer_artifact(
+    app: tauri::AppHandle,
+    service: tauri::State<'_, Service>,
+    request: casklet_contracts::LaunchInstallerArtifact,
+) -> Result<casklet_contracts::InstallerOperationView, casklet_contracts::ApiError> {
+    let service = service.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        service.launch_installer_artifact(&request, "desktop", &|id| {
+            let _ = app.emit("installer.operation.started", id);
+        })
+    })
+    .await
+    .map_err(|e| worker_error(&e))?
+}
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+fn list_installer_operations(
+    service: tauri::State<'_, Service>,
+    request: casklet_contracts::ListInstallerOperations,
+) -> Result<Vec<casklet_contracts::InstallerOperationView>, casklet_contracts::ApiError> {
+    service.list_installer_operations(&request, "desktop")
+}
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+fn get_installer_operation(
+    service: tauri::State<'_, Service>,
+    request: casklet_contracts::GetInstallerOperation,
+) -> Result<casklet_contracts::InstallerOperationView, casklet_contracts::ApiError> {
+    service.get_installer_operation(&request, "desktop")
+}
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+fn confirm_installer_candidate(
+    service: tauri::State<'_, Service>,
+    request: casklet_contracts::ConfirmInstallerCandidate,
+) -> Result<casklet_contracts::InstallerOperationView, casklet_contracts::ApiError> {
+    service.confirm_installer_candidate(&request, "desktop")
+}
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+fn cancel_installer_operation(
+    service: tauri::State<'_, Service>,
+    request: casklet_contracts::CancelInstallerOperation,
+) -> Result<(), casklet_contracts::ApiError> {
+    service.cancel_installer_operation(&request, "desktop")
+}
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+fn close_installer_operation(
+    service: tauri::State<'_, Service>,
+    request: casklet_contracts::CloseInstallerOperation,
+) -> Result<(), casklet_contracts::ApiError> {
+    service.close_installer_operation(&request, "desktop")
+}
 
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]

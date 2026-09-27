@@ -83,7 +83,14 @@ impl ResourceRepository for SqliteCasks {
                 |row| row.get(0),
             )
             .map_err(|e| e.to_string())?;
-        if removal_lock != 0 {
+        let installer_lock: i64 = transaction
+            .query_row(
+                "SELECT COUNT(*) FROM installer_locks WHERE cask_id=?1",
+                [&resource.cask_id],
+                |row| row.get(0),
+            )
+            .map_err(|e| e.to_string())?;
+        if removal_lock != 0 || installer_lock != 0 {
             return Err("Cask has an active or unrecovered removal".into());
         }
         transaction.execute("INSERT INTO operations(id,cask_id,type,state,current_step_code,started_at_ms,updated_at_ms) VALUES (?1,?2,'RESOURCE_INTAKE','RUNNING','MATERIALIZE',?3,?3)",
@@ -111,7 +118,14 @@ impl ResourceRepository for SqliteCasks {
                 |row| row.get(0),
             )
             .map_err(|e| e.to_string())?;
-        if locked != 0 {
+        let installer_lock: i64 = transaction
+            .query_row(
+                "SELECT COUNT(*) FROM installer_locks WHERE cask_id=?1",
+                [&resource.cask_id],
+                |row| row.get(0),
+            )
+            .map_err(|e| e.to_string())?;
+        if locked != 0 || installer_lock != 0 {
             return Err("Cask has an active or unrecovered removal".into());
         }
         let size = resource
