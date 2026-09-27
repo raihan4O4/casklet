@@ -225,6 +225,150 @@ pub struct DetectedApplicationView {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct WingetCapabilities {
+    pub version: u32,
+    pub search: bool,
+    pub install: bool,
+    pub uninstall: bool,
+    pub reason: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SearchWinget {
+    pub version: u32,
+    pub query: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WingetSearchResult {
+    pub version: u32,
+    pub sanitized_text: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ReviewWingetPackage {
+    pub version: u32,
+    pub package_id: String,
+    pub package_version: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WingetPackageReview {
+    pub version: u32,
+    pub package_id: String,
+    pub package_version: String,
+    pub source: String,
+    pub details: String,
+    pub review_hash: String,
+    pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct InstallWingetPackage {
+    pub version: u32,
+    pub cask_id: String,
+    pub package_id: String,
+    pub package_version: String,
+    pub review_hash: String,
+    pub accept_package_agreements: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListWingetInstallations {
+    pub version: u32,
+    pub cask_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WingetInstallationView {
+    pub version: u32,
+    pub id: String,
+    pub cask_id: String,
+    pub package_id: String,
+    pub package_version: String,
+    pub registry_installation_id: String,
+    pub state: String,
+    pub provenance: String,
+    pub can_plan_uninstall: bool,
+    pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WingetOperationView {
+    pub version: u32,
+    pub id: String,
+    pub cask_id: String,
+    pub action: String,
+    pub package_id: String,
+    pub state: String,
+    pub step: String,
+    pub error_code: Option<String>,
+    pub cancellation_requested: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct GetWingetOperation {
+    pub version: u32,
+    pub id: String,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CancelWingetOperation {
+    pub version: u32,
+    pub id: String,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CloseWingetOperation {
+    pub version: u32,
+    pub id: String,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CreateWingetUninstallPlan {
+    pub version: u32,
+    pub installation_id: String,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ApproveWingetUninstallPlan {
+    pub version: u32,
+    pub plan_id: String,
+    pub plan_hash: String,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExecuteWingetUninstallPlan {
+    pub version: u32,
+    pub plan_id: String,
+    pub plan_hash: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct WingetUninstallPlanView {
+    pub version: u32,
+    pub id: String,
+    pub installation_id: String,
+    pub package_id: String,
+    pub package_version: String,
+    pub state: String,
+    pub plan_hash: String,
+    pub expires_at_ms: i64,
+    pub warnings: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CreateCategory {
     pub version: u32,
     pub cask_id: String,
@@ -472,6 +616,22 @@ export type AssociateInstalledApplication = { version: number; caskId: string; i
 export type DisassociateInstalledApplication = { version: number; caskId: string; installationId: string };
 export type ListAssociatedApplications = { version: number; caskId: string };
 export type DetectedApplicationView = { version: number; applicationId: string; installationId: string; name: string; publisher: string | null; displayVersion: string | null; scope: string; sourceKey: string; installLocation: string | null; state: string; ambiguousName: boolean; associatedCaskId: string | null; provenance: string; removalPolicy: string };
+export type WingetCapabilities = { version: number; search: boolean; install: boolean; uninstall: boolean; reason: string | null };
+export type SearchWinget = { version: number; query: string };
+export type WingetSearchResult = { version: number; sanitizedText: string };
+export type ReviewWingetPackage = { version: number; packageId: string; packageVersion: string };
+export type WingetPackageReview = { version: number; packageId: string; packageVersion: string; source: string; details: string; reviewHash: string; warnings: string[] };
+export type InstallWingetPackage = { version: number; caskId: string; packageId: string; packageVersion: string; reviewHash: string; acceptPackageAgreements: boolean };
+export type ListWingetInstallations = { version: number; caskId: string };
+export type WingetInstallationView = { version: number; id: string; caskId: string; packageId: string; packageVersion: string; registryInstallationId: string; state: string; provenance: string; canPlanUninstall: boolean; warnings: string[] };
+export type WingetOperationView = { version: number; id: string; caskId: string; action: string; packageId: string; state: string; step: string; errorCode: string | null; cancellationRequested: boolean };
+export type GetWingetOperation = { version: number; id: string };
+export type CancelWingetOperation = { version: number; id: string };
+export type CloseWingetOperation = { version: number; id: string };
+export type CreateWingetUninstallPlan = { version: number; installationId: string };
+export type ApproveWingetUninstallPlan = { version: number; planId: string; planHash: string };
+export type ExecuteWingetUninstallPlan = { version: number; planId: string; planHash: string };
+export type WingetUninstallPlanView = { version: number; id: string; installationId: string; packageId: string; packageVersion: string; state: string; planHash: string; expiresAtMs: number; warnings: string[] };
 export type CreateCategory = { version: number; caskId: string; name: string };
 export type ListCategories = { version: number; caskId: string };
 export type CategoryView = { version: number; key: string; name: string; isBuiltin: boolean };

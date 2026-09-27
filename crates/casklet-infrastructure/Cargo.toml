@@ -5,6 +5,9 @@ edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
 
+[features]
+reviewed-removal = ["casklet-application/reviewed-removal"]
+
 [dependencies]
 casklet-application = { path = "../casklet-application", version = "=0.0.0" }
 casklet-contracts = { path = "../casklet-contracts", version = "=0.0.0" }

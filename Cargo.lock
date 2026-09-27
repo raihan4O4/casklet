@@ -328,6 +328,7 @@ version = "0.0.0"
 dependencies = [
  "casklet-contracts",
  "casklet-domain",
+ "sha2",
  "uuid",
 ]
 

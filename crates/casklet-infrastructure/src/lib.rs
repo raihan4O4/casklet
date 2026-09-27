@@ -14,6 +14,8 @@ mod removal;
 mod resource_storage;
 mod resources;
 mod windows_inventory;
+mod winget;
+mod winget_cli;
 
 pub const CRATE_BOUNDARY: &str = "infrastructure";
 
@@ -49,7 +51,7 @@ impl SqliteCasks {
                     .map_err(|e| e.to_string())?;
                 transaction.commit().map_err(|e| e.to_string())?;
             }
-            1..=8 => {}
+            1..=9 => {}
             _ => return Err(format!("unsupported database schema version: {version}")),
         }
         if version == 1 || version == 0 {
@@ -127,6 +129,18 @@ impl SqliteCasks {
                 .map_err(|e| e.to_string())?;
             transaction
                 .execute_batch("PRAGMA user_version=8")
+                .map_err(|e| e.to_string())?;
+            transaction.commit().map_err(|e| e.to_string())?;
+        }
+        if version <= 8 {
+            let transaction = connection.transaction().map_err(|e| e.to_string())?;
+            transaction
+                .execute_batch(include_str!(
+                    "../../../migrations/0009_winget_lifecycle.sql"
+                ))
+                .map_err(|e| e.to_string())?;
+            transaction
+                .execute_batch("PRAGMA user_version=9")
                 .map_err(|e| e.to_string())?;
             transaction.commit().map_err(|e| e.to_string())?;
         }
@@ -632,7 +646,7 @@ mod tests {
             .unwrap()
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(schema_version, 8);
+        assert_eq!(schema_version, 9);
         assert_eq!(
             reopened
                 .list(
