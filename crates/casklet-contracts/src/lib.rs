@@ -170,6 +170,61 @@ pub struct PortableInstallationView {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct SearchInstalledApplications {
+    pub version: u32,
+    pub query: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct RefreshInstalledApplications {
+    pub version: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AssociateInstalledApplication {
+    pub version: u32,
+    pub cask_id: String,
+    pub installation_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DisassociateInstalledApplication {
+    pub version: u32,
+    pub cask_id: String,
+    pub installation_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ListAssociatedApplications {
+    pub version: u32,
+    pub cask_id: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DetectedApplicationView {
+    pub version: u32,
+    pub application_id: String,
+    pub installation_id: String,
+    pub name: String,
+    pub publisher: Option<String>,
+    pub display_version: Option<String>,
+    pub scope: String,
+    pub source_key: String,
+    pub install_location: Option<String>,
+    pub state: String,
+    pub ambiguous_name: bool,
+    pub associated_cask_id: Option<String>,
+    pub provenance: String,
+    pub removal_policy: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct CreateCategory {
     pub version: u32,
     pub cask_id: String,
@@ -411,6 +466,12 @@ export type ListPortableInstallations = { version: number; caskId: string };
 export type GetPortableInstallation = { version: number; installationId: string };
 export type LaunchPortableInstallation = { version: number; installationId: string };
 export type PortableInstallationView = { version: number; applicationId: string; installationId: string; caskId: string; resourceId: string; applicationName: string; applicationVersion: string | null; provider: string; provenance: string; relationship: string; state: string; rootPath: string; executableRelativePath: string; sourceSha256: string; canLaunch: boolean; canPlanRemoval: boolean };
+export type SearchInstalledApplications = { version: number; query: string };
+export type RefreshInstalledApplications = { version: number };
+export type AssociateInstalledApplication = { version: number; caskId: string; installationId: string };
+export type DisassociateInstalledApplication = { version: number; caskId: string; installationId: string };
+export type ListAssociatedApplications = { version: number; caskId: string };
+export type DetectedApplicationView = { version: number; applicationId: string; installationId: string; name: string; publisher: string | null; displayVersion: string | null; scope: string; sourceKey: string; installLocation: string | null; state: string; ambiguousName: boolean; associatedCaskId: string | null; provenance: string; removalPolicy: string };
 export type CreateCategory = { version: number; caskId: string; name: string };
 export type ListCategories = { version: number; caskId: string };
 export type CategoryView = { version: number; key: string; name: string; isBuiltin: boolean };

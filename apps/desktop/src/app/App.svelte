@@ -4,7 +4,7 @@
   import { getCurrentWindow } from '@tauri-apps/api/window';
   import { open, save } from '@tauri-apps/plugin-dialog';
   import { onMount } from 'svelte';
-  import type { AddMode, ApiError, CaskView, CategoryView, ResourceView, StorageSummary, RecoveryStatus, RecoveryInspection, OperationView, RemovalPlanView, PortableZipPreview, PortableInstallationView } from '../contracts/generated/casklet';
+  import type { AddMode, ApiError, CaskView, CategoryView, ResourceView, StorageSummary, RecoveryStatus, RecoveryInspection, OperationView, RemovalPlanView, PortableZipPreview, PortableInstallationView, DetectedApplicationView } from '../contracts/generated/casklet';
   import { CONTRACT_VERSION } from '../contracts/generated/casklet';
 
   let casks: CaskView[] = $state([]);
@@ -39,6 +39,41 @@
   let portableVersion = $state('');
   let portableItems: PortableInstallationView[] = $state([]);
   let portableBusy = $state(false);
+  let installedQuery = $state('');
+  let detectedApps: DetectedApplicationView[] = $state([]);
+  let associatedApps: DetectedApplicationView[] = $state([]);
+  let installedBusy = $state(false);
+
+  async function searchInstalled() {
+    installedBusy = true;
+    try { detectedApps = await invoke<DetectedApplicationView[]>('search_installed_applications',{request:{version:CONTRACT_VERSION,query:installedQuery}});error=''; }
+    catch (cause) { error=message(cause); }
+    finally { installedBusy=false; }
+  }
+  async function refreshInstalled() {
+    installedBusy=true;
+    try { const count=await invoke<number>('refresh_installed_applications',{request:{version:CONTRACT_VERSION}});progress=`Reconciled ${count} detected installations.`;await searchInstalled();await refreshAssociated();error=''; }
+    catch (cause) { error=message(cause); }
+    finally { installedBusy=false; }
+  }
+  async function refreshAssociated() {
+    if (!selected) return;
+    associatedApps=await invoke<DetectedApplicationView[]>('list_associated_applications',{request:{version:CONTRACT_VERSION,caskId:selected.id}});
+  }
+  async function associateDetected(item: DetectedApplicationView) {
+    if (!selected) return;
+    installedBusy=true;
+    try { await invoke('associate_installed_application',{request:{version:CONTRACT_VERSION,caskId:selected.id,installationId:item.installationId}});await refreshAssociated();progress='Associated existing installation. Casklet did not install or own it.';error=''; }
+    catch (cause) { error=message(cause); }
+    finally { installedBusy=false; }
+  }
+  async function disassociateDetected(item: DetectedApplicationView) {
+    if (!selected) return;
+    installedBusy=true;
+    try { await invoke('disassociate_installed_application',{request:{version:CONTRACT_VERSION,caskId:selected.id,installationId:item.installationId}});await refreshAssociated();progress='Association removed. The installation is unchanged.';error=''; }
+    catch (cause) { error=message(cause); }
+    finally { installedBusy=false; }
+  }
 
   async function inspectPortableArchive() {
     try {
@@ -244,6 +279,7 @@
     const caskId = selected.id;
     resources = await invoke<ResourceView[]>('list_resources', { request: { version: CONTRACT_VERSION, caskId } });
     portableItems = await invoke<PortableInstallationView[]>('list_portable_installations', {request:{version:CONTRACT_VERSION,caskId}});
+    await refreshAssociated().catch(() => { associatedApps=[]; });
     categories = await invoke<CategoryView[]>('list_categories', { request: { version: CONTRACT_VERSION, caskId } });
     summary = await invoke<StorageSummary>('storage_summary', { request: { version: CONTRACT_VERSION, caskId } });
   }
@@ -386,6 +422,31 @@
             <li>{item.applicationName} {item.applicationVersion ?? ''} ({item.state}) — {item.executableRelativePath}
               <button type="button" disabled={!item.canLaunch} onclick={() => void launchPortable(item)}>Launch</button>
               <button type="button" disabled={!item.canPlanRemoval} onclick={() => void previewPortableRemoval(item)}>Preview removal</button>
+            </li>
+          {/each}</ul>
+        {/if}
+      </section>
+      <section aria-label="Existing Windows applications">
+        <h3>Existing Windows applications</h3>
+        <p>Associations are references. Casklet did not install or own these applications and will not uninstall them.</p>
+        <label for="installed-search">Search installed applications</label>
+        <input id="installed-search" bind:value={installedQuery} maxlength="120" />
+        <button type="button" disabled={installedBusy} onclick={() => void searchInstalled()}>Search</button>
+        <button type="button" disabled={installedBusy} onclick={() => void refreshInstalled()}>Refresh inventory</button>
+        {#if detectedApps.length}
+          <ul>{#each detectedApps as item (item.installationId)}
+            <li>{item.name} {item.displayVersion ?? ''} — {item.publisher ?? 'Unknown publisher'} ({item.scope})
+              {#if item.ambiguousName}<span class="warning">Same display name appears on multiple registrations. Check the registry source.</span>{/if}
+              <small>{item.sourceKey}</small>
+              <button type="button" disabled={installedBusy || associatedApps.some((a) => a.installationId === item.installationId)} onclick={() => void associateDetected(item)}>Associate with this Cask</button>
+            </li>
+          {/each}</ul>
+        {/if}
+        {#if associatedApps.length}
+          <h4>Associated installations</h4>
+          <ul>{#each associatedApps as item (item.installationId)}
+            <li>{item.name} ({item.state}) — {item.sourceKey}
+              <button type="button" disabled={installedBusy} onclick={() => void disassociateDetected(item)}>Remove association</button>
             </li>
           {/each}</ul>
         {/if}

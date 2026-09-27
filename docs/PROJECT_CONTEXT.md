@@ -1,6 +1,6 @@
 # Casklet Project Context
 
-Last updated: 2026-09-26
+Last updated: 2026-09-27
 
 This is the canonical handoff for humans and new Codex tasks. Keep it concise and current. Detailed specifications belong in linked documents.
 
@@ -14,7 +14,7 @@ Core principle:
 
 ## Current phase
 
-The initial design program is approved. Milestones 0–5 are merged into `develop`. Milestone 4 removal remains behind the disabled `reviewed-removal` feature and requires independent security review before destructive functionality is enabled in public builds. Milestone 6 portable ZIP application lifecycle is implemented on `codex/milestone-6-portable-apps` for review.
+The initial design program is approved. Milestones 0–6 are merged into `develop`. Milestone 4 removal remains behind the disabled `reviewed-removal` feature and requires independent security review before destructive functionality is enabled in public builds. Milestone 7 Windows installed-application inventory is implemented on `codex/milestone-7-windows-inventory` for review.
 
 - Phase 1 — Requirements: approved.
 - Phase 2 — Cross-platform and installation workflow: approved.
@@ -137,8 +137,9 @@ Exact dependencies will be approved during repository/tooling design; do not add
 - `docs/engineering/delivery-roadmap-v0.1.md` — Phase 8 vertical slices, acceptance gates, learning sequence, and release progression.
 - `docs/engineering/milestone-5-export-recovery.md` — export profiles, CLI and GUI workflows, compatibility, and conservative recovery boundary.
 - `docs/engineering/milestone-6-portable-apps.md` — ZIP validation, installation identity, launch verification, and removal integration.
+- `docs/engineering/milestone-7-windows-inventory.md` — Windows registration discovery, reconciliation, and detach-only association.
 - `domain model.txt` — original detailed Phase 3 source; preserve through normalization review.
 
 ## Current implementation milestone
 
-Milestones 0–5 are integrated into `develop`. Milestone 4 has immutable previews and journaled cleanup behind the disabled `reviewed-removal` feature (ADR 0012); independent security review remains required before enabling destructive functionality in public builds. Milestone 5 adds versioned inventory exports and conservative manifest recovery. Milestone 6 adds a bounded ZIP provider, distinct application/installation/location/association records, durable install intent, verified launch by installation ID, CLI and GUI workflows, and integration with the existing managed-resource removal plan. Keep `main` unchanged until planned milestone integration.
+Milestones 0–6 are integrated into `develop`. Milestone 4 has immutable previews and journaled cleanup behind the disabled `reviewed-removal` feature (ADR 0012); independent security review remains required before enabling destructive functionality in public builds. Milestone 7 adds read-only Windows uninstall-registration discovery, exact installed-instance identity, retained registry evidence, explicit detach-only Cask association, refresh states for changed or missing registrations, and conservative manifest recovery of associations. Keep `main` unchanged until planned milestone integration.
