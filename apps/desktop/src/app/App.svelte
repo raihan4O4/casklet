@@ -4,7 +4,7 @@
   import { getCurrentWindow } from '@tauri-apps/api/window';
   import { open, save } from '@tauri-apps/plugin-dialog';
   import { onMount } from 'svelte';
-  import type { AddMode, ApiError, CaskView, CategoryView, ResourceView, StorageSummary, RecoveryStatus, RecoveryInspection, OperationView, RemovalPlanView, PortableZipPreview, PortableInstallationView, DetectedApplicationView, WingetCapabilities, WingetPackageReview, WingetInstallationView, WingetUninstallPlanView, WingetOperationView, WingetSearchResult } from '../contracts/generated/casklet';
+  import type { AddMode, ApiError, CaskView, CategoryView, ResourceView, StorageSummary, RecoveryStatus, RecoveryInspection, OperationView, RemovalPlanView, PortableZipPreview, PortableInstallationView, DetectedApplicationView, WingetCapabilities, WingetPackageReview, WingetInstallationView, WingetUninstallPlanView, WingetOperationView, WingetSearchResult, InstallerInspection, InstallerArtifactView, InstallerOperationView } from '../contracts/generated/casklet';
   import { CONTRACT_VERSION } from '../contracts/generated/casklet';
 
   let casks: CaskView[] = $state([]);
@@ -56,6 +56,29 @@
   let wingetOperation: WingetOperationView | null = $state(null);
   let wingetBusy = $state(false);
   let wingetConfirmation = $state('');
+  let installerPath = $state('');
+  let installerPreview: InstallerInspection | null = $state(null);
+  let installerItems: InstallerArtifactView[] = $state([]);
+  let installerOperations: InstallerOperationView[] = $state([]);
+  let installerOperation: InstallerOperationView | null = $state(null);
+  let installerOperationId = $state('');
+  let installerSelected: InstallerArtifactView | null = $state(null);
+  let installerAccept = $state(false);
+  let installerElevate = $state(false);
+  let installerBusy = $state(false);
+
+  async function inspectInstaller() {
+    try {const path=await open({multiple:false,filters:[{name:'Windows installer',extensions:['msi','exe']}]});if(typeof path!=='string')return;installerBusy=true;installerPreview=await invoke<InstallerInspection>('inspect_installer_artifact',{request:{version:CONTRACT_VERSION,path}});installerPath=path;error='';}
+    catch(cause){error=message(cause);}finally{installerBusy=false;}
+  }
+  async function registerInstaller(){if(!selected||!installerPreview)return;installerBusy=true;try{await invoke<InstallerArtifactView>('register_installer_artifact',{request:{version:CONTRACT_VERSION,caskId:selected.id,path:installerPath,expectedSha256:installerPreview.sha256}});installerPreview=null;await refreshInstallers();await refreshResources();progress='Installer copy registered without launching it.';error='';}catch(cause){error=message(cause);}finally{installerBusy=false;}}
+  async function refreshInstallers(){if(!selected)return;const caskId=selected.id;installerItems=await invoke<InstallerArtifactView[]>('list_installer_artifacts',{request:{version:CONTRACT_VERSION,caskId}});installerOperations=await invoke<InstallerOperationView[]>('list_installer_operations',{request:{version:CONTRACT_VERSION,caskId}});}
+  async function launchInstaller(){if(!installerSelected||!installerAccept)return;installerBusy=true;try{installerOperation=await invoke<InstallerOperationView>('launch_installer_artifact',{request:{version:CONTRACT_VERSION,artifactId:installerSelected.id,expectedSha256:installerSelected.inspection.sha256,acceptExecutionRisk:true,allowElevation:installerElevate}});installerOperationId=installerOperation.id;await refreshInstallers();progress='Installer launch finished. Review observed candidates; none is owned automatically.';error='';}catch(cause){error=message(cause);await refreshInstallers().catch(()=>{});}finally{installerBusy=false;installerAccept=false;if(installerOperationId)void refreshInstallerOperation();}}
+  async function refreshInstallerOperation(){if(installerOperationId){const result=await invoke<InstallerOperationView>('get_installer_operation',{request:{version:CONTRACT_VERSION,id:installerOperationId}});if(result.caskId===selected?.id)installerOperation=result;}}
+  async function confirmInstallerCandidate(id:string){if(!installerOperation)return;try{installerOperation=await invoke<InstallerOperationView>('confirm_installer_candidate',{request:{version:CONTRACT_VERSION,operationId:installerOperation.id,installationId:id}});await refreshAssociated();await refreshInstallers();progress='Candidate associated as a reference. Casklet did not claim installation ownership.';error='';}catch(cause){error=message(cause);}}
+  async function cancelInstaller(){if(!installerOperationId)return;try{await invoke('cancel_installer_operation',{request:{version:CONTRACT_VERSION,id:installerOperationId}});await refreshInstallerOperation();}catch(cause){error=message(cause);}}
+  async function closeInstaller(){if(!installerOperation)return;try{await invoke('close_installer_operation',{request:{version:CONTRACT_VERSION,id:installerOperation.id}});await refreshInstallerOperation();await refreshInstallers();progress='Installer outcome preserved for manual inspection.';}catch(cause){error=message(cause);}}
+  function resetInstallerReview(){installerPreview=null;installerSelected=null;installerAccept=false;installerElevate=false;installerOperation=null;installerOperationId='';}
 
   async function searchWinget() {
     wingetBusy=true;
@@ -300,6 +323,7 @@
     busy = true;
     try {
       selected = await invoke<CaskView>('create_cask', { request: { version: CONTRACT_VERSION, name } });
+      resetInstallerReview();
       pendingPath = ''; pendingMode = ''; selectedResource = null; removalPlan = null;
       name = '';
       await refresh();
@@ -309,7 +333,7 @@
     finally { busy = false; }
   }
   async function inspect(id: string) {
-    try { selected = await invoke<CaskView>('get_cask', { request: { version: CONTRACT_VERSION, id } }); pendingPath = ''; pendingMode = ''; selectedResource = null; removalPlan = null; error = ''; await refreshResources(); }
+    try { selected = await invoke<CaskView>('get_cask', { request: { version: CONTRACT_VERSION, id } }); resetInstallerReview(); pendingPath = ''; pendingMode = ''; selectedResource = null; removalPlan = null; error = ''; await refreshResources(); }
     catch (cause) { error = message(cause); }
   }
   async function refreshResources() {
@@ -318,6 +342,7 @@
     resources = await invoke<ResourceView[]>('list_resources', { request: { version: CONTRACT_VERSION, caskId } });
     portableItems = await invoke<PortableInstallationView[]>('list_portable_installations', {request:{version:CONTRACT_VERSION,caskId}});
     await refreshWinget().catch(() => {wingetItems=[];});
+    await refreshInstallers().catch(() => {installerItems=[];installerOperations=[];});
     await refreshAssociated().catch(() => { associatedApps=[]; });
     categories = await invoke<CategoryView[]>('list_categories', { request: { version: CONTRACT_VERSION, caskId } });
     summary = await invoke<StorageSummary>('storage_summary', { request: { version: CONTRACT_VERSION, caskId } });
@@ -364,7 +389,8 @@
     let unlistenProgress: (() => void) | undefined;
     let unlistenStarted: (() => void) | undefined;
     let unlistenWinget: (() => void) | undefined;
-    const poll = window.setInterval(() => { void refreshRecovery().catch(() => {}); void refreshOperations().catch(() => {}); void refreshWingetOperation().catch(()=>{}); }, 3000);
+    let unlistenInstaller: (() => void) | undefined;
+    const poll = window.setInterval(() => { void refreshRecovery().catch(() => {}); void refreshOperations().catch(() => {}); void refreshWingetOperation().catch(()=>{}); void refreshInstallerOperation().catch(()=>{}); }, 3000);
     void getCurrentWindow().onDragDropEvent((event) => {
       if (event.payload.type === 'drop' && event.payload.paths.length > 0) {
         if (event.payload.paths.length > 1) { error = 'Drop one item at a time.'; return; }
@@ -377,7 +403,8 @@
     void listen<string>('operation.started', (event) => { activeOperation = event.payload; })
       .then((unlisten) => { if (disposed) unlisten(); else unlistenStarted = unlisten; });
     void listen<string>('winget.operation.started',(event)=>{wingetOperationId=event.payload;void refreshWingetOperation();}).then((unlisten)=>{if(disposed)unlisten();else unlistenWinget=unlisten;});
-    return () => { disposed = true; window.clearInterval(poll); unlistenDrop?.(); unlistenProgress?.(); unlistenStarted?.();unlistenWinget?.(); };
+    void listen<string>('installer.operation.started',(event)=>{installerOperationId=event.payload;void refreshInstallerOperation();}).then((unlisten)=>{if(disposed)unlisten();else unlistenInstaller=unlisten;});
+    return () => { disposed = true; window.clearInterval(poll); unlistenDrop?.(); unlistenProgress?.(); unlistenStarted?.();unlistenWinget?.();unlistenInstaller?.(); };
   });
 </script>
 
@@ -509,6 +536,43 @@
             {#if wingetPlan.state==='APPROVED' && !wingetCapabilities?.uninstall}<p>Uninstall execution is pending independent removal review.</p>{/if}
           </div>
         {/if}
+      </section>
+      <section aria-label="Installer artifacts">
+        <h3>MSI and EXE installers</h3>
+        <p>Register a reviewed copy before launching it. Installers are not sandboxed or certified by Casklet. They may change your user account or the whole machine; cleanup is not guaranteed.</p>
+        <button type="button" disabled={installerBusy} onclick={() => void inspectInstaller()}>Inspect MSI or EXE</button>
+        {#if installerPreview}<div class="review">
+          <p><strong>Source:</strong> {installerPath}</p><p><strong>Format:</strong> {installerPreview.format}; <strong>SHA-256:</strong> {installerPreview.sha256}</p>
+          <p>Signature: {installerPreview.signatureStatus}{installerPreview.signatureDetail ? ` — ${installerPreview.signatureDetail}` : ''}; signer: {installerPreview.signer ?? 'Unavailable'}. Signature evidence does not establish safety.</p>
+          <p>Product: {installerPreview.productName ?? 'Unknown'}; publisher: {installerPreview.publisher ?? 'Unknown'}; version: {installerPreview.productVersion ?? 'Unknown'}; MSI ProductCode: {installerPreview.productCode ?? 'Unavailable'}.</p>
+          <p>{installerPreview.warnings.join(' ')}</p>
+          <button type="button" disabled={installerBusy} onclick={() => void registerInstaller()}>Copy and register for this Cask</button>
+        </div>{/if}
+        {#if installerItems.length}<h4>Registered artifacts</h4><ul>{#each installerItems as item (item.id)}<li>
+          {item.inspection.productName ?? item.inspection.path} ({item.inspection.format}) — {item.inspection.signatureStatus}
+          <button type="button" disabled={installerBusy} onclick={() => {installerSelected=item;installerAccept=false;installerElevate=false;}}>Review launch</button>
+        </li>{/each}</ul>{/if}
+        {#if installerSelected}<div class="review">
+          <h4>Launch {installerSelected.inspection.format}</h4>
+          <p>Managed copy: {installerSelected.inspection.path}</p><p>Original source: {installerSelected.sourcePath}</p>
+          <p>SHA-256: {installerSelected.inspection.sha256}</p><p>Signer: {installerSelected.inspection.signer ?? 'Unavailable'} ({installerSelected.inspection.signatureStatus}{installerSelected.inspection.signatureDetail ? ` — ${installerSelected.inspection.signatureDetail}` : ''}). Requested scope may be user or system; the installer and Windows decide.</p>
+          <p>{installerSelected.inspection.warnings.join(' ')}</p>
+          {#if installerSelected.inspection.format==='EXE'}<label><input type="checkbox" bind:checked={installerElevate} /> Request Windows UAC elevation for this installer process</label>{/if}
+          <label><input type="checkbox" bind:checked={installerAccept} /> I reviewed this exact installer and approve launching it</label>
+          <button type="button" disabled={installerBusy || !installerAccept} onclick={() => void launchInstaller()}>Launch selected installer</button>
+        </div>{/if}
+        {#if installerOperation}<div class="review">
+          <p>Operation {installerOperation.id}: {installerOperation.state}{installerOperation.errorCode ? ` — ${installerOperation.errorCode}` : ''}{installerOperation.exitCode!==null ? ` (exit ${installerOperation.exitCode})` : ''}</p>
+          <p>{installerOperation.warnings.join(' ')}</p>
+          {#if installerOperation.state==='RUNNING'}<button type="button" onclick={() => void cancelInstaller()}>Request cancellation</button>{/if}
+          {#if installerOperation.candidates.length}<h4>New registrations to review</h4><ul>{#each installerOperation.candidates as candidate (candidate.installationId)}<li>
+            {candidate.name} — {candidate.publisher ?? 'Unknown publisher'} ({candidate.scope}; {candidate.confidence} evidence)
+            <p>{candidate.evidence.join('; ')}</p>
+            {#if installerOperation.state==='REVIEW_REQUIRED' || installerOperation.state==='RECOVERY_REQUIRED'}<button type="button" onclick={() => void confirmInstallerCandidate(candidate.installationId)}>Confirm reference association</button>{/if}
+          </li>{/each}</ul>{:else}<p>No new Windows registration was observed. No association or ownership was created.</p>{/if}
+          {#if installerOperation.state==='REVIEW_REQUIRED' || installerOperation.state==='RECOVERY_REQUIRED'}<button type="button" onclick={() => void closeInstaller()}>Preserve outcome and close review</button>{/if}
+        </div>{/if}
+        {#if installerOperations.length}<h4>Installer operation history</h4><ul>{#each installerOperations as operation (operation.id)}<li>{operation.id}: {operation.state}<button type="button" onclick={() => {installerOperationId=operation.id;void refreshInstallerOperation();}}>Inspect</button></li>{/each}</ul>{/if}
       </section>
       <section aria-label="Existing Windows applications">
         <h3>Existing Windows applications</h3>

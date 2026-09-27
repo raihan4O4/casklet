@@ -74,6 +74,16 @@ fn lock(
     now: i64,
 ) -> Result<(), String> {
     assert_no_mutation(tx, cask_id)?;
+    let installer_busy: i64 = tx
+        .query_row(
+            "SELECT (SELECT COUNT(*) FROM installer_locks)+(SELECT COUNT(*) FROM winget_locks)",
+            [],
+            |r| r.get(0),
+        )
+        .map_err(|e| e.to_string())?;
+    if installer_busy != 0 {
+        return Err("An installer launch is active".into());
+    }
     tx.execute(
         "INSERT INTO winget_locks(cask_id,operation_id,acquired_at_ms) VALUES (?1,?2,?3)",
         params![cask_id, op_id, now],

@@ -245,6 +245,16 @@ impl RemovalRepository for SqliteCasks {
         if active_intake != 0 {
             return Err("Cask has an active or unrecovered intake".into());
         }
+        let active_installer: i64 = transaction
+            .query_row(
+                "SELECT COUNT(*) FROM installer_locks WHERE cask_id=?1",
+                [&cask_id],
+                |row| row.get(0),
+            )
+            .map_err(|e| e.to_string())?;
+        if active_installer != 0 {
+            return Err("Cask has an active or uncertain installer launch".into());
+        }
         let item_count: i64 = transaction
             .query_row(
                 "SELECT COUNT(*) FROM removal_plan_items WHERE plan_id=?1",

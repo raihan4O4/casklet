@@ -1,12 +1,14 @@
 //! `WinGet` lifecycle orchestration. Exit status alone never establishes installation ownership.
 use crate::windows_inventory::{InstalledInventorySource, ObservedInstallation};
 use crate::{CaskRepository, CaskService, api_error, check_version};
+#[cfg(feature = "reviewed-removal")]
+use casklet_contracts::ExecuteWingetUninstallPlan;
 use casklet_contracts::{
     ApiError, ApproveWingetUninstallPlan, CONTRACT_VERSION, CancelWingetOperation,
-    CloseWingetOperation, CreateWingetUninstallPlan, ExecuteWingetUninstallPlan,
-    GetWingetOperation, InstallWingetPackage, ListWingetInstallations, ReviewWingetPackage,
-    SearchWinget, WingetCapabilities, WingetInstallationView, WingetOperationView,
-    WingetPackageReview, WingetSearchResult, WingetUninstallPlanView,
+    CloseWingetOperation, CreateWingetUninstallPlan, GetWingetOperation, InstallWingetPackage,
+    ListWingetInstallations, ReviewWingetPackage, SearchWinget, WingetCapabilities,
+    WingetInstallationView, WingetOperationView, WingetPackageReview, WingetSearchResult,
+    WingetUninstallPlanView,
 };
 use sha2::{Digest, Sha256};
 use std::time::{SystemTime, UNIX_EPOCH};
