@@ -1,11 +1,14 @@
 use casklet_contracts::{
-    AddMode, AddResource, ApiError, CONTRACT_VERSION, CancelOperation, CaskView,
-    CategorizeResource, CategoryView, CreateCask, CreateCategory, CreateDiagnosticsBundle,
-    CreateRemovalPlan, GetCask, GetOperation, GetPortableInstallation, GetRemovalPlan, GetResource,
-    GetStorageSummary, InspectPortableZip, InstallPortableZip, LaunchPortableInstallation,
-    ListCasks, ListCategories, ListOperations, ListPortableInstallations, ListResources,
-    OperationView, PortableInstallationView, PreserveOperation, RecoverOperation,
-    RecoveryInspection, RecoveryStatus, RemovalPlanView, ResourceView, StorageSummary,
+    AddMode, AddResource, ApiError, AssociateInstalledApplication, CONTRACT_VERSION,
+    CancelOperation, CaskView, CategorizeResource, CategoryView, CreateCask, CreateCategory,
+    CreateDiagnosticsBundle, CreateRemovalPlan, DetectedApplicationView,
+    DisassociateInstalledApplication, GetCask, GetOperation, GetPortableInstallation,
+    GetRemovalPlan, GetResource, GetStorageSummary, InspectPortableZip, InstallPortableZip,
+    LaunchPortableInstallation, ListAssociatedApplications, ListCasks, ListCategories,
+    ListOperations, ListPortableInstallations, ListResources, OperationView,
+    PortableInstallationView, PreserveOperation, RecoverOperation, RecoveryInspection,
+    RecoveryStatus, RefreshInstalledApplications, RemovalPlanView, ResourceView,
+    SearchInstalledApplications, StorageSummary,
 };
 #[cfg(feature = "reviewed-removal")]
 use casklet_contracts::{ApproveRemovalPlan, CloseRemovalRun, ExecuteRemovalPlan};
@@ -52,6 +55,10 @@ enum Command {
     Portable {
         #[command(subcommand)]
         action: PortableAction,
+    },
+    Installed {
+        #[command(subcommand)]
+        action: InstalledAction,
     },
     Cask {
         #[command(subcommand)]
@@ -126,6 +133,25 @@ enum PortableAction {
     },
     Launch {
         installation_id: String,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum InstalledAction {
+    Search {
+        query: String,
+    },
+    Refresh,
+    Associate {
+        cask_id: String,
+        installation_id: String,
+    },
+    Disassociate {
+        cask_id: String,
+        installation_id: String,
+    },
+    List {
+        cask_id: String,
     },
 }
 
@@ -270,6 +296,70 @@ fn main() -> ExitCode {
     };
     let correlation_id = uuid::Uuid::new_v4().to_string();
     let result = match cli.command {
+        Command::Installed {
+            action: InstalledAction::Search { query },
+        } => service
+            .search_installed_applications(
+                &SearchInstalledApplications {
+                    version: CONTRACT_VERSION,
+                    query,
+                },
+                &correlation_id,
+            )
+            .map(|items| render_detected(&items, cli.output)),
+        Command::Installed {
+            action: InstalledAction::Refresh,
+        } => service
+            .refresh_installed_applications(
+                &RefreshInstalledApplications {
+                    version: CONTRACT_VERSION,
+                },
+                &correlation_id,
+            )
+            .map(|count| format!("Reconciled {count} detected installations\n")),
+        Command::Installed {
+            action:
+                InstalledAction::Associate {
+                    cask_id,
+                    installation_id,
+                },
+        } => service
+            .associate_installed_application(
+                &AssociateInstalledApplication {
+                    version: CONTRACT_VERSION,
+                    cask_id,
+                    installation_id,
+                },
+                &correlation_id,
+            )
+            .map(|item| render_detected(&[item], cli.output)),
+        Command::Installed {
+            action:
+                InstalledAction::Disassociate {
+                    cask_id,
+                    installation_id,
+                },
+        } => service
+            .disassociate_installed_application(
+                &DisassociateInstalledApplication {
+                    version: CONTRACT_VERSION,
+                    cask_id,
+                    installation_id,
+                },
+                &correlation_id,
+            )
+            .map(|()| "Association removed; installation unchanged\n".into()),
+        Command::Installed {
+            action: InstalledAction::List { cask_id },
+        } => service
+            .list_associated_applications(
+                &ListAssociatedApplications {
+                    version: CONTRACT_VERSION,
+                    cask_id,
+                },
+                &correlation_id,
+            )
+            .map(|items| render_detected(&items, cli.output)),
         Command::Portable {
             action: PortableAction::Inspect { archive_path },
         } => service
@@ -1078,6 +1168,25 @@ fn render_error(error: &ApiError, output: Output) {
             "{}",
             serde_json::to_string(error).expect("Error DTO is serializable")
         ),
+    }
+}
+
+fn render_detected(items: &[DetectedApplicationView], output: Output) -> String {
+    match output {
+        Output::Json => format!("{}\n", serde_json::to_string(items).unwrap()),
+        Output::Table => items.iter().fold(String::new(), |mut text, item| {
+            let _ = writeln!(
+                text,
+                "{} | {} | {} | {} | {} | {}",
+                item.installation_id,
+                item.name,
+                item.display_version.as_deref().unwrap_or(""),
+                item.scope,
+                item.state,
+                item.source_key
+            );
+            text
+        }),
     }
 }
 

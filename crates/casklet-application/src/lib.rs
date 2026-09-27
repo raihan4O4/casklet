@@ -8,6 +8,7 @@ pub mod portable;
 pub mod projection;
 pub mod removal;
 pub mod resource;
+pub mod windows_inventory;
 
 /// Returns linked lower-layer markers for a dependency-direction smoke test.
 #[must_use]

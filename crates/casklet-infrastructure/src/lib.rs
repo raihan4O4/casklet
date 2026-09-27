@@ -13,6 +13,7 @@ mod projection;
 mod removal;
 mod resource_storage;
 mod resources;
+mod windows_inventory;
 
 pub const CRATE_BOUNDARY: &str = "infrastructure";
 
@@ -24,6 +25,10 @@ pub struct SqliteCasks {
 impl SqliteCasks {
     /// # Errors
     /// Returns an I/O or migration error.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "Each migration is kept explicit and transactional"
+    )]
     pub fn open(db_path: PathBuf) -> Result<Self, String> {
         if let Some(parent) = db_path.parent() {
             fs::create_dir_all(parent).map_err(|e| e.to_string())?;
@@ -44,7 +49,7 @@ impl SqliteCasks {
                     .map_err(|e| e.to_string())?;
                 transaction.commit().map_err(|e| e.to_string())?;
             }
-            1..=7 => {}
+            1..=8 => {}
             _ => return Err(format!("unsupported database schema version: {version}")),
         }
         if version == 1 || version == 0 {
@@ -110,6 +115,18 @@ impl SqliteCasks {
                 .map_err(|e| e.to_string())?;
             transaction
                 .execute_batch("PRAGMA user_version=7")
+                .map_err(|e| e.to_string())?;
+            transaction.commit().map_err(|e| e.to_string())?;
+        }
+        if version <= 7 {
+            let transaction = connection.transaction().map_err(|e| e.to_string())?;
+            transaction
+                .execute_batch(include_str!(
+                    "../../../migrations/0008_windows_inventory.sql"
+                ))
+                .map_err(|e| e.to_string())?;
+            transaction
+                .execute_batch("PRAGMA user_version=8")
                 .map_err(|e| e.to_string())?;
             transaction.commit().map_err(|e| e.to_string())?;
         }
@@ -195,7 +212,7 @@ impl ManagedStorage for LocalStorage {
         fs::create_dir_all(root.join("content")).map_err(|e| e.to_string())?;
         let metadata = root.join(".casklet");
         fs::create_dir_all(&metadata).map_err(|e| e.to_string())?;
-        self.project(cask, &[], &[])
+        self.project(cask, &[], &[], &[])
     }
 }
 
@@ -615,7 +632,7 @@ mod tests {
             .unwrap()
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(schema_version, 7);
+        assert_eq!(schema_version, 8);
         assert_eq!(
             reopened
                 .list(

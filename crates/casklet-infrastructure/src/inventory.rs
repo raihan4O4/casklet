@@ -108,6 +108,38 @@ fn validate_manifest(path: &Path) -> Result<(Value, ManifestPreview), String> {
     if resources.len() > MAX_RESOURCES {
         return Err("Too many manifest resources".into());
     }
+    if let Some(applications) = value.get("applications") {
+        let applications = applications.as_array().ok_or("Invalid applications")?;
+        if applications.len() > MAX_RESOURCES {
+            return Err("Too many manifest applications".into());
+        }
+        let mut installed_ids = HashSet::new();
+        for app in applications {
+            Uuid::parse_str(field(app, "applicationId")?).map_err(|_| "Invalid application ID")?;
+            let installation_id = field(app, "installationId")?;
+            Uuid::parse_str(installation_id).map_err(|_| "Invalid installation ID")?;
+            if !installed_ids.insert(installation_id)
+                || !safe_text(field(app, "name")?, 240)
+                || !safe_text(field(app, "sourceKey")?, 2048)
+                || !matches!(field(app, "scope")?, "USER" | "SYSTEM")
+                || field(app, "provenance")? != "DETECTED_WINDOWS_REGISTRY"
+                || field(app, "removalPolicy")? != "DETACH_ONLY"
+            {
+                return Err("Invalid or duplicate application association".into());
+            }
+            for (key, max) in [
+                ("publisher", 240),
+                ("displayVersion", 120),
+                ("installLocation", 4096),
+            ] {
+                if let Some(text) = app.get(key).and_then(Value::as_str)
+                    && !safe_text(text, max)
+                {
+                    return Err("Invalid application metadata".into());
+                }
+            }
+        }
+    }
     let mut ids = HashSet::new();
     for resource in resources {
         let resource_id = field(resource, "id")?;
@@ -397,6 +429,32 @@ impl SqliteCasks {
             }
             transaction.execute("INSERT INTO resource_associations(id,cask_id,resource_id,category_key,relationship,removal_policy,added_at_ms) VALUES (?1,?2,?3,?4,'REFERENCED','DETACH_ONLY',?5)",
                 params![Uuid::new_v4().to_string(),preview.cask_id,id,category,created]).map_err(|e|e.to_string())?;
+        }
+        if let Some(applications) = manifest.get("applications").and_then(Value::as_array) {
+            for app in applications {
+                let application_id = field(app, "applicationId")?;
+                let installation_id = field(app, "installationId")?;
+                let source_key = field(app, "sourceKey")?;
+                let existing: Option<String> = transaction
+                    .query_row(
+                        "SELECT source_key FROM windows_installations WHERE id=?1",
+                        [installation_id],
+                        |r| r.get(0),
+                    )
+                    .optional()
+                    .map_err(|e| e.to_string())?;
+                if let Some(existing) = existing
+                    && existing != source_key
+                {
+                    return Err("Recovered installation ID conflicts with existing source".into());
+                }
+                transaction.execute("INSERT INTO applications(id,canonical_name,publisher,created_at_ms) VALUES (?1,?2,?3,?4) ON CONFLICT(id) DO NOTHING",params![application_id,field(app,"name")?,app["publisher"].as_str(),created]).map_err(|e|e.to_string())?;
+                let evidence = serde_json::to_string(app).map_err(|e| e.to_string())?;
+                let hash = format!("{:x}", Sha256::digest(evidence.as_bytes()));
+                transaction.execute("INSERT INTO windows_installations(id,application_id,source_key,scope,display_name,publisher,display_version,install_location,evidence_json,evidence_sha256,state,first_seen_at_ms,last_seen_at_ms,last_verified_at_ms) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,'AMBIGUOUS',?11,?11,0) ON CONFLICT(id) DO NOTHING",
+                    params![installation_id,application_id,source_key,field(app,"scope")?,field(app,"name")?,app["publisher"].as_str(),app["displayVersion"].as_str(),app["installLocation"].as_str(),evidence,hash,created]).map_err(|e|e.to_string())?;
+                transaction.execute("INSERT INTO windows_cask_associations(id,cask_id,installation_id,created_at_ms) VALUES (?1,?2,?3,?4)",params![Uuid::new_v4().to_string(),preview.cask_id,installation_id,created]).map_err(|e|e.to_string())?;
+            }
         }
         transaction.commit().map_err(|e| e.to_string())?;
         Ok(preview)

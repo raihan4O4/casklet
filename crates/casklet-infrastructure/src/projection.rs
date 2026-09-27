@@ -56,6 +56,13 @@ fn restore_previous_manifest(metadata: &Path, cask_id: &str) -> Result<(), Strin
 }
 
 impl ProjectionRepository for SqliteCasks {
+    fn projection_installed(
+        &self,
+        cask_id: &str,
+    ) -> Result<Vec<casklet_contracts::DetectedApplicationView>, String> {
+        use casklet_application::windows_inventory::InstalledInventoryRepository;
+        self.list_associated_installed(cask_id)
+    }
     fn projection_jobs(&self) -> Result<Vec<(String, i64)>, String> {
         let connection = self.connection()?;
         let mut statement = connection.prepare("SELECT cask_id,target_revision FROM projection_jobs WHERE state='PENDING' ORDER BY updated_at_ms")
@@ -82,6 +89,7 @@ impl ManifestProjection for LocalStorage {
         cask: &Cask,
         resources: &[ResourceView],
         categories: &[CategoryView],
+        applications: &[casklet_contracts::DetectedApplicationView],
     ) -> Result<(), String> {
         let metadata = Path::new(&cask.managed_storage_root).join(".casklet");
         check_components(&metadata)?;
@@ -99,7 +107,12 @@ impl ManifestProjection for LocalStorage {
             "categories":categories.iter().map(|item| serde_json::json!({
                 "key":item.key,"name":item.name,"isBuiltin":item.is_builtin
             })).collect::<Vec<_>>(),
-            "applications":[]
+            "applications":applications.iter().map(|item| serde_json::json!({
+                "applicationId":item.application_id,"installationId":item.installation_id,
+                "name":item.name,"publisher":item.publisher,"displayVersion":item.display_version,
+                "scope":item.scope,"sourceKey":item.source_key,"installLocation":item.install_location,
+                "provenance":"DETECTED_WINDOWS_REGISTRY","removalPolicy":"DETACH_ONLY"
+            })).collect::<Vec<_>>()
         });
         let bytes = serde_json::to_vec_pretty(&manifest).map_err(|e| e.to_string())?;
         let token = Uuid::new_v4();

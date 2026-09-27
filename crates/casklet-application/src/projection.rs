@@ -1,9 +1,12 @@
 //! Retryable per-Cask recovery manifests.
 use crate::{CaskRepository, CaskService, api_error, resource::ResourceRepository};
-use casklet_contracts::{ApiError, CategoryView, ResourceView};
+use casklet_contracts::{ApiError, CategoryView, DetectedApplicationView, ResourceView};
 use casklet_domain::Cask;
 
 pub trait ProjectionRepository {
+    /// # Errors
+    /// Returns associated detected installations for a Cask manifest.
+    fn projection_installed(&self, cask_id: &str) -> Result<Vec<DetectedApplicationView>, String>;
     /// # Errors
     /// Returns pending Cask IDs and their target revisions.
     fn projection_jobs(&self) -> Result<Vec<(String, i64)>, String>;
@@ -23,6 +26,7 @@ pub trait ManifestProjection {
         cask: &Cask,
         resources: &[ResourceView],
         categories: &[CategoryView],
+        applications: &[DetectedApplicationView],
     ) -> Result<(), String>;
 }
 
@@ -43,7 +47,9 @@ impl<R: CaskRepository + ResourceRepository + ProjectionRepository, S: ManifestP
                 let cask = self.repository.get(&cask_id)?.ok_or("Cask missing")?;
                 let resources = self.repository.list_resources(&cask_id)?;
                 let categories = self.repository.list_categories(&cask_id)?;
-                self.storage.project(&cask, &resources, &categories)
+                let applications = self.repository.projection_installed(&cask_id)?;
+                self.storage
+                    .project(&cask, &resources, &categories, &applications)
             })();
             match projected {
                 Ok(()) => {

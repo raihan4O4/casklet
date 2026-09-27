@@ -26,6 +26,11 @@ pub fn run() {
             list_portable_installations,
             get_portable_installation,
             launch_portable_installation,
+            search_installed_applications,
+            refresh_installed_applications,
+            associate_installed_application,
+            disassociate_installed_application,
+            list_associated_applications,
             list_resources,
             get_resource,
             create_category,
@@ -56,6 +61,75 @@ type Service = casklet_application::CaskService<
     casklet_infrastructure::SqliteCasks,
     casklet_infrastructure::LocalStorage,
 >;
+
+fn worker_error(error: &impl ToString) -> casklet_contracts::ApiError {
+    casklet_contracts::ApiError {
+        version: casklet_contracts::CONTRACT_VERSION,
+        code: "WORKER".into(),
+        message: error.to_string(),
+        correlation_id: "desktop".into(),
+    }
+}
+
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+async fn search_installed_applications(
+    service: tauri::State<'_, Service>,
+    request: casklet_contracts::SearchInstalledApplications,
+) -> Result<Vec<casklet_contracts::DetectedApplicationView>, casklet_contracts::ApiError> {
+    let service = service.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        service.search_installed_applications(&request, "desktop")
+    })
+    .await
+    .map_err(|e| worker_error(&e))?
+}
+
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+async fn refresh_installed_applications(
+    service: tauri::State<'_, Service>,
+    request: casklet_contracts::RefreshInstalledApplications,
+) -> Result<usize, casklet_contracts::ApiError> {
+    let service = service.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        service.refresh_installed_applications(&request, "desktop")
+    })
+    .await
+    .map_err(|e| worker_error(&e))?
+}
+
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+async fn associate_installed_application(
+    service: tauri::State<'_, Service>,
+    request: casklet_contracts::AssociateInstalledApplication,
+) -> Result<casklet_contracts::DetectedApplicationView, casklet_contracts::ApiError> {
+    let service = service.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        service.associate_installed_application(&request, "desktop")
+    })
+    .await
+    .map_err(|e| worker_error(&e))?
+}
+
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+fn disassociate_installed_application(
+    service: tauri::State<'_, Service>,
+    request: casklet_contracts::DisassociateInstalledApplication,
+) -> Result<(), casklet_contracts::ApiError> {
+    service.disassociate_installed_application(&request, "desktop")
+}
+
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+fn list_associated_applications(
+    service: tauri::State<'_, Service>,
+    request: casklet_contracts::ListAssociatedApplications,
+) -> Result<Vec<casklet_contracts::DetectedApplicationView>, casklet_contracts::ApiError> {
+    service.list_associated_applications(&request, "desktop")
+}
 
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
