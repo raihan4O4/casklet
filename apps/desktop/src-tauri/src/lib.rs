@@ -31,6 +31,17 @@ pub fn run() {
             associate_installed_application,
             disassociate_installed_application,
             list_associated_applications,
+            winget_capabilities,
+            search_winget,
+            review_winget_package,
+            install_winget_package,
+            list_winget_installations,
+            get_winget_operation,
+            cancel_winget_operation,
+            close_winget_operation,
+            create_winget_uninstall_plan,
+            approve_winget_uninstall_plan,
+            execute_winget_uninstall_plan,
             list_resources,
             get_resource,
             create_category,
@@ -61,6 +72,128 @@ type Service = casklet_application::CaskService<
     casklet_infrastructure::SqliteCasks,
     casklet_infrastructure::LocalStorage,
 >;
+
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+fn winget_capabilities(
+    service: tauri::State<'_, Service>,
+) -> casklet_contracts::WingetCapabilities {
+    service.winget_capabilities()
+}
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+async fn search_winget(
+    service: tauri::State<'_, Service>,
+    request: casklet_contracts::SearchWinget,
+) -> Result<casklet_contracts::WingetSearchResult, casklet_contracts::ApiError> {
+    let service = service.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || service.search_winget(&request, "desktop"))
+        .await
+        .map_err(|e| worker_error(&e))?
+}
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+async fn review_winget_package(
+    service: tauri::State<'_, Service>,
+    request: casklet_contracts::ReviewWingetPackage,
+) -> Result<casklet_contracts::WingetPackageReview, casklet_contracts::ApiError> {
+    let service = service.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || service.review_winget_package(&request, "desktop"))
+        .await
+        .map_err(|e| worker_error(&e))?
+}
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+async fn install_winget_package(
+    app: tauri::AppHandle,
+    service: tauri::State<'_, Service>,
+    request: casklet_contracts::InstallWingetPackage,
+) -> Result<casklet_contracts::WingetInstallationView, casklet_contracts::ApiError> {
+    let service = service.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        service.install_winget_package(&request, "desktop", &|id| {
+            let _ = app.emit("winget.operation.started", id);
+        })
+    })
+    .await
+    .map_err(|e| worker_error(&e))?
+}
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+fn list_winget_installations(
+    service: tauri::State<'_, Service>,
+    request: casklet_contracts::ListWingetInstallations,
+) -> Result<Vec<casklet_contracts::WingetInstallationView>, casklet_contracts::ApiError> {
+    service.list_winget_installations(&request, "desktop")
+}
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+fn get_winget_operation(
+    service: tauri::State<'_, Service>,
+    request: casklet_contracts::GetWingetOperation,
+) -> Result<casklet_contracts::WingetOperationView, casklet_contracts::ApiError> {
+    service.get_winget_operation(&request, "desktop")
+}
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+fn cancel_winget_operation(
+    service: tauri::State<'_, Service>,
+    request: casklet_contracts::CancelWingetOperation,
+) -> Result<(), casklet_contracts::ApiError> {
+    service.cancel_winget_operation(&request, "desktop")
+}
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+fn close_winget_operation(
+    service: tauri::State<'_, Service>,
+    request: casklet_contracts::CloseWingetOperation,
+) -> Result<(), casklet_contracts::ApiError> {
+    service.close_winget_operation(&request, "desktop")
+}
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+async fn create_winget_uninstall_plan(
+    service: tauri::State<'_, Service>,
+    request: casklet_contracts::CreateWingetUninstallPlan,
+) -> Result<casklet_contracts::WingetUninstallPlanView, casklet_contracts::ApiError> {
+    let service = service.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        service.create_winget_uninstall_plan(&request, "desktop")
+    })
+    .await
+    .map_err(|e| worker_error(&e))?
+}
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+fn approve_winget_uninstall_plan(
+    service: tauri::State<'_, Service>,
+    request: casklet_contracts::ApproveWingetUninstallPlan,
+) -> Result<casklet_contracts::WingetUninstallPlanView, casklet_contracts::ApiError> {
+    service.approve_winget_uninstall_plan(&request, "desktop")
+}
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value, unused_variables)]
+async fn execute_winget_uninstall_plan(
+    app: tauri::AppHandle,
+    service: tauri::State<'_, Service>,
+    request: casklet_contracts::ExecuteWingetUninstallPlan,
+) -> Result<casklet_contracts::WingetUninstallPlanView, casklet_contracts::ApiError> {
+    #[cfg(feature = "reviewed-removal")]
+    {
+        let service = service.inner().clone();
+        tauri::async_runtime::spawn_blocking(move || {
+            service.execute_winget_uninstall_plan(&request, "desktop", &|id| {
+                let _ = app.emit("winget.operation.started", id);
+            })
+        })
+        .await
+        .map_err(|e| worker_error(&e))?
+    }
+    #[cfg(not(feature = "reviewed-removal"))]
+    {
+        Err(removal_review_pending())
+    }
+}
 
 fn worker_error(error: &impl ToString) -> casklet_contracts::ApiError {
     casklet_contracts::ApiError {

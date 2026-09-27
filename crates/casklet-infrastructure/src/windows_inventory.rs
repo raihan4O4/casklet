@@ -138,7 +138,7 @@ impl InstalledInventorySource for LocalStorage {
     }
 }
 
-fn upsert(
+pub(crate) fn upsert(
     tx: &rusqlite::Transaction<'_>,
     item: &ObservedInstallation,
     now: i64,
@@ -188,6 +188,10 @@ impl InstalledInventoryRepository for SqliteCasks {
             .map_err(|e| e.to_string())?;
         if state != "ACTIVE" {
             return Err("Cask is not active".into());
+        }
+        let uninstalling:i64=tx.query_row("SELECT COUNT(*) FROM winget_installations w JOIN winget_locks l ON l.cask_id=w.cask_id JOIN winget_operations o ON o.id=l.operation_id AND o.action='UNINSTALL' WHERE w.registry_installation_id=?1 AND w.state='INSTALLED'",[&item.installation_id],|r|r.get(0)).map_err(|e|e.to_string())?;
+        if uninstalling != 0 {
+            return Err("Installation has an active uninstall operation".into());
         }
         upsert(&tx, item, now)?;
         tx.execute("INSERT INTO windows_cask_associations(id,cask_id,installation_id,created_at_ms) VALUES (?1,?2,?3,?4) ON CONFLICT DO NOTHING",

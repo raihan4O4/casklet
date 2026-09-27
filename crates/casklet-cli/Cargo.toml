@@ -10,7 +10,7 @@ name = "casklet"
 path = "src/main.rs"
 
 [features]
-reviewed-removal = []
+reviewed-removal = ["casklet-application/reviewed-removal", "casklet-infrastructure/reviewed-removal"]
 
 [dependencies]
 casklet-application = { path = "../casklet-application", version = "=0.0.0" }

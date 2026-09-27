@@ -4,7 +4,7 @@
   import { getCurrentWindow } from '@tauri-apps/api/window';
   import { open, save } from '@tauri-apps/plugin-dialog';
   import { onMount } from 'svelte';
-  import type { AddMode, ApiError, CaskView, CategoryView, ResourceView, StorageSummary, RecoveryStatus, RecoveryInspection, OperationView, RemovalPlanView, PortableZipPreview, PortableInstallationView, DetectedApplicationView } from '../contracts/generated/casklet';
+  import type { AddMode, ApiError, CaskView, CategoryView, ResourceView, StorageSummary, RecoveryStatus, RecoveryInspection, OperationView, RemovalPlanView, PortableZipPreview, PortableInstallationView, DetectedApplicationView, WingetCapabilities, WingetPackageReview, WingetInstallationView, WingetUninstallPlanView, WingetOperationView, WingetSearchResult } from '../contracts/generated/casklet';
   import { CONTRACT_VERSION } from '../contracts/generated/casklet';
 
   let casks: CaskView[] = $state([]);
@@ -43,6 +43,44 @@
   let detectedApps: DetectedApplicationView[] = $state([]);
   let associatedApps: DetectedApplicationView[] = $state([]);
   let installedBusy = $state(false);
+  let wingetCapabilities: WingetCapabilities | null = $state(null);
+  let wingetQuery = $state('');
+  let wingetSearchText = $state('');
+  let wingetPackageId = $state('');
+  let wingetVersion = $state('');
+  let wingetReview: WingetPackageReview | null = $state(null);
+  let wingetAccept = $state(false);
+  let wingetItems: WingetInstallationView[] = $state([]);
+  let wingetPlan: WingetUninstallPlanView | null = $state(null);
+  let wingetOperationId = $state('');
+  let wingetOperation: WingetOperationView | null = $state(null);
+  let wingetBusy = $state(false);
+  let wingetConfirmation = $state('');
+
+  async function searchWinget() {
+    wingetBusy=true;
+    try {const result=await invoke<WingetSearchResult>('search_winget',{request:{version:CONTRACT_VERSION,query:wingetQuery}});wingetSearchText=result.sanitizedText;error='';}
+    catch(cause){error=message(cause);}finally{wingetBusy=false;}
+  }
+  async function reviewWinget() {
+    wingetBusy=true;wingetReview=null;wingetAccept=false;
+    try {wingetReview=await invoke<WingetPackageReview>('review_winget_package',{request:{version:CONTRACT_VERSION,packageId:wingetPackageId,packageVersion:wingetVersion}});error='';}
+    catch(cause){error=message(cause);}finally{wingetBusy=false;}
+  }
+  async function installWinget() {
+    if(!selected || !wingetReview || !wingetAccept) return;
+    wingetBusy=true;
+    try {await invoke<WingetInstallationView>('install_winget_package',{request:{version:CONTRACT_VERSION,caskId:selected.id,packageId:wingetReview.packageId,packageVersion:wingetReview.packageVersion,reviewHash:wingetReview.reviewHash,acceptPackageAgreements:true}});wingetReview=null;wingetAccept=false;progress='WinGet installation verified and recorded.';await refreshWinget();error='';}
+    catch(cause){error=message(cause);}
+    finally{wingetBusy=false;if(wingetOperationId) void refreshWingetOperation();}
+  }
+  async function refreshWinget(){if(selected)wingetItems=await invoke<WingetInstallationView[]>('list_winget_installations',{request:{version:CONTRACT_VERSION,caskId:selected.id}});}
+  async function refreshWingetOperation(){if(wingetOperationId)wingetOperation=await invoke<WingetOperationView>('get_winget_operation',{request:{version:CONTRACT_VERSION,id:wingetOperationId}});}
+  async function cancelWinget(){if(!wingetOperationId)return;try{await invoke('cancel_winget_operation',{request:{version:CONTRACT_VERSION,id:wingetOperationId}});await refreshWingetOperation();}catch(cause){error=message(cause);}}
+  async function closeWinget(){if(!wingetOperationId)return;try{await invoke('close_winget_operation',{request:{version:CONTRACT_VERSION,id:wingetOperationId}});await refreshWingetOperation();progress='Uncertain WinGet work kept for manual inspection.';}catch(cause){error=message(cause);}}
+  async function planWingetUninstall(item:WingetInstallationView){wingetBusy=true;try{wingetPlan=await invoke<WingetUninstallPlanView>('create_winget_uninstall_plan',{request:{version:CONTRACT_VERSION,installationId:item.id}});wingetConfirmation='';error='';}catch(cause){error=message(cause);}finally{wingetBusy=false;}}
+  async function approveWingetUninstall(){if(!wingetPlan)return;try{wingetPlan=await invoke<WingetUninstallPlanView>('approve_winget_uninstall_plan',{request:{version:CONTRACT_VERSION,planId:wingetPlan.id,planHash:wingetPlan.planHash}});error='';}catch(cause){error=message(cause);}}
+  async function executeWingetUninstall(){if(!wingetPlan || wingetConfirmation!==wingetPlan.id)return;wingetBusy=true;try{wingetPlan=await invoke<WingetUninstallPlanView>('execute_winget_uninstall_plan',{request:{version:CONTRACT_VERSION,planId:wingetPlan.id,planHash:wingetPlan.planHash}});await refreshWinget();progress='WinGet uninstall verified.';error='';}catch(cause){error=message(cause);}finally{wingetBusy=false;if(wingetOperationId)void refreshWingetOperation();}}
 
   async function searchInstalled() {
     installedBusy = true;
@@ -279,6 +317,7 @@
     const caskId = selected.id;
     resources = await invoke<ResourceView[]>('list_resources', { request: { version: CONTRACT_VERSION, caskId } });
     portableItems = await invoke<PortableInstallationView[]>('list_portable_installations', {request:{version:CONTRACT_VERSION,caskId}});
+    await refreshWinget().catch(() => {wingetItems=[];});
     await refreshAssociated().catch(() => { associatedApps=[]; });
     categories = await invoke<CategoryView[]>('list_categories', { request: { version: CONTRACT_VERSION, caskId } });
     summary = await invoke<StorageSummary>('storage_summary', { request: { version: CONTRACT_VERSION, caskId } });
@@ -319,11 +358,13 @@
   onMount(() => {
     void refresh();
     void invoke<boolean>('removal_capability').then((enabled) => { removalEnabled = enabled; }).catch(() => { removalEnabled = false; });
+    void invoke<WingetCapabilities>('winget_capabilities').then((value)=>{wingetCapabilities=value;}).catch(()=>{wingetCapabilities=null;});
     let disposed = false;
     let unlistenDrop: (() => void) | undefined;
     let unlistenProgress: (() => void) | undefined;
     let unlistenStarted: (() => void) | undefined;
-    const poll = window.setInterval(() => { void refreshRecovery().catch(() => {}); void refreshOperations().catch(() => {}); }, 3000);
+    let unlistenWinget: (() => void) | undefined;
+    const poll = window.setInterval(() => { void refreshRecovery().catch(() => {}); void refreshOperations().catch(() => {}); void refreshWingetOperation().catch(()=>{}); }, 3000);
     void getCurrentWindow().onDragDropEvent((event) => {
       if (event.payload.type === 'drop' && event.payload.paths.length > 0) {
         if (event.payload.paths.length > 1) { error = 'Drop one item at a time.'; return; }
@@ -335,7 +376,8 @@
     }).then((unlisten) => { if (disposed) unlisten(); else unlistenProgress = unlisten; });
     void listen<string>('operation.started', (event) => { activeOperation = event.payload; })
       .then((unlisten) => { if (disposed) unlisten(); else unlistenStarted = unlisten; });
-    return () => { disposed = true; window.clearInterval(poll); unlistenDrop?.(); unlistenProgress?.(); unlistenStarted?.(); };
+    void listen<string>('winget.operation.started',(event)=>{wingetOperationId=event.payload;void refreshWingetOperation();}).then((unlisten)=>{if(disposed)unlisten();else unlistenWinget=unlisten;});
+    return () => { disposed = true; window.clearInterval(poll); unlistenDrop?.(); unlistenProgress?.(); unlistenStarted?.();unlistenWinget?.(); };
   });
 </script>
 
@@ -424,6 +466,48 @@
               <button type="button" disabled={!item.canPlanRemoval} onclick={() => void previewPortableRemoval(item)}>Preview removal</button>
             </li>
           {/each}</ul>
+        {/if}
+      </section>
+      <section aria-label="WinGet packages">
+        <h3>WinGet packages</h3>
+        <p>WinGet may install for your user or the whole machine. Casklet records ownership only when the package and one new installed instance both verify.</p>
+        {#if wingetCapabilities?.search}
+          <label for="winget-search">Search WinGet</label><input id="winget-search" bind:value={wingetQuery} maxlength="120" />
+          <button type="button" disabled={wingetBusy || !wingetQuery.trim()} onclick={() => void searchWinget()}>Search WinGet</button>
+          {#if wingetSearchText}<pre>{wingetSearchText}</pre>{/if}
+          <label for="winget-id">Exact package ID</label><input id="winget-id" bind:value={wingetPackageId} maxlength="120" />
+          <label for="winget-version">Exact version</label><input id="winget-version" bind:value={wingetVersion} maxlength="80" />
+          <button type="button" disabled={wingetBusy || !wingetPackageId || !wingetVersion} onclick={() => void reviewWinget()}>Review package</button>
+          {#if wingetReview}
+            <div class="review"><p>{wingetReview.packageId} {wingetReview.packageVersion} from {wingetReview.source}</p>
+              <pre>{wingetReview.details}</pre>
+              <p>{wingetReview.warnings.join(' ')}</p>
+              <label><input type="checkbox" bind:checked={wingetAccept} /> I reviewed this package and accept its package agreements</label>
+              <button type="button" disabled={wingetBusy || !wingetAccept} onclick={() => void installWinget()}>Install for this Cask</button>
+            </div>
+          {/if}
+        {:else}<p>{wingetCapabilities?.reason ?? 'WinGet capability is being checked.'}</p>{/if}
+        {#if wingetOperation}
+          <p>Operation {wingetOperation.id}: {wingetOperation.step} ({wingetOperation.state}){wingetOperation.errorCode ? ` — ${wingetOperation.errorCode}` : ''}</p>
+          {#if wingetOperation.state==='RUNNING'}<button type="button" disabled={wingetOperation.cancellationRequested} onclick={() => void cancelWinget()}>Cancel WinGet operation</button>{/if}
+          {#if wingetOperation.state==='RECOVERY_REQUIRED'}<button type="button" onclick={() => void closeWinget()}>Keep outcome uncertain and close</button>{/if}
+        {/if}
+        {#if wingetItems.length}<h4>WinGet installations for this Cask</h4><ul>{#each wingetItems as item (item.id)}
+          <li>{item.packageId} {item.packageVersion} ({item.state}) — {item.registryInstallationId}
+            <p>{item.warnings.join(' ')}</p>
+            <button type="button" disabled={wingetBusy || !item.canPlanUninstall} onclick={() => void planWingetUninstall(item)}>Preview uninstall</button>
+          </li>
+        {/each}</ul>{/if}
+        {#if wingetPlan}
+          <div class="review"><p>Uninstall plan {wingetPlan.id}: {wingetPlan.packageId} {wingetPlan.packageVersion}, {wingetPlan.state}. Expires {new Date(wingetPlan.expiresAtMs).toLocaleString()}.</p>
+            <p>{wingetPlan.warnings.join(' ')}</p>
+            {#if wingetPlan.state==='DRAFT'}<button type="button" onclick={() => void approveWingetUninstall()}>Approve exact plan</button>{/if}
+            {#if wingetPlan.state==='APPROVED' && wingetCapabilities?.uninstall}
+              <label for="winget-confirm">Enter plan ID to confirm uninstall</label><input id="winget-confirm" bind:value={wingetConfirmation} />
+              <button type="button" disabled={wingetBusy || wingetConfirmation!==wingetPlan.id} onclick={() => void executeWingetUninstall()}>Execute approved uninstall</button>
+            {/if}
+            {#if wingetPlan.state==='APPROVED' && !wingetCapabilities?.uninstall}<p>Uninstall execution is pending independent removal review.</p>{/if}
+          </div>
         {/if}
       </section>
       <section aria-label="Existing Windows applications">

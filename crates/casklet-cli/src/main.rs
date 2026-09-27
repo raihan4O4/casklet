@@ -1,3 +1,5 @@
+#[cfg(feature = "reviewed-removal")]
+use casklet_contracts::ExecuteWingetUninstallPlan;
 use casklet_contracts::{
     AddMode, AddResource, ApiError, AssociateInstalledApplication, CONTRACT_VERSION,
     CancelOperation, CaskView, CategorizeResource, CategoryView, CreateCask, CreateCategory,
@@ -12,6 +14,11 @@ use casklet_contracts::{
 };
 #[cfg(feature = "reviewed-removal")]
 use casklet_contracts::{ApproveRemovalPlan, CloseRemovalRun, ExecuteRemovalPlan};
+use casklet_contracts::{
+    ApproveWingetUninstallPlan, CancelWingetOperation, CloseWingetOperation,
+    CreateWingetUninstallPlan, GetWingetOperation, InstallWingetPackage, ListWingetInstallations,
+    ReviewWingetPackage, SearchWinget,
+};
 use casklet_infrastructure::inventory::{
     ExportProfile, describe_manifests, discover_manifests, preview_manifest, write_export,
 };
@@ -59,6 +66,10 @@ enum Command {
     Installed {
         #[command(subcommand)]
         action: InstalledAction,
+    },
+    Winget {
+        #[command(subcommand)]
+        action: WingetAction,
     },
     Cask {
         #[command(subcommand)]
@@ -152,6 +163,53 @@ enum InstalledAction {
     },
     List {
         cask_id: String,
+    },
+}
+
+#[derive(Debug, Subcommand)]
+enum WingetAction {
+    Capabilities,
+    Search {
+        query: String,
+    },
+    Review {
+        package_id: String,
+        package_version: String,
+    },
+    Install {
+        cask_id: String,
+        package_id: String,
+        package_version: String,
+        #[arg(long)]
+        hash: String,
+        #[arg(long)]
+        accept_package_agreements: bool,
+    },
+    List {
+        cask_id: String,
+    },
+    Operation {
+        id: String,
+    },
+    Cancel {
+        id: String,
+    },
+    Close {
+        id: String,
+    },
+    Plan {
+        installation_id: String,
+    },
+    Approve {
+        plan_id: String,
+        hash: String,
+    },
+    #[cfg(feature = "reviewed-removal")]
+    Execute {
+        plan_id: String,
+        hash: String,
+        #[arg(long)]
+        yes: bool,
     },
 }
 
@@ -296,6 +354,148 @@ fn main() -> ExitCode {
     };
     let correlation_id = uuid::Uuid::new_v4().to_string();
     let result = match cli.command {
+        Command::Winget {
+            action: WingetAction::Capabilities,
+        } => Ok(format!(
+            "{}\n",
+            serde_json::to_string_pretty(&service.winget_capabilities()).unwrap()
+        )),
+        Command::Winget {
+            action: WingetAction::Search { query },
+        } => service
+            .search_winget(
+                &SearchWinget {
+                    version: CONTRACT_VERSION,
+                    query,
+                },
+                &correlation_id,
+            )
+            .map(|v| match cli.output {
+                Output::Json => format!("{}\n", serde_json::to_string(&v).unwrap()),
+                Output::Table => format!("{}\n", v.sanitized_text),
+            }),
+        Command::Winget {
+            action:
+                WingetAction::Review {
+                    package_id,
+                    package_version,
+                },
+        } => service
+            .review_winget_package(
+                &ReviewWingetPackage {
+                    version: CONTRACT_VERSION,
+                    package_id,
+                    package_version,
+                },
+                &correlation_id,
+            )
+            .map(|v| format!("{}\n", serde_json::to_string_pretty(&v).unwrap())),
+        Command::Winget {
+            action:
+                WingetAction::Install {
+                    cask_id,
+                    package_id,
+                    package_version,
+                    hash,
+                    accept_package_agreements,
+                },
+        } => service
+            .install_winget_package(
+                &InstallWingetPackage {
+                    version: CONTRACT_VERSION,
+                    cask_id,
+                    package_id,
+                    package_version,
+                    review_hash: hash,
+                    accept_package_agreements,
+                },
+                &correlation_id,
+                &|id| eprintln!("WinGet operation: {id}"),
+            )
+            .map(|v| format!("{}\n", serde_json::to_string_pretty(&v).unwrap())),
+        Command::Winget {
+            action: WingetAction::List { cask_id },
+        } => service
+            .list_winget_installations(
+                &ListWingetInstallations {
+                    version: CONTRACT_VERSION,
+                    cask_id,
+                },
+                &correlation_id,
+            )
+            .map(|v| format!("{}\n", serde_json::to_string_pretty(&v).unwrap())),
+        Command::Winget {
+            action: WingetAction::Operation { id },
+        } => service
+            .get_winget_operation(
+                &GetWingetOperation {
+                    version: CONTRACT_VERSION,
+                    id,
+                },
+                &correlation_id,
+            )
+            .map(|v| format!("{}\n", serde_json::to_string_pretty(&v).unwrap())),
+        Command::Winget {
+            action: WingetAction::Cancel { id },
+        } => service
+            .cancel_winget_operation(
+                &CancelWingetOperation {
+                    version: CONTRACT_VERSION,
+                    id,
+                },
+                &correlation_id,
+            )
+            .map(|()| "Cancellation requested\n".into()),
+        Command::Winget {
+            action: WingetAction::Close { id },
+        } => service
+            .close_winget_operation(
+                &CloseWingetOperation {
+                    version: CONTRACT_VERSION,
+                    id,
+                },
+                &correlation_id,
+            )
+            .map(|()| "Uncertain operation closed as preserved\n".into()),
+        Command::Winget {
+            action: WingetAction::Plan { installation_id },
+        } => service
+            .create_winget_uninstall_plan(
+                &CreateWingetUninstallPlan {
+                    version: CONTRACT_VERSION,
+                    installation_id,
+                },
+                &correlation_id,
+            )
+            .map(|v| format!("{}\n", serde_json::to_string_pretty(&v).unwrap())),
+        Command::Winget {
+            action: WingetAction::Approve { plan_id, hash },
+        } => service
+            .approve_winget_uninstall_plan(
+                &ApproveWingetUninstallPlan {
+                    version: CONTRACT_VERSION,
+                    plan_id,
+                    plan_hash: hash,
+                },
+                &correlation_id,
+            )
+            .map(|v| format!("{}\n", serde_json::to_string_pretty(&v).unwrap())),
+        #[cfg(feature = "reviewed-removal")]
+        Command::Winget {
+            action: WingetAction::Execute { plan_id, hash, yes },
+        } => confirm_removal(&plan_id, yes, cli.no_input)
+            .and_then(|()| {
+                service.execute_winget_uninstall_plan(
+                    &ExecuteWingetUninstallPlan {
+                        version: CONTRACT_VERSION,
+                        plan_id,
+                        plan_hash: hash,
+                    },
+                    &correlation_id,
+                    &|id| eprintln!("WinGet operation: {id}"),
+                )
+            })
+            .map(|v| format!("{}\n", serde_json::to_string_pretty(&v).unwrap())),
         Command::Installed {
             action: InstalledAction::Search { query },
         } => service
