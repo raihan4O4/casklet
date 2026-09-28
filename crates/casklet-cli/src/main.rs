@@ -348,6 +348,7 @@ enum RecoveryAction {
 #[derive(Debug, Subcommand)]
 enum DiagnosticsAction {
     Bundle { output_path: String },
+    Backup,
 }
 
 #[derive(Debug, Subcommand)]
@@ -395,7 +396,11 @@ enum PlanAction {
 )]
 fn main() -> ExitCode {
     let cli = Cli::parse();
-    let service = match casklet_infrastructure::development_service() {
+    let service = match if cfg!(debug_assertions) {
+        casklet_infrastructure::development_service()
+    } else {
+        casklet_infrastructure::production_service()
+    } {
         Ok(service) => service,
         Err(error) => {
             eprintln!("Could not open Casklet data: {error}");
@@ -1142,6 +1147,22 @@ fn main() -> ExitCode {
             .map(|()| match cli.output {
                 Output::Table => format!("Wrote diagnostics to {output_path}\n"),
                 Output::Json => format!("{}\n", serde_json::json!({"outputPath":output_path})),
+            }),
+        Command::Diagnostics {
+            action: DiagnosticsAction::Backup,
+        } => service
+            .backup_database(
+                &casklet_contracts::BackupDatabase {
+                    version: CONTRACT_VERSION,
+                },
+                &correlation_id,
+            )
+            .map(|backup| match cli.output {
+                Output::Table => format!(
+                    "Database metadata backup: {} ({} bytes)\n",
+                    backup.path, backup.size_bytes
+                ),
+                Output::Json => format!("{}\n", serde_json::to_string(&backup).unwrap()),
             }),
         Command::Plan {
             action:

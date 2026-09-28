@@ -1,6 +1,6 @@
 # Casklet
 
-Casklet is a local-first lifecycle and resource manager for Windows 11 x64. Milestone 1 provides persistent empty Casks through the CLI and desktop.
+Casklet is a local-first lifecycle and resource manager for Windows 11 x64. The CLI and desktop share the same Rust core. The release gate remains open; see the [Milestone 10 checklist](docs/engineering/milestone-10-release-gates.md) and [user guide](docs/product/user-guide.md).
 
 ## Bootstrap
 
@@ -16,7 +16,7 @@ cargo xtask check
 
 Run `./scripts/bootstrap.ps1` in each new PowerShell session if Cargo is not already on `PATH`.
 
-The test profile uses temporary directories. Development data is confined to `.casklet-dev/` and is never shared with a production profile.
+The test profile uses temporary directories. Debug builds keep development data in `.casklet-dev/`. Release builds use `%LOCALAPPDATA%\\CaskletData` for metadata and `%USERPROFILE%\\Casklets` for managed content. Neither a database backup nor uninstalling the application is a substitute for backing up managed files.
 
 ## Milestone 1 CLI
 

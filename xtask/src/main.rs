@@ -94,13 +94,52 @@ fn check() -> Result<(), String> {
     check_contracts()
 }
 
+#[cfg(windows)]
+fn package() -> Result<(), String> {
+    let syft =
+        env::var("SYFT_PATH").map_err(|_| "set SYFT_PATH to a verified syft.exe".to_string())?;
+    run(
+        "pwsh",
+        &[
+            "-NoProfile",
+            "-File",
+            "scripts/package-release.ps1",
+            "-SyftPath",
+            &syft,
+        ],
+    )?;
+    run(
+        "pwsh",
+        &["-NoProfile", "-File", "scripts/verify-release.ps1"],
+    )
+}
+
+#[cfg(not(windows))]
+fn package() -> Result<(), String> {
+    Err("Release packaging requires Windows.".into())
+}
+
+#[cfg(windows)]
+fn verify_release() -> Result<(), String> {
+    run(
+        "pwsh",
+        &["-NoProfile", "-File", "scripts/verify-release.ps1"],
+    )
+}
+
+#[cfg(not(windows))]
+fn verify_release() -> Result<(), String> {
+    Err("Release verification requires Windows.".into())
+}
+
 fn main() -> ExitCode {
     let result = match env::args().nth(1).as_deref() {
         Some("bootstrap-check") => bootstrap_check(),
         Some("generate-contracts") => generate_contracts(),
         Some("check" | "test") => check(),
         Some("test-integration") => { println!("Integration suites begin with their owning milestones."); Ok(()) },
-        Some("package" | "verify-release") => Err("Release packaging is gated until product artifacts exist.".into()),
+        Some("package") => package(),
+        Some("verify-release") => verify_release(),
         _ => Err("usage: cargo xtask <bootstrap-check|generate-contracts|check|test|test-integration|package|verify-release>".into()),
     };
     match result {

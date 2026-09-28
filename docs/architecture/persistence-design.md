@@ -28,7 +28,7 @@ The most important limitation is that SQLite and the filesystem cannot participa
 Application-owned state:
 
 ```text
-%LocalAppData%\Casklet\
+%LocalAppData%\CaskletData\
 ├── db\
 │   └── casklet.db
 ├── logs\

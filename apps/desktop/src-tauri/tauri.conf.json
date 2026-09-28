@@ -15,5 +15,16 @@
     },
     "windows": [{ "title": "Casklet", "width": 960, "height": 640 }]
   },
-  "bundle": { "active": true, "targets": "nsis", "icon": ["icons/icon.ico"] }
+  "bundle": {
+    "active": true,
+    "targets": "nsis",
+    "icon": ["icons/icon.ico"],
+    "license": "Apache-2.0",
+    "licenseFile": "../../../LICENSE",
+    "resources": {
+      "../../../NOTICE": "NOTICE",
+      "../../../LICENSES/README.md": "THIRD-PARTY-NOTICES.md"
+    },
+    "windows": { "nsis": { "installMode": "currentUser" } }
+  }
 }

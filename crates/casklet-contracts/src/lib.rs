@@ -628,6 +628,20 @@ pub struct CreateDiagnosticsBundle {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct BackupDatabase {
+    pub version: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DatabaseBackupView {
+    pub version: u32,
+    pub path: String,
+    pub size_bytes: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct DiagnosticEvent {
     pub operation_id: Option<String>,
     pub code: String,
@@ -789,6 +803,8 @@ export type OperationView = { version: number; id: string; caskId: string; state
 export type RecoveryStatus = { version: number; operations: OperationView[]; pendingManifestCasks: string[] };
 export type RecoveryInspection = { version: number; operation: OperationView; mode: string; sourcePath: string; sourceStatus: string; stagingPath: string; stagingStatus: string; finalPath: string; finalStatus: string };
 export type CreateDiagnosticsBundle = { version: number; outputPath: string };
+export type BackupDatabase = { version: number };
+export type DatabaseBackupView = { version: number; path: string; sizeBytes: number };
 export type DiagnosticEvent = { operationId: string | null; code: string; atMs: number };
 export type DiagnosticsBundle = { schemaVersion: number; generatedAtMs: number; operations: OperationView[]; pendingManifestCount: number; events: DiagnosticEvent[]; eventsTruncated: boolean };
 export type CreateRemovalPlan = { version: number; caskId: string; resourceIds: string[]; categoryKey: string | null; permanent: boolean };

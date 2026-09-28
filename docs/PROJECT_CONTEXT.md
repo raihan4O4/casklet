@@ -1,6 +1,6 @@
 # Casklet Project Context
 
-Last updated: 2026-09-27
+Last updated: 2026-09-28
 
 This is the canonical handoff for humans and new Codex tasks. Keep it concise and current. Detailed specifications belong in linked documents.
 
@@ -14,7 +14,7 @@ Core principle:
 
 ## Current phase
 
-The initial design program is approved. Milestones 0–8 are merged into `develop`. Milestone 9 installer artifacts and cautious correlation are implemented on `codex/milestone-9-installer-artifacts` for review. Milestone 4 removal and Milestone 8 uninstall remain behind the disabled `reviewed-removal` feature and require independent security review before destructive functionality is enabled in public builds.
+The initial design program is approved. Milestones 0–9 are merged into `develop`. Milestone 10 release hardening is in progress on `codex/milestone-10-release-hardening`; manual Windows release gates remain open. Milestone 4 removal and Milestone 8 uninstall remain behind the disabled `reviewed-removal` feature and require independent security review before destructive functionality is enabled in public builds.
 
 - Phase 1 — Requirements: approved.
 - Phase 2 — Cross-platform and installation workflow: approved.
@@ -140,8 +140,15 @@ Exact dependencies will be approved during repository/tooling design; do not add
 - `docs/engineering/milestone-7-windows-inventory.md` — Windows registration discovery, reconciliation, and detach-only association.
 - `docs/engineering/milestone-8-winget-lifecycle.md` — WinGet provider, exact ownership evidence, journal, and uninstall plan.
 - `docs/engineering/milestone-9-installer-artifacts.md` — MSI/EXE inspection, reviewed launch, candidate correlation, and acceptance evidence.
+- `docs/engineering/milestone-10-release-gates.md` — build traceability, automated evidence, and pending manual release checks.
+- `docs/product/user-guide.md` — user workflows, safety, privacy, and troubleshooting.
+- `docs/security/milestone-10-review.md` — internal boundary audit and outstanding independent security review.
+- `docs/adr/0016-apache-2-project-license.md` — Apache-2.0 project-license decision and release consequences.
+- `docs/adr/0017-windows-install-and-data-paths.md` — separation of per-user NSIS program files and persistent data.
 - `domain model.txt` — original detailed Phase 3 source; preserve through normalization review.
 
 ## Current implementation milestone
 
-Milestones 0–8 are integrated into `develop`. Milestone 4 has immutable previews and journaled cleanup behind the disabled `reviewed-removal` feature (ADR 0012). Milestone 8 adds WinGet lifecycle with uninstall feature gated pending independent security review (ADR 0014). Milestone 9 adds managed installer artifacts, read-only MSI/Authenticode inspection, explicit MSI/EXE launch, durable recovery, and review-only Windows installation candidates (ADR 0015). Real installer/UAC behavior still needs isolated manual validation before public release. Keep `main` unchanged until planned milestone integration.
+Milestones 0–9 are integrated into `develop`. Milestone 10 adds release-profile storage separation, database integrity checks and pre-migration backup, initial accessibility improvements, packaging tooling, and product/release documentation. Its release gate remains open for Windows manual testing, installer uninstall evidence, performance profiling, and independent security review. Real installer/UAC behavior still needs isolated manual validation. Keep `main` unchanged until planned milestone integration.
+The project license is Apache-2.0 (selected during Milestone 10). CLI and GUI now expose an explicit, metadata-only SQLite backup through the shared application core. The Windows host available for this work has no isolated test machine or independent reviewer, so those release gates remain open.
+The per-user NSIS installer uses `%LOCALAPPDATA%\Casklet` for program files. A local install test exposed that the original release database path collided with this directory; the empty test install was uninstalled and operational state moved to `%LOCALAPPDATA%\CaskletData`. The corrected package passed a local silent install/create/uninstall preservation test; Windows Settings, upgrade, and clean-machine tests remain pending.

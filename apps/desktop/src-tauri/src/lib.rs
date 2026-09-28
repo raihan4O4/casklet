@@ -6,8 +6,12 @@ use tauri::Emitter;
 ///
 /// Panics if Tauri cannot initialize or run the desktop window.
 pub fn run() {
-    let service = casklet_infrastructure::development_service()
-        .expect("failed to open Casklet development state");
+    let service = if cfg!(debug_assertions) {
+        casklet_infrastructure::development_service()
+    } else {
+        casklet_infrastructure::production_service()
+    }
+    .expect("failed to open Casklet state");
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(service)
@@ -66,6 +70,7 @@ pub fn run() {
             inspect_recovery,
             retry_manifests,
             create_diagnostics_bundle,
+            backup_database,
             create_removal_plan,
             get_removal_plan,
             removal_capability,
@@ -710,6 +715,18 @@ fn create_diagnostics_bundle(
     request: casklet_contracts::CreateDiagnosticsBundle,
 ) -> Result<(), casklet_contracts::ApiError> {
     service.create_diagnostics_bundle(&request, "desktop")
+}
+
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+async fn backup_database(
+    service: tauri::State<'_, Service>,
+    request: casklet_contracts::BackupDatabase,
+) -> Result<casklet_contracts::DatabaseBackupView, casklet_contracts::ApiError> {
+    let service = service.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || service.backup_database(&request, "desktop"))
+        .await
+        .map_err(|e| worker_error(&e))?
 }
 
 #[tauri::command]
