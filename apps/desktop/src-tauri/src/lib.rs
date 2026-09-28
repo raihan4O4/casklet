@@ -6,8 +6,12 @@ use tauri::Emitter;
 ///
 /// Panics if Tauri cannot initialize or run the desktop window.
 pub fn run() {
-    let service = casklet_infrastructure::development_service()
-        .expect("failed to open Casklet development state");
+    let service = if cfg!(debug_assertions) {
+        casklet_infrastructure::development_service()
+    } else {
+        casklet_infrastructure::production_service()
+    }
+    .expect("failed to open Casklet state");
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(service)

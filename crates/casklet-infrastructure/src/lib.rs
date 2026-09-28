@@ -3,7 +3,11 @@ use casklet_application::projection::ManifestProjection;
 use casklet_application::{CaskRepository, CaskService, ManagedStorage};
 use casklet_domain::{Cask, CaskState};
 use rusqlite::{Connection, params};
-use std::{fs, path::PathBuf, time::Duration};
+use std::{
+    fs,
+    path::{Path, PathBuf},
+    time::Duration,
+};
 mod diagnostics;
 mod installer;
 mod installer_source;
@@ -42,6 +46,18 @@ impl SqliteCasks {
         let version: i64 = connection
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .map_err(|e| e.to_string())?;
+        let integrity: String = connection
+            .query_row("PRAGMA quick_check", [], |row| row.get(0))
+            .map_err(|e| format!("database integrity check failed: {e}"))?;
+        if integrity != "ok" {
+            return Err(format!("database integrity check failed: {integrity}"));
+        }
+        if !(0..=10).contains(&version) {
+            return Err(format!("unsupported database schema version: {version}"));
+        }
+        if version > 0 && version < 10 {
+            backup_before_migration(&connection, &this.db_path, version)?;
+        }
         match version {
             0 => {
                 let transaction = connection.transaction().map_err(|e| e.to_string())?;
@@ -54,7 +70,7 @@ impl SqliteCasks {
                 transaction.commit().map_err(|e| e.to_string())?;
             }
             1..=10 => {}
-            _ => return Err(format!("unsupported database schema version: {version}")),
+            _ => unreachable!("schema version checked above"),
         }
         if version == 1 || version == 0 {
             let transaction = connection.transaction().map_err(|e| e.to_string())?;
@@ -172,6 +188,29 @@ impl SqliteCasks {
     }
 }
 
+fn backup_before_migration(
+    connection: &Connection,
+    db_path: &Path,
+    version: i64,
+) -> Result<(), String> {
+    let db_dir = db_path.parent().ok_or("database has no parent directory")?;
+    let backup_parent = if db_dir.file_name().is_some_and(|name| name == "db") {
+        db_dir.parent().unwrap_or(db_dir)
+    } else {
+        db_dir
+    };
+    let backup_dir = backup_parent.join("backups");
+    fs::create_dir_all(&backup_dir).map_err(|e| e.to_string())?;
+    let backup_path = backup_dir.join(format!(
+        "casklet-pre-v{version}-{}.db",
+        uuid::Uuid::new_v4()
+    ));
+    connection
+        .backup(rusqlite::MAIN_DB, &backup_path, None)
+        .map_err(|e| format!("pre-migration backup failed: {e}"))?;
+    Ok(())
+}
+
 fn row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Cask> {
     let state_code: String = row.get(7)?;
     let state = CaskState::from_code(&state_code).ok_or_else(|| {
@@ -251,12 +290,43 @@ pub fn development_service() -> Result<CaskService<SqliteCasks, LocalStorage>, S
         || PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../.casklet-dev"),
         PathBuf::from,
     );
+    service_at(&root, root.join("casks"))
+}
+
+/// Opens the installed per-user profile, separate from development state.
+/// # Errors
+/// Returns an error if the user profile is unavailable or storage cannot open.
+pub fn production_service() -> Result<CaskService<SqliteCasks, LocalStorage>, String> {
+    #[cfg(windows)]
+    let root = std::env::var_os("LOCALAPPDATA")
+        .map(PathBuf::from)
+        .ok_or("LOCALAPPDATA is unavailable")?
+        .join("Casklet");
+    #[cfg(not(windows))]
+    let root = std::env::var_os("HOME")
+        .map(PathBuf::from)
+        .ok_or("HOME is unavailable")?
+        .join(".local/share/Casklet");
+    #[cfg(windows)]
+    let casks = std::env::var_os("USERPROFILE")
+        .map(PathBuf::from)
+        .ok_or("USERPROFILE is unavailable")?
+        .join("Casklets");
+    #[cfg(not(windows))]
+    let casks = root.join("casks");
+    service_at(&root, casks)
+}
+
+fn service_at(
+    root: &Path,
+    casks: PathBuf,
+) -> Result<CaskService<SqliteCasks, LocalStorage>, String> {
     let repository = SqliteCasks::open(root.join("db/casklet.db"))?;
     repository.detect_abandoned_operations()?;
     repository.detect_abandoned_removals()?;
     let service = CaskService {
         repository,
-        storage: LocalStorage::new(root.join("casks")),
+        storage: LocalStorage::new(casks),
     };
     let _ = service.retry_manifest_projections("startup");
     Ok(service)
@@ -279,6 +349,68 @@ mod tests {
     };
     use casklet_domain::resource::IntakeMode;
     use casklet_domain::resource::Resource;
+
+    #[test]
+    fn every_prerelease_schema_upgrades_with_a_consistent_backup() {
+        let migrations = [
+            include_str!("../../../migrations/0001_casks.sql"),
+            include_str!("../../../migrations/0002_resources.sql"),
+            include_str!("../../../migrations/0003_operations.sql"),
+            include_str!("../../../migrations/0004_removal_plans.sql"),
+            include_str!("../../../migrations/0005_removal_execution.sql"),
+            include_str!("../../../migrations/0006_permanent_disposal.sql"),
+            include_str!("../../../migrations/0007_portable_installations.sql"),
+            include_str!("../../../migrations/0008_windows_inventory.sql"),
+            include_str!("../../../migrations/0009_winget_lifecycle.sql"),
+            include_str!("../../../migrations/0010_installer_artifacts.sql"),
+        ];
+        for version in 1..=10 {
+            let root = std::env::temp_dir().join(format!(
+                "casklet-upgrade-{version}-{}",
+                uuid::Uuid::new_v4()
+            ));
+            let db = root.join("db/casklet.db");
+            fs::create_dir_all(db.parent().unwrap()).unwrap();
+            let connection = Connection::open(&db).unwrap();
+            for sql in &migrations[..version] {
+                connection.execute_batch(sql).unwrap();
+            }
+            let schema_version = i64::try_from(version).unwrap();
+            connection
+                .pragma_update(None, "user_version", schema_version)
+                .unwrap();
+            connection.execute("INSERT INTO casks(id,name,storage_key,managed_storage_root,created_at_ms,updated_at_ms,revision,state) VALUES ('existing','Existing','existing','C:/existing',1,1,0,'ACTIVE')", []).unwrap();
+            drop(connection);
+            let reopened = SqliteCasks::open(db).unwrap();
+            assert_eq!(reopened.list().unwrap()[0].name, "Existing");
+            if version < 10 {
+                let backups = fs::read_dir(root.join("backups"))
+                    .unwrap()
+                    .collect::<Result<Vec<_>, _>>()
+                    .unwrap();
+                assert_eq!(backups.len(), 1);
+                let backup = Connection::open(backups[0].path()).unwrap();
+                let backed_up_version: i64 = backup
+                    .query_row("PRAGMA user_version", [], |row| row.get(0))
+                    .unwrap();
+                assert_eq!(backed_up_version, schema_version);
+            }
+            drop(reopened);
+            fs::remove_dir_all(root).unwrap();
+        }
+    }
+
+    #[test]
+    fn corrupt_database_is_preserved_and_rejected() {
+        let root = std::env::temp_dir().join(format!("casklet-corrupt-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let db = root.join("state.db");
+        let bytes = b"not a SQLite database";
+        fs::write(&db, bytes).unwrap();
+        assert!(SqliteCasks::open(db.clone()).is_err());
+        assert_eq!(fs::read(db).unwrap(), bytes);
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[cfg(windows)]
     #[test]

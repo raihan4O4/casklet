@@ -3,7 +3,7 @@
   import { listen } from '@tauri-apps/api/event';
   import { getCurrentWindow } from '@tauri-apps/api/window';
   import { open, save } from '@tauri-apps/plugin-dialog';
-  import { onMount } from 'svelte';
+  import { onMount, tick } from 'svelte';
   import type { AddMode, ApiError, CaskView, CategoryView, ResourceView, StorageSummary, RecoveryStatus, RecoveryInspection, OperationView, RemovalPlanView, PortableZipPreview, PortableInstallationView, DetectedApplicationView, WingetCapabilities, WingetPackageReview, WingetInstallationView, WingetUninstallPlanView, WingetOperationView, WingetSearchResult, InstallerInspection, InstallerArtifactView, InstallerOperationView } from '../contracts/generated/casklet';
   import { CONTRACT_VERSION } from '../contracts/generated/casklet';
 
@@ -333,7 +333,7 @@
     finally { busy = false; }
   }
   async function inspect(id: string) {
-    try { selected = await invoke<CaskView>('get_cask', { request: { version: CONTRACT_VERSION, id } }); resetInstallerReview(); pendingPath = ''; pendingMode = ''; selectedResource = null; removalPlan = null; error = ''; await refreshResources(); }
+    try { selected = await invoke<CaskView>('get_cask', { request: { version: CONTRACT_VERSION, id } }); resetInstallerReview(); pendingPath = ''; pendingMode = ''; selectedResource = null; removalPlan = null; error = ''; await tick(); document.getElementById('cask-detail-heading')?.focus(); await refreshResources(); }
     catch (cause) { error = message(cause); }
   }
   async function refreshResources() {
@@ -408,14 +408,15 @@
   });
 </script>
 
-<main>
+<a class="skip-link" href="#main-content">Skip to main content</a>
+<main id="main-content">
   <p class="eyebrow">Casklet</p>
   <h1>Your Casks</h1>
   <form onsubmit={(event) => { event.preventDefault(); void create(); }}>
     <label for="cask-name">New Cask name</label>
     <div class="form-row"><input id="cask-name" bind:value={name} maxlength="120" required /><button disabled={busy}>Create Cask</button></div>
   </form>
-  {#if error}<p class="error" role="alert">{error}</p>{/if}
+  {#if error}<p class="error" role="alert">{error} Check the selected item and try again. If the problem continues, save diagnostics.</p>{/if}
   <section aria-label="Casks">
     {#if casks.length === 0}<p>No Casks yet.</p>{/if}
     <ul>{#each casks as cask (cask.id)}<li><button class="cask-link" onclick={() => void inspect(cask.id)}>{cask.name}</button></li>{/each}</ul>
@@ -462,7 +463,7 @@
   {/if}
   {#if selected}
     <section aria-label="Cask details">
-      <h2>{selected.name}</h2>
+      <h2 id="cask-detail-heading" tabindex="-1">{selected.name}</h2>
       <button type="button" onclick={() => void exportCask('json')}>Export portable JSON</button>
       <button type="button" onclick={() => void exportCask('markdown')}>Export report</button>
       <button type="button" onclick={() => void exportCask('json', true)}>Export machine JSON</button>

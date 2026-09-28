@@ -395,7 +395,11 @@ enum PlanAction {
 )]
 fn main() -> ExitCode {
     let cli = Cli::parse();
-    let service = match casklet_infrastructure::development_service() {
+    let service = match if cfg!(debug_assertions) {
+        casklet_infrastructure::development_service()
+    } else {
+        casklet_infrastructure::production_service()
+    } {
         Ok(service) => service,
         Err(error) => {
             eprintln!("Could not open Casklet data: {error}");

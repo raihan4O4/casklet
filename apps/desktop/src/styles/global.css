@@ -64,6 +64,35 @@ button:disabled {
   opacity: 0.6;
   cursor: wait;
 }
+
+:focus-visible {
+  outline: 3px solid #ffe297;
+  outline-offset: 3px;
+}
+
+.skip-link {
+  position: absolute;
+  left: 1rem;
+  top: -5rem;
+  padding: 0.7rem 1rem;
+  color: #102115;
+  background: #ffe297;
+  z-index: 10;
+}
+
+.skip-link:focus {
+  top: 1rem;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto !important;
+    animation-duration: 0.01ms !important;
+    transition-duration: 0.01ms !important;
+  }
+}
 .cask-link {
   background: transparent;
   color: #8ed7a4;
