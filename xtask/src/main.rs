@@ -99,7 +99,7 @@ fn package() -> Result<(), String> {
     let syft =
         env::var("SYFT_PATH").map_err(|_| "set SYFT_PATH to a verified syft.exe".to_string())?;
     run(
-        "powershell",
+        "pwsh",
         &[
             "-NoProfile",
             "-File",
@@ -109,7 +109,7 @@ fn package() -> Result<(), String> {
         ],
     )?;
     run(
-        "powershell",
+        "pwsh",
         &["-NoProfile", "-File", "scripts/verify-release.ps1"],
     )
 }
@@ -122,7 +122,7 @@ fn package() -> Result<(), String> {
 #[cfg(windows)]
 fn verify_release() -> Result<(), String> {
     run(
-        "powershell",
+        "pwsh",
         &["-NoProfile", "-File", "scripts/verify-release.ps1"],
     )
 }
