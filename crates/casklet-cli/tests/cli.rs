@@ -39,6 +39,16 @@ fn create_list_get_across_processes() {
     let item: serde_json::Value = serde_json::from_slice(&shown_json.stdout).unwrap();
     assert_eq!(item["name"], "My Work");
     assert_eq!(item["id"], id);
+    let backup_output = run(&["--output", "json", "diagnostics", "backup"]);
+    assert!(
+        backup_output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&backup_output.stderr)
+    );
+    let backup: serde_json::Value = serde_json::from_slice(&backup_output.stdout).unwrap();
+    let backup_path = backup["path"].as_str().unwrap();
+    assert!(std::path::Path::new(backup_path).starts_with(root.join("backups")));
+    assert!(std::path::Path::new(backup_path).is_file());
     fs::remove_dir_all(root).unwrap();
 }
 

@@ -36,6 +36,29 @@ afterEach(() => {
   calls.drop = null;
 });
 
+test("settings creates a metadata-only backup through the shared command", async () => {
+  calls.invoke.mockImplementation(async (command: string) => {
+    if (command === "list_casks" || command === "list_operations") return [];
+    if (command === "recovery_status")
+      return { version: 1, operations: [], pendingManifestCasks: [] };
+    if (command === "backup_database")
+      return { version: 1, path: "C:/backup.db", sizeBytes: 4096 };
+    throw new Error(`Unexpected command: ${command}`);
+  });
+  render(App);
+  await fireEvent.click(
+    screen.getByRole("button", { name: "Back up database metadata" }),
+  );
+  await waitFor(() =>
+    expect(calls.invoke).toHaveBeenCalledWith("backup_database", {
+      request: { version: 1 },
+    }),
+  );
+  expect((await screen.findByRole("status")).textContent).toContain(
+    "Managed Cask files are not included",
+  );
+});
+
 test("a dropped file waits for an explicit intake mode and Add action", async () => {
   const cask = {
     version: 1,

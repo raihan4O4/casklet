@@ -9,7 +9,7 @@ if ($provenance.cargo_lock_sha256 -ne (Get-FileHash -LiteralPath (Join-Path $rep
 if ($provenance.pnpm_lock_sha256 -ne (Get-FileHash -LiteralPath (Join-Path $repo 'pnpm-lock.yaml') -Algorithm SHA256).Hash.ToLowerInvariant()) { throw 'pnpm-lock.yaml differs from release provenance.' }
 
 $lines = @(Get-Content -LiteralPath (Join-Path $output 'SHA256SUMS.txt'))
-if ($lines.Count -lt 4) { throw 'Release checksum list is incomplete.' }
+if ($lines.Count -lt 6) { throw 'Release checksum list is incomplete.' }
 foreach ($line in $lines) {
     if ($line -notmatch '^([0-9a-f]{64})  ([^\\/]+)$') { throw "Invalid checksum line: $line" }
     $file = Join-Path $output $Matches[2]

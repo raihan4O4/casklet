@@ -1,4 +1,5 @@
 //! SQLite and managed-storage adapters.
+use casklet_application::backup::DatabaseBackupRepository;
 use casklet_application::projection::ManifestProjection;
 use casklet_application::{CaskRepository, CaskService, ManagedStorage};
 use casklet_domain::{Cask, CaskState};
@@ -193,6 +194,21 @@ fn backup_before_migration(
     db_path: &Path,
     version: i64,
 ) -> Result<(), String> {
+    create_database_backup(connection, db_path, &format!("pre-v{version}"))?;
+    Ok(())
+}
+
+fn create_database_backup(
+    connection: &Connection,
+    db_path: &Path,
+    label: &str,
+) -> Result<(PathBuf, u64), String> {
+    let integrity: String = connection
+        .query_row("PRAGMA quick_check", [], |row| row.get(0))
+        .map_err(|e| format!("source integrity check failed: {e}"))?;
+    if integrity != "ok" {
+        return Err(format!("source integrity check failed: {integrity}"));
+    }
     let db_dir = db_path.parent().ok_or("database has no parent directory")?;
     let backup_parent = if db_dir.file_name().is_some_and(|name| name == "db") {
         db_dir.parent().unwrap_or(db_dir)
@@ -201,14 +217,30 @@ fn backup_before_migration(
     };
     let backup_dir = backup_parent.join("backups");
     fs::create_dir_all(&backup_dir).map_err(|e| e.to_string())?;
-    let backup_path = backup_dir.join(format!(
-        "casklet-pre-v{version}-{}.db",
-        uuid::Uuid::new_v4()
-    ));
+    let backup_path = backup_dir.join(format!("casklet-{label}-{}.db", uuid::Uuid::new_v4()));
     connection
         .backup(rusqlite::MAIN_DB, &backup_path, None)
-        .map_err(|e| format!("pre-migration backup failed: {e}"))?;
-    Ok(())
+        .map_err(|e| format!("database backup failed: {e}"))?;
+    let verified =
+        Connection::open(&backup_path).map_err(|e| format!("backup could not be reopened: {e}"))?;
+    verified
+        .execute_batch("PRAGMA journal_mode=DELETE")
+        .map_err(|e| format!("backup journal could not be finalized: {e}"))?;
+    let backup_integrity: String = verified
+        .query_row("PRAGMA quick_check", [], |row| row.get(0))
+        .map_err(|e| format!("backup integrity check failed: {e}"))?;
+    if backup_integrity != "ok" {
+        return Err(format!("backup integrity check failed: {backup_integrity}"));
+    }
+    let size = fs::metadata(&backup_path).map_err(|e| e.to_string())?.len();
+    Ok((backup_path, size))
+}
+
+impl DatabaseBackupRepository for SqliteCasks {
+    fn backup_database(&self) -> Result<(String, u64), String> {
+        let (path, size) = create_database_backup(&self.connection()?, &self.db_path, "manual")?;
+        Ok((path.to_string_lossy().into_owned(), size))
+    }
 }
 
 fn row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Cask> {
@@ -300,8 +332,9 @@ pub fn production_service() -> Result<CaskService<SqliteCasks, LocalStorage>, St
     #[cfg(windows)]
     let root = std::env::var_os("LOCALAPPDATA")
         .map(PathBuf::from)
-        .ok_or("LOCALAPPDATA is unavailable")?
-        .join("Casklet");
+        .ok_or("LOCALAPPDATA is unavailable")?;
+    #[cfg(windows)]
+    let root = windows_data_root(&root);
     #[cfg(not(windows))]
     let root = std::env::var_os("HOME")
         .map(PathBuf::from)
@@ -315,6 +348,11 @@ pub fn production_service() -> Result<CaskService<SqliteCasks, LocalStorage>, St
     #[cfg(not(windows))]
     let casks = root.join("casks");
     service_at(&root, casks)
+}
+
+#[cfg(windows)]
+fn windows_data_root(local_app_data: &Path) -> PathBuf {
+    local_app_data.join("CaskletData")
 }
 
 fn service_at(
@@ -337,8 +375,8 @@ mod tests {
     use super::*;
     use casklet_application::resource::{IntakePaths, ResourceRepository, ResourceStorage};
     use casklet_contracts::{
-        AddMode, AddResource, CONTRACT_VERSION, CategorizeResource, CreateCask, CreateCategory,
-        GetCask, GetResource, GetStorageSummary, ListCasks, ListResources,
+        AddMode, AddResource, BackupDatabase, CONTRACT_VERSION, CategorizeResource, CreateCask,
+        CreateCategory, GetCask, GetResource, GetStorageSummary, ListCasks, ListResources,
     };
     use casklet_contracts::{
         ApproveRemovalPlan, CloseRemovalRun, CreateRemovalPlan, ExecuteRemovalPlan, GetRemovalPlan,
@@ -349,6 +387,130 @@ mod tests {
     };
     use casklet_domain::resource::IntakeMode;
     use casklet_domain::resource::Resource;
+
+    #[cfg(windows)]
+    #[test]
+    fn installed_program_directory_is_separate_from_operational_data() {
+        let local_app_data = Path::new(r"C:\Users\tester\AppData\Local");
+        let install_root = local_app_data.join("Casklet");
+        let data_root = windows_data_root(local_app_data);
+        assert_ne!(data_root, install_root);
+        assert!(!data_root.starts_with(&install_root));
+        assert_eq!(data_root, local_app_data.join("CaskletData"));
+    }
+
+    #[test]
+    #[ignore = "Run explicitly in release mode on the supported Windows reference machine"]
+    fn profile_thousand_resource_inventory_and_storage() {
+        use std::time::Instant;
+        let root = std::env::temp_dir().join(format!("casklet-profile-{}", uuid::Uuid::new_v4()));
+        let db = root.join("db/casklet.db");
+        let service = CaskService {
+            repository: SqliteCasks::open(db.clone()).unwrap(),
+            storage: LocalStorage::new(root.join("casks")),
+        };
+        let cask = service
+            .create(
+                &CreateCask {
+                    version: CONTRACT_VERSION,
+                    name: "Profile".into(),
+                },
+                "profile",
+            )
+            .unwrap();
+        let source = root.join("source");
+        fs::create_dir_all(&source).unwrap();
+        let mut connection = Connection::open(&db).unwrap();
+        connection.execute_batch("PRAGMA foreign_keys=ON").unwrap();
+        let transaction = connection.transaction().unwrap();
+        for index in 0..1000 {
+            let id = format!("resource-{index}");
+            let path = source.join(format!("item-{index}.txt"));
+            fs::write(&path, b"one").unwrap();
+            let path_text = path.to_string_lossy().into_owned();
+            transaction.execute("INSERT INTO resources(id,kind,display_name,management,provenance,availability,size_bytes,size_measurement,unknown_entries,created_at_ms,revision) VALUES (?1,'FILE',?2,'REFERENCED','USER_SELECTED','PRESENT',3,'EXACT',0,1,0)", params![id,format!("item-{index}.txt")]).unwrap();
+            transaction.execute("INSERT INTO resource_locations(id,resource_id,path_display,path_key,containment,is_primary,first_seen_at_ms) VALUES (?1,?2,?3,?3,'EXTERNAL',1,1)", params![format!("location-{index}"),id,path_text]).unwrap();
+            transaction.execute("INSERT INTO resource_associations(id,cask_id,resource_id,category_key,relationship,removal_policy,added_at_ms) VALUES (?1,?2,?3,'other','REFERENCED','DETACH_ONLY',1)", params![format!("association-{index}"),cask.id,id]).unwrap();
+        }
+        transaction.commit().unwrap();
+        drop(connection);
+        let start = Instant::now();
+        let inventory = service
+            .list_resources(
+                &ListResources {
+                    version: CONTRACT_VERSION,
+                    cask_id: cask.id.clone(),
+                },
+                "profile",
+            )
+            .unwrap();
+        let inventory_elapsed = start.elapsed();
+        let start = Instant::now();
+        let summary = service
+            .storage_summary(
+                &GetStorageSummary {
+                    version: CONTRACT_VERSION,
+                    cask_id: cask.id,
+                },
+                "profile",
+            )
+            .unwrap();
+        let summary_elapsed = start.elapsed();
+        assert_eq!(inventory.len(), 1000);
+        assert_eq!(summary.referenced_logical_bytes, 3000);
+        println!(
+            "inventory_1000_ms={} storage_summary_1000_ms={}",
+            inventory_elapsed.as_millis(),
+            summary_elapsed.as_millis()
+        );
+        drop(service);
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn manual_backup_is_consistent_and_keeps_managed_files_separate() {
+        let root = std::env::temp_dir().join(format!("casklet-backup-{}", uuid::Uuid::new_v4()));
+        let service = CaskService {
+            repository: SqliteCasks::open(root.join("db/casklet.db")).unwrap(),
+            storage: LocalStorage::new(root.join("casks")),
+        };
+        let cask = service
+            .create(
+                &CreateCask {
+                    version: CONTRACT_VERSION,
+                    name: "Backup test".into(),
+                },
+                "test",
+            )
+            .unwrap();
+        let managed = PathBuf::from(&cask.managed_storage_root).join("content/keep.txt");
+        fs::write(&managed, b"managed file stays outside the database backup").unwrap();
+        let result = service
+            .backup_database(
+                &BackupDatabase {
+                    version: CONTRACT_VERSION,
+                },
+                "test",
+            )
+            .unwrap();
+        let backup_path = PathBuf::from(&result.path);
+        assert!(backup_path.starts_with(root.join("backups")));
+        assert_eq!(fs::metadata(&backup_path).unwrap().len(), result.size_bytes);
+        let backup = Connection::open(&backup_path).unwrap();
+        let name: String = backup
+            .query_row("SELECT name FROM casks WHERE id=?1", [&cask.id], |row| {
+                row.get(0)
+            })
+            .unwrap();
+        assert_eq!(name, "Backup test");
+        assert_eq!(
+            fs::read(managed).unwrap(),
+            b"managed file stays outside the database backup"
+        );
+        drop(backup);
+        drop(service);
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn every_prerelease_schema_upgrades_with_a_consistent_backup() {

@@ -7,6 +7,8 @@
 - Add visible keyboard focus, skip navigation, and reduced-motion handling.
 - Add per-user NSIS packaging, CLI ZIP, checksum, provenance, and SPDX SBOM generation tooling.
 - Document user safety, recovery, privacy, release evidence, and pending manual gates.
+- License Casklet under Apache-2.0 and include its license in candidate artifacts.
+- Add a shared database backup action to CLI and desktop Settings, plus an operation history view.
 
 All notable changes will be documented here.
 

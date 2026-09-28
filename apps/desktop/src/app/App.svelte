@@ -4,7 +4,7 @@
   import { getCurrentWindow } from '@tauri-apps/api/window';
   import { open, save } from '@tauri-apps/plugin-dialog';
   import { onMount, tick } from 'svelte';
-  import type { AddMode, ApiError, CaskView, CategoryView, ResourceView, StorageSummary, RecoveryStatus, RecoveryInspection, OperationView, RemovalPlanView, PortableZipPreview, PortableInstallationView, DetectedApplicationView, WingetCapabilities, WingetPackageReview, WingetInstallationView, WingetUninstallPlanView, WingetOperationView, WingetSearchResult, InstallerInspection, InstallerArtifactView, InstallerOperationView } from '../contracts/generated/casklet';
+  import type { AddMode, ApiError, CaskView, CategoryView, ResourceView, StorageSummary, RecoveryStatus, RecoveryInspection, OperationView, RemovalPlanView, PortableZipPreview, PortableInstallationView, DetectedApplicationView, WingetCapabilities, WingetPackageReview, WingetInstallationView, WingetUninstallPlanView, WingetOperationView, WingetSearchResult, InstallerInspection, InstallerArtifactView, InstallerOperationView, DatabaseBackupView } from '../contracts/generated/casklet';
   import { CONTRACT_VERSION } from '../contracts/generated/casklet';
 
   let casks: CaskView[] = $state([]);
@@ -12,6 +12,7 @@
   let name = $state('');
   let error = $state('');
   let busy = $state(false);
+  let backupBusy = $state(false);
   let resources: ResourceView[] = $state([]);
   let categories: CategoryView[] = $state([]);
   let summary: StorageSummary | null = $state(null);
@@ -319,6 +320,15 @@
       if (outputPath) { await invoke('create_diagnostics_bundle', { request: { version: CONTRACT_VERSION, outputPath } }); progress = 'Diagnostic bundle saved.'; }
     } catch (cause) { error = message(cause); }
   }
+  async function backupDatabase() {
+    backupBusy = true;
+    try {
+      const backup = await invoke<DatabaseBackupView>('backup_database', { request: { version: CONTRACT_VERSION } });
+      progress = `Database metadata backup saved to ${backup.path} (${backup.sizeBytes} bytes). Managed Cask files are not included.`;
+      error = '';
+    } catch (cause) { error = `Database backup failed: ${message(cause)}. Check free disk space; the original database remains in place.`; }
+    finally { backupBusy = false; }
+  }
   async function create() {
     busy = true;
     try {
@@ -329,6 +339,7 @@
       await refresh();
       await refreshResources();
       await refreshRecovery();
+      await tick(); document.getElementById('cask-detail-heading')?.focus();
     } catch (cause) { error = message(cause); }
     finally { busy = false; }
   }
@@ -412,16 +423,23 @@
 <main id="main-content">
   <p class="eyebrow">Casklet</p>
   <h1>Your Casks</h1>
+  <nav aria-label="Main sections" class="section-nav">
+    <a href="#casks">Casks</a>
+    <a href="#operations">Operations</a>
+    {#if recovery && (recovery.operations.length || recovery.pendingManifestCasks.length)}<a href="#recovery">Recovery</a>{/if}
+    {#if selected}<a href="#cask-detail">Cask detail</a>{/if}
+    <a href="#settings">Settings</a>
+  </nav>
   <form onsubmit={(event) => { event.preventDefault(); void create(); }}>
     <label for="cask-name">New Cask name</label>
     <div class="form-row"><input id="cask-name" bind:value={name} maxlength="120" required /><button disabled={busy}>Create Cask</button></div>
   </form>
   {#if error}<p class="error" role="alert">{error} Check the selected item and try again. If the problem continues, save diagnostics.</p>{/if}
-  <section aria-label="Casks">
+  {#if progress}<p role="status">{progress}</p>{/if}
+  <section id="casks" aria-label="Casks">
     {#if casks.length === 0}<p>No Casks yet.</p>{/if}
     <ul>{#each casks as cask (cask.id)}<li><button class="cask-link" onclick={() => void inspect(cask.id)}>{cask.name}</button></li>{/each}</ul>
   </section>
-  <button type="button" onclick={() => void saveDiagnostics()}>Save diagnostics</button>
   <button type="button" onclick={() => void chooseRecoveryManifest()}>Preview recovery manifest</button>
   <button type="button" onclick={() => void scanRecoveryManifests()}>Scan local recovery manifests</button>
   {#if discoveredManifests}
@@ -432,17 +450,18 @@
     <p>{recoveryManifestPreview}</p>
     <button type="button" onclick={() => void recoverFromManifest()}>Recover unverified metadata</button>
   {/if}
-  {#if operations.some((item) => item.state === 'RUNNING')}
-    <section aria-label="Running operations"><h2>Running operations</h2><ul>
-      {#each operations.filter((item) => item.state === 'RUNNING') as operation (operation.id)}
-        <li>{operation.id}: {operation.step} {operation.progressCompleted}{operation.progressTotal === null ? '' : `/${operation.progressTotal}`}
-          <button type="button" disabled={operation.cancellationRequested} onclick={() => void cancelOperation(operation.id)}>{operation.cancellationRequested ? 'Cancellation requested' : 'Cancel'}</button>
+  <section id="operations" aria-label="Operation center">
+    <h2>Operations</h2>
+    {#if operations.length === 0}<p>No operations yet.</p>{:else}<ul>
+      {#each [...operations].sort((a, b) => b.updatedAtMs - a.updatedAtMs).slice(0, 25) as operation (operation.id)}
+        <li>{operation.id}: {operation.state.toLowerCase()}, {operation.step} {operation.progressCompleted}{operation.progressTotal === null ? '' : `/${operation.progressTotal}`}
+          {#if operation.state === 'RUNNING'}<button type="button" disabled={operation.cancellationRequested} onclick={() => void cancelOperation(operation.id)}>{operation.cancellationRequested ? 'Cancellation requested' : 'Cancel'}</button>{/if}
         </li>
       {/each}
-    </ul></section>
-  {/if}
+    </ul>{/if}
+  </section>
   {#if recovery && (recovery.operations.length || recovery.pendingManifestCasks.length)}
-    <section aria-label="Recovery status">
+    <section id="recovery" aria-label="Recovery status">
       <h2>Recovery needed</h2>
       <p>Casklet keeps uncertain files for inspection. Recovery only completes work that was already registered and still verifies.</p>
       <ul>{#each recovery.operations as operation (operation.id)}
@@ -462,7 +481,7 @@
     </section>
   {/if}
   {#if selected}
-    <section aria-label="Cask details">
+    <section id="cask-detail" aria-label="Cask details">
       <h2 id="cask-detail-heading" tabindex="-1">{selected.name}</h2>
       <button type="button" onclick={() => void exportCask('json')}>Export portable JSON</button>
       <button type="button" onclick={() => void exportCask('markdown')}>Export report</button>
@@ -618,7 +637,6 @@
             <button type="button" disabled={busy || !pendingMode} onclick={() => void addResource()}>Add resource</button>
           </div>
         {/if}
-        {#if progress}<p role="status">{progress}</p>{/if}
         {#if activeOperation}<button type="button" onclick={() => void cancelOperation(activeOperation)}>Cancel operation</button>{/if}
       </section>
       <section aria-label="Resource inventory">
@@ -685,4 +703,12 @@
       </dl></section>{/if}
     </section>
   {/if}
+  <section id="settings" aria-label="Settings and privacy">
+    <h2>Settings and privacy</h2>
+    <p>Casklet stores its database locally. A database backup contains metadata only; managed files need a separate backup. Casklet has no account or default telemetry.</p>
+    <button type="button" disabled={backupBusy} onclick={() => void backupDatabase()}>{backupBusy ? 'Backing up…' : 'Back up database metadata'}</button>
+    <button type="button" onclick={() => void saveDiagnostics()}>Save diagnostics</button>
+    <p>Review diagnostics before sharing them because paths and operation details may be sensitive.</p>
+    <p>Destructive cleanup is {removalEnabled ? 'available after plan review' : 'disabled pending independent security review'}.</p>
+  </section>
 </main>

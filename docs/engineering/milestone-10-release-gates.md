@@ -2,7 +2,7 @@
 
 Status: implementation in review; public alpha gate remains closed.
 
-The packaging spike produced `Casklet_0.0.0_x64-setup.exe` with Tauri's NSIS bundler on this Windows host. The supported installer choice is per-user NSIS. The installer has not yet been run or uninstalled on a clean Windows 11 x64 machine.
+The packaging spike produced `Casklet_0.0.0_x64-setup.exe` with Tauri's NSIS bundler on this Windows host. The supported installer choice is per-user NSIS. A local-host install exposed a collision between its `%LOCALAPPDATA%\Casklet` program directory and the former database path. The empty test install was removed; release state now uses `%LOCALAPPDATA%\CaskletData`. The corrected package passed the local preservation test below. A clean Windows 11 x64 machine has not been tested.
 
 ## Build and traceability
 
@@ -19,22 +19,28 @@ Run `cargo xtask check` and, from a clean Windows 11 x64 checkout with a checksu
 
 Record OS build, filesystem, volume layout, Git revision, tester, date, screenshots/logs, and result for each row before changing this document's status.
 
-| Area            | Required observation                                                                                                         | Result  |
-| --------------- | ---------------------------------------------------------------------------------------------------------------------------- | ------- |
-| Fresh install   | Per-user NSIS installs without elevation; CLI ZIP runs; development data is not opened                                       | Pending |
-| Upgrade         | Install candidate over a prior published build; existing Casks and managed content remain available                          | Pending |
-| Cask workflow   | Create, reopen, categorize, copy, move, reference, export, recover manifest                                                  | Pending |
-| App workflow    | Inspect and install portable ZIP, search and associate Windows apps, review WinGet/installer outcome                         | Pending |
-| Recovery        | Interrupt resource, WinGet, and installer operations; inspect and preserve uncertain outcomes                                | Pending |
-| File edge cases | Low disk, long path, non-ASCII names, multi-volume move, inaccessible path, reparse point                                    | Pending |
-| Accessibility   | Keyboard only: create/open Cask, review resource, inspect operation/recovery, export; visible focus and screen reader labels | Pending |
-| Performance     | Profile cold startup, 1,000-resource inventory, scan, and storage aggregation on supported hardware                          | Pending |
-| Uninstall       | Remove Casklet through Windows Settings; confirm `%USERPROFILE%\\Casklets` and `%LOCALAPPDATA%\\Casklet` remain intact       | Pending |
-| Security        | Independent review of removal, elevation, CSP, path identity, providers, dependency policy                                   | Pending |
+| Area            | Required observation                                                                                                         | Result                                                                           |
+| --------------- | ---------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------- |
+| Fresh install   | Per-user NSIS installs without elevation; CLI ZIP runs; development data is not opened                                       | Pending                                                                          |
+| Upgrade         | Install candidate over a prior published build; existing Casks and managed content remain available                          | Pending                                                                          |
+| Cask workflow   | Create, reopen, categorize, copy, move, reference, export, recover manifest                                                  | Pending                                                                          |
+| App workflow    | Inspect and install portable ZIP, search and associate Windows apps, review WinGet/installer outcome                         | Pending                                                                          |
+| Recovery        | Interrupt resource, WinGet, and installer operations; inspect and preserve uncertain outcomes                                | Pending                                                                          |
+| File edge cases | Low disk, long path, non-ASCII names, multi-volume move, inaccessible path, reparse point                                    | Pending                                                                          |
+| Accessibility   | Keyboard only: create/open Cask, review resource, inspect operation/recovery, export; visible focus and screen reader labels | Pending                                                                          |
+| Performance     | Profile cold startup, 1,000-resource inventory, scan, and storage aggregation on supported hardware                          | Partial: inventory and storage profile passed locally                            |
+| Uninstall       | Remove Casklet through Windows Settings; confirm `%USERPROFILE%\\Casklets` and `%LOCALAPPDATA%\\CaskletData` remain intact   | Partial: silent local uninstall passed; Settings and clean-machine paths pending |
+| Security        | Independent review of removal, elevation, CSP, path identity, providers, dependency policy                                   | Pending                                                                          |
 
 Destructive cleanup and WinGet uninstall stay disabled in distributable builds until the independent security review approves them. No public release should be labeled ready while any required manual row remains pending or a critical/high defect is open.
 
-The project's own license is still undecided in `LICENSES/README.md`. The package script emits dependency-license evidence, but a public release also needs a chosen project license and review of third-party notice/source obligations.
+## Local host evidence (2026-09-28)
+
+Solo developer host: Windows 11 x64 build 26200.9457, NTFS per-user profile. The corrected NSIS candidate was installed silently without elevation into `%LOCALAPPDATA%\Casklet`. The release CLI created Cask `1de3a4aa-0358-4ae6-9c0e-74a33ca9dce5`; its database existed in `%LOCALAPPDATA%\CaskletData\db`, and its manifest existed in `%USERPROFILE%\Casklets\<id>\.casklet`. Silent uninstall returned zero and removed the program directory. Both data locations remained, and the CLI listed the Cask after uninstall. The test-only data was then removed after exact-path and content checks. This validates the local silent path only; Windows Settings, upgrade, and clean-machine behavior remain pending. The packaging script's final revision and checksum evidence must still be captured for the reviewed candidate.
+
+On this host, the explicitly invoked release-mode 1,000-resource test measured inventory at 60 ms and storage aggregation at 62 ms. Cold startup and scan progress have not been profiled.
+
+The project is licensed under Apache-2.0 (`LICENSE` and `NOTICE`). The package script includes those files and emits dependency-license evidence. Third-party notice and source obligations still need review before public distribution.
 
 ## Performance budget proposal
 

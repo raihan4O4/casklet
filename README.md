@@ -16,7 +16,7 @@ cargo xtask check
 
 Run `./scripts/bootstrap.ps1` in each new PowerShell session if Cargo is not already on `PATH`.
 
-The test profile uses temporary directories. Debug builds keep development data in `.casklet-dev/`. Release builds use `%LOCALAPPDATA%\\Casklet` for metadata and `%USERPROFILE%\\Casklets` for managed content. Neither a database backup nor uninstalling the application is a substitute for backing up managed files.
+The test profile uses temporary directories. Debug builds keep development data in `.casklet-dev/`. Release builds use `%LOCALAPPDATA%\\CaskletData` for metadata and `%USERPROFILE%\\Casklets` for managed content. Neither a database backup nor uninstalling the application is a substitute for backing up managed files.
 
 ## Milestone 1 CLI
 

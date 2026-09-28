@@ -26,7 +26,7 @@ try {
 } finally { Pop-Location }
 
 $cliZip = Join-Path $output 'casklet-cli-windows-x64.zip'
-Compress-Archive -LiteralPath (Join-Path $repo 'target/release/casklet.exe') -DestinationPath $cliZip -Force
+Compress-Archive -LiteralPath @((Join-Path $repo 'target/release/casklet.exe'), (Join-Path $repo 'LICENSE'), (Join-Path $repo 'NOTICE')) -DestinationPath $cliZip -Force
 $installers = @(Get-ChildItem -LiteralPath (Join-Path $repo 'target/release/bundle/nsis') -Filter '*-setup.exe' -File)
 if ($installers.Count -ne 1) { throw "Expected one NSIS installer, found $($installers.Count)." }
 $installer = Join-Path $output $installers[0].Name
@@ -42,7 +42,7 @@ $packages = (Get-Content -LiteralPath $sbom -Raw | ConvertFrom-Json).packages
 $noticeLines = @(
     "Casklet source revision: $revision",
     'This is dependency license evidence, not a completed legal review.',
-    'Casklet project license remains undecided; do not distribute publicly until resolved.',
+    'Casklet project license: Apache-2.0 (LICENSE and NOTICE in this release).',
     'Full package evidence: casklet.spdx.json',
     '',
     "Package`tVersion`tDeclared license"
@@ -50,7 +50,9 @@ $noticeLines = @(
 $noticeLines += $packages | Sort-Object name, versionInfo | ForEach-Object { "$($_.name)`t$($_.versionInfo)`t$($_.licenseDeclared)" }
 $noticeLines | Set-Content -LiteralPath $licenseNotice
 
-$files = @($cliZip, $installer, $sbom, $licenseNotice)
+Copy-Item -LiteralPath (Join-Path $repo 'LICENSE') -Destination (Join-Path $output 'LICENSE') -Force
+Copy-Item -LiteralPath (Join-Path $repo 'NOTICE') -Destination (Join-Path $output 'NOTICE') -Force
+$files = @($cliZip, $installer, $sbom, $licenseNotice, (Join-Path $output 'LICENSE'), (Join-Path $output 'NOTICE'))
 $hashLines = foreach ($file in $files) {
     $hash = (Get-FileHash -LiteralPath $file -Algorithm SHA256).Hash.ToLowerInvariant()
     "$hash  $([IO.Path]::GetFileName($file))"
