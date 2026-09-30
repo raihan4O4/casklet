@@ -22,7 +22,9 @@
         "resizable": false,
         "maximizable": false,
         "minimizable": true,
-        "decorations": false
+        "decorations": false,
+        "visible": false,
+        "backgroundColor": "#ffffff"
       }
     ]
   },

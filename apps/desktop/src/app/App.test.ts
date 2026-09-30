@@ -8,6 +8,16 @@ import {
 import { afterEach, expect, test, vi } from "vitest";
 import App from "./App.svelte";
 import Workspace from "./Workspace.svelte";
+import ToastArea from "./ToastArea.svelte";
+import { clearNotices, notify } from "./notifications";
+import { revealWindow } from "./windowReady";
+import { caskColor } from "./format";
+import { open } from "@tauri-apps/plugin-dialog";
+
+vi.stubGlobal("matchMedia", () => ({ matches: true }));
+vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) =>
+  setTimeout(() => callback(performance.now()), 0),
+);
 
 HTMLDialogElement.prototype.showModal = function () {
   this.setAttribute("open", "");
@@ -43,6 +53,9 @@ vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn(), save: vi.fn() }));
 
 afterEach(() => {
   cleanup();
+  clearNotices();
+  vi.useRealTimers();
+  vi.mocked(open).mockReset();
   calls.invoke.mockReset();
   calls.drop = null;
 });
@@ -56,6 +69,7 @@ test("settings creates a metadata-only backup through the shared command", async
       return { version: 1, path: "C:/backup.db", sizeBytes: 4096 };
     throw new Error(`Unexpected command: ${command}`);
   });
+  render(ToastArea);
   render(Workspace, { mode: "settings" });
   await fireEvent.click(
     screen.getByRole("button", { name: "Back up database metadata" }),
@@ -117,6 +131,7 @@ test("a dropped file waits for an explicit intake mode and Add action", async ()
     if (command === "add_resource") return resource;
     throw new Error(`Unexpected command: ${command}`);
   });
+  render(ToastArea);
   render(Workspace, { caskId: "cask-2" });
   await screen.findByRole("heading", { name: "Work" });
   await waitFor(() => expect(calls.drop).not.toBeNull());
@@ -176,7 +191,7 @@ test("creates a Cask and opens a native detail window without replacing the libr
       items = [cask];
       return cask;
     }
-    if (command === "open_cask_window") return;
+    if (command === "open_cask_window" || command === "window_ready") return;
     throw new Error(`Unexpected command: ${command}`);
   });
   render(App);
@@ -245,6 +260,7 @@ test("shows interrupted work and requires an explicit recovery action", async ()
     }
     throw new Error(`Unexpected command: ${command}`);
   });
+  render(ToastArea);
   render(Workspace, { mode: "activity" });
   await screen.findByText("Recovery needed");
   await fireEvent.click(screen.getByRole("button", { name: "Inspect paths" }));
@@ -324,6 +340,7 @@ test("cleanup execution requires the exact reviewed plan ID", async () => {
       };
     throw new Error(`Unexpected command: ${command}`);
   });
+  render(ToastArea);
   render(Workspace, { caskId: "cask-1" });
   await screen.findByRole("heading", { name: "Work" });
   await fireEvent.click(
@@ -355,4 +372,90 @@ test("cleanup execution requires the exact reviewed plan ID", async () => {
       },
     }),
   );
+});
+
+test("global notifications replace keyed updates and expire without occupying content", async () => {
+  vi.useFakeTimers();
+  render(ToastArea);
+  notify("Resource added", "success", "operation");
+  await vi.advanceTimersByTimeAsync(0);
+  expect(screen.getByRole("status").textContent).toContain("Resource added");
+  notify("Changes saved", "success", "operation");
+  await vi.advanceTimersByTimeAsync(0);
+  expect(screen.getAllByRole("status")).toHaveLength(1);
+  expect(screen.getByRole("status").textContent).toContain("Changes saved");
+  await vi.advanceTimersByTimeAsync(4600);
+  expect(screen.queryByRole("status")).toBeNull();
+});
+
+test("window readiness waits for layout before requesting native visibility", async () => {
+  vi.useFakeTimers();
+  calls.invoke.mockResolvedValue(undefined);
+  const ready = revealWindow();
+  expect(calls.invoke).not.toHaveBeenCalled();
+  await vi.runAllTimersAsync();
+  await ready;
+  expect(calls.invoke).toHaveBeenCalledWith("window_ready");
+});
+
+test("sort direction toggles and Cask menus dismiss and replace one another", async () => {
+  calls.invoke.mockImplementation(async (command: string) => {
+    if (command === "window_ready") return;
+    if (command === "cask_library")
+      return {
+        version: 1,
+        totalItems: 3,
+        managedBytes: 30,
+        unknownEntries: 0,
+        storageRoot: "C:/Casklets",
+        casks: ["Alpha", "Beta"].map((name, index) => ({
+          cask: {
+            version: 1,
+            id: `cask-${index}`,
+            name,
+            description: "",
+            state: "ACTIVE",
+            managedStorageRoot: `C:/Casklets/${index}`,
+            createdAtMs: 1,
+            updatedAtMs: index + 1,
+            revision: 0,
+          },
+          itemCount: index + 1,
+          fileCount: index + 1,
+          applicationCount: 0,
+          managedBytes: (index + 1) * 10,
+          referencedBytes: 0,
+          unknownEntries: 0,
+        })),
+      };
+    throw new Error(`Unexpected command: ${command}`);
+  });
+  render(App);
+  await screen.findByRole("button", { name: "Open Alpha" });
+  const items = screen.getByRole("button", { name: /Items/ });
+  await fireEvent.click(items);
+  expect(items.getAttribute("data-direction")).toBe("ascending");
+  await fireEvent.click(items);
+  expect(items.getAttribute("data-direction")).toBe("descending");
+  const triggers = screen.getAllByRole("button", { name: /Actions for/ });
+  await fireEvent.click(triggers[0]);
+  expect(screen.getAllByRole("menu")).toHaveLength(1);
+  await fireEvent.click(triggers[1]);
+  await waitFor(() => expect(screen.getAllByRole("menu")).toHaveLength(1));
+  expect(triggers[0].getAttribute("aria-expanded")).toBe("false");
+  await fireEvent.pointerDown(document.body);
+  await waitFor(() => expect(screen.queryByRole("menu")).toBeNull());
+  await fireEvent.click(triggers[0]);
+  await fireEvent.keyDown(document, { key: "Escape" });
+  await waitFor(() => expect(screen.queryByRole("menu")).toBeNull());
+  expect(document.activeElement).toBe(triggers[0]);
+});
+
+test("Cask accents are stable and varied by identity", () => {
+  expect(caskColor("cask-1")).toBe(caskColor("cask-1"));
+  expect(
+    new Set(
+      Array.from({ length: 12 }, (_, index) => caskColor(`cask-${index}`)),
+    ).size,
+  ).toBeGreaterThan(3);
 });

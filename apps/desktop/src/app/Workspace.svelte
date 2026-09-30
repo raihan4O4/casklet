@@ -30,14 +30,19 @@
     DatabaseBackupView,
   } from "../contracts/generated/casklet";
   import { CONTRACT_VERSION } from "../contracts/generated/casklet";
-
+  import PopupMenu from "./PopupMenu.svelte";
+  import { notify } from "./notifications";
   import Icon from "./Icon.svelte";
-  import { bytes, relativeTime, label } from "./format";
+  import { caskColor, activityDay, bytes, relativeTime, label } from "./format";
   let {
     caskId = null,
     mode = "detail",
-  }: { caskId?: string | null; mode?: "detail" | "activity" | "settings" } =
-    $props();
+    onReady = () => {},
+  }: {
+    caskId?: string | null;
+    mode?: "detail" | "activity" | "settings";
+    onReady?: () => void;
+  } = $props();
   let loading = $state(true);
   let adding = $state(false);
   let applicationWorkflow:
@@ -74,6 +79,25 @@
   let recoveryInspection: RecoveryInspection | null = $state(null);
   let activeOperation = $state("");
   let operations: OperationView[] = $state([]);
+  const recentOperations = $derived(
+    [...operations].sort((a, b) => b.updatedAtMs - a.updatedAtMs),
+  );
+  $effect(() => {
+    if (error) {
+      notify(error, "error", "workspace-error");
+      error = "";
+    }
+  });
+  $effect(() => {
+    if (progress) {
+      notify(
+        progress,
+        /entries inspected|bytes processed/.test(progress) ? "info" : "success",
+        "workspace-status",
+      );
+      progress = "";
+    }
+  });
   let removalPlan: RemovalPlanView | null = $state(null);
   let removalCategory = $state("");
   let removalEnabled = $state(false);
@@ -92,6 +116,8 @@
   let detectedApps: DetectedApplicationView[] = $state([]);
   let associatedApps: DetectedApplicationView[] = $state([]);
   let installedBusy = $state(false);
+  let installedSearched = $state(false);
+  let referencePicker = $state(false);
   let wingetCapabilities: WingetCapabilities | null = $state(null);
   let wingetQuery = $state("");
   let wingetSearchText = $state("");
@@ -115,7 +141,6 @@
   let installerAccept = $state(false);
   let installerElevate = $state(false);
   let installerBusy = $state(false);
-
   let fileResources = $derived(
     resources.filter(
       (resource) =>
@@ -147,7 +172,6 @@
       (summary?.managedLogicalBytes ?? 0) +
       (summary?.referencedLogicalBytes ?? 0),
   );
-
   async function inspectInstaller() {
     try {
       const path = await open({
@@ -296,7 +320,6 @@
     installerOperation = null;
     installerOperationId = "";
   }
-
   async function searchWinget() {
     wingetBusy = true;
     try {
@@ -453,7 +476,6 @@
       if (wingetOperationId) void refreshWingetOperation();
     }
   }
-
   async function searchInstalled() {
     installedBusy = true;
     try {
@@ -461,6 +483,7 @@
         "search_installed_applications",
         { request: { version: CONTRACT_VERSION, query: installedQuery } },
       );
+      installedSearched = true;
       error = "";
     } catch (cause) {
       error = message(cause);
@@ -532,7 +555,6 @@
       installedBusy = false;
     }
   }
-
   async function inspectPortableArchive() {
     try {
       const path = await open({
@@ -615,7 +637,6 @@
   let recoveryManifestPath = $state("");
   let recoveryManifestPreview = $state("");
   let discoveredManifests = $state("");
-
   async function scanRecoveryManifests() {
     try {
       discoveredManifests = await invoke<string>("scan_recovery_manifests");
@@ -636,7 +657,6 @@
       error = message(cause);
     }
   }
-
   async function exportCask(format: "json" | "markdown", machine = false) {
     if (!selected) return;
     try {
@@ -687,7 +707,6 @@
       error = message(cause);
     }
   }
-
   async function previewRemoval(resourceIds: string[] = []) {
     if (!selected) return;
     try {
@@ -710,7 +729,6 @@
   function previewSelectedResource() {
     if (selectedResource) void previewRemoval([selectedResource.id]);
   }
-
   async function approveRemoval() {
     if (!removalPlan || !removalEnabled) return;
     removalBusy = true;
@@ -783,7 +801,6 @@
       removalBusy = false;
     }
   }
-
   function message(cause: unknown): string {
     const api = cause as Partial<ApiError>;
     return api?.message ?? String(cause);
@@ -948,12 +965,13 @@
       request: { version: CONTRACT_VERSION, caskId },
     });
   }
-  async function pick(directory: boolean) {
+  async function pick(directory: boolean, reference = false) {
     try {
       const picked = await open({ multiple: false, directory });
       if (typeof picked === "string") {
         pendingPath = picked;
-        pendingMode = "";
+        pendingMode = reference ? "reference" : "";
+        referencePicker = false;
       }
     } catch (cause) {
       error = message(cause);
@@ -975,7 +993,8 @@
       });
       pendingPath = "";
       pendingMode = "";
-      progress = "";
+      adding = false;
+      progress = "Resource added.";
       await refreshResources();
     } catch (cause) {
       error = message(cause);
@@ -997,6 +1016,7 @@
         },
       });
       categories = [...categories, category];
+      progress = "Category created.";
       categoryName = "";
       pendingCategory = category.key;
     } catch (cause) {
@@ -1013,6 +1033,7 @@
         },
       });
       await refreshResources();
+      progress = "Changes saved.";
     } catch (cause) {
       error = message(cause);
     }
@@ -1118,13 +1139,16 @@
       unlistenInstaller?.();
     };
   });
-
   async function initialize() {
     try {
       if (caskId) await inspect(caskId);
       await refresh();
+    } catch (cause) {
+      error = message(cause);
     } finally {
       loading = false;
+      await tick();
+      onReady();
     }
   }
   async function openStorage() {
@@ -1179,26 +1203,34 @@
           title="Close Cask workspace"
           onclick={() => void closeWorkspace()}><Icon name="back" /></button
         >
-        <details class="workspace-menu">
-          <summary aria-label="Cask actions"><Icon name="more" /></summary>
-          <div class="menu">
+        <div class="workspace-menu">
+          <PopupMenu id="workspace-actions" label="Cask actions">
             <button
+              role="menuitem"
               type="button"
               onclick={() => {
                 detailTab = "settings";
               }}>Cask settings</button
-            ><button type="button" onclick={() => void exportCask("markdown")}
-              >Export report</button
-            ><button type="button" onclick={() => void openStorage()}
-              >Open storage folder</button
             >
-          </div>
-        </details>
+            <button
+              role="menuitem"
+              type="button"
+              onclick={() => void exportCask("markdown")}>Export report</button
+            >
+            <button
+              role="menuitem"
+              type="button"
+              onclick={() => void openStorage()}>Open storage folder</button
+            >
+          </PopupMenu>
+        </div>
       </div>
       <div class="workspace-title">
         <span
           class="status-dot"
-          class:neutral={selected?.state !== "ACTIVE"}
+          style:background={selected?.state === "ACTIVE"
+            ? caskColor(selected.id)
+            : "#999"}
           title={label(selected?.state ?? "LOADING")}
         ></span>
         <h1 id="cask-detail-heading" tabindex="-1" title={selected?.name}>
@@ -1224,17 +1256,6 @@
     </nav>
   {/if}
   <div class="workspace-content">
-    {#if error}<div class="notice error" role="alert">{error}</div>{/if}
-    {#if progress}<div class="notice" role="status">
-        {progress}<button
-          class="icon-button"
-          type="button"
-          aria-label="Dismiss status"
-          onclick={() => {
-            progress = "";
-          }}><Icon name="close" size={14} /></button
-        >
-      </div>{/if}
     {#if loading}<p class="loading" role="status">Loading workspace…</p>{/if}
     {#if selected && detailTab === "overview"}
       <section class="storage-panel" aria-label="Storage summary">
@@ -1326,49 +1347,91 @@
       </section>
     {/if}
     {#if mode === "activity" || (selected && detailTab === "activity")}
-      <button type="button" onclick={() => void chooseRecoveryManifest()}
-        >Preview recovery manifest</button
-      >
-      <button type="button" onclick={() => void scanRecoveryManifests()}
-        >Scan local recovery manifests</button
-      >
-      {#if discoveredManifests}
-        <pre>{discoveredManifests}</pre>
-        {#if discoveredManifests !== "No local manifests found."}<button
-            type="button"
-            onclick={() => void recoverDiscoveredManifests()}
-            >Recover missing Casks as unverified metadata</button
-          >{/if}
-      {/if}
-      {#if recoveryManifestPreview}
-        <p>{recoveryManifestPreview}</p>
-        <button type="button" onclick={() => void recoverFromManifest()}
-          >Recover unverified metadata</button
-        >
-      {/if}
+      <details class="activity-tools">
+        <summary>Manifest recovery tools</summary>
+        <div class="tool-actions">
+          <button type="button" onclick={() => void chooseRecoveryManifest()}
+            >Preview recovery manifest</button
+          >
+          <button type="button" onclick={() => void scanRecoveryManifests()}
+            >Scan local recovery manifests</button
+          >
+          {#if discoveredManifests}
+            <pre>{discoveredManifests}</pre>
+            {#if discoveredManifests !== "No local manifests found."}<button
+                type="button"
+                onclick={() => void recoverDiscoveredManifests()}
+                >Recover missing Casks as unverified metadata</button
+              >{/if}
+          {/if}
+          {#if recoveryManifestPreview}
+            <p>{recoveryManifestPreview}</p>
+            <button type="button" onclick={() => void recoverFromManifest()}
+              >Recover unverified metadata</button
+            >
+          {/if}
+        </div>
+      </details>
       <section id="operations" aria-label="Operation center">
-        <h2>Operations</h2>
-        {#if operations.length === 0}<p>No operations yet.</p>{:else}<ul>
-            {#each [...operations]
-              .sort((a, b) => b.updatedAtMs - a.updatedAtMs)
-              .slice(0, 25) as operation (operation.id)}
-              <li>
-                <strong>{label(operation.step)}</strong><span
-                  class="activity-state">{label(operation.state)}</span
-                ><time>{relativeTime(operation.updatedAtMs)}</time><small
-                  class="muted mono">{operation.id}</small
+        <h2>Activity</h2>
+        {#if recentOperations.length === 0}<div class="empty-state compact">
+            <Icon name="activity" size={24} />
+            <h3>No activity yet</h3>
+            <p>Resource operations and updates will appear here.</p>
+          </div>{:else}<ul class="activity-list">
+            {#each recentOperations as operation, index (operation.id)}
+              {#if index === 0 || activityDay(operation.updatedAtMs) !== activityDay(recentOperations[index - 1].updatedAtMs)}<li
+                  class="activity-day"
                 >
-                {operation.progressCompleted}{operation.progressTotal === null
-                  ? ""
-                  : `/${operation.progressTotal}`}
-                {#if operation.state === "RUNNING"}<button
-                    type="button"
-                    disabled={operation.cancellationRequested}
-                    onclick={() => void cancelOperation(operation.id)}
-                    >{operation.cancellationRequested
-                      ? "Cancellation requested"
-                      : "Cancel"}</button
-                  >{/if}
+                  {activityDay(operation.updatedAtMs)}
+                </li>{/if}
+              <li class="activity-entry">
+                <Icon
+                  name={operation.state === "COMPLETE"
+                    ? "check"
+                    : operation.state === "RECOVERY_REQUIRED"
+                      ? "info"
+                      : "activity"}
+                  size={17}
+                />
+                <div class="activity-copy">
+                  <div class="activity-title">
+                    <strong>{label(operation.step)}</strong><time
+                      title={new Date(operation.updatedAtMs).toLocaleString()}
+                      >{new Date(operation.updatedAtMs).toLocaleTimeString(
+                        undefined,
+                        { hour: "numeric", minute: "2-digit" },
+                      )}</time
+                    >
+                  </div>
+                  <span class="activity-state">{label(operation.state)}</span>
+                  {#if operation.state === "RUNNING"}<p
+                      class="activity-progress"
+                    >
+                      {operation.progressCompleted}{operation.progressTotal ===
+                      null
+                        ? " entries processed"
+                        : ` of ${operation.progressTotal} processed`}
+                    </p>{/if}
+                  <div class="activity-actions">
+                    <details class="metadata-disclosure">
+                      <summary>Details</summary>
+                      <p class="mono">Operation {operation.id}</p>
+                      {#if operation.errorCode}<p>
+                          {label(operation.errorCode)}
+                        </p>{/if}
+                    </details>
+                    {#if operation.state === "RUNNING"}<button
+                        class="text-button"
+                        type="button"
+                        disabled={operation.cancellationRequested}
+                        onclick={() => void cancelOperation(operation.id)}
+                        >{operation.cancellationRequested
+                          ? "Cancellation requested"
+                          : "Cancel"}</button
+                      >{/if}
+                  </div>
+                </div>
               </li>
             {/each}
           </ul>{/if}
@@ -1383,22 +1446,32 @@
           <ul>
             {#each recovery.operations as operation (operation.id)}
               <li>
-                Operation {operation.id}: {operation.state.toLowerCase()}
-                <button
-                  type="button"
-                  onclick={() => void inspectRecovery(operation.id)}
-                  >Inspect paths</button
-                >
-                <button
-                  type="button"
-                  onclick={() => void recoverOperation(operation.id)}
-                  >Verify and recover</button
-                >
-                <button
-                  type="button"
-                  onclick={() => void preserveOperation(operation.id)}
-                  >Keep files and close</button
-                >
+                <div class="recovery-entry-heading">
+                  <strong>{label(operation.step)}</strong><span
+                    >{label(operation.state)}</span
+                  >
+                </div>
+                <details class="metadata-disclosure">
+                  <summary>Operation details</summary>
+                  <p class="mono">{operation.id}</p>
+                </details>
+                <div class="recovery-actions">
+                  <button
+                    type="button"
+                    onclick={() => void inspectRecovery(operation.id)}
+                    >Inspect paths</button
+                  >
+                  <button
+                    type="button"
+                    onclick={() => void recoverOperation(operation.id)}
+                    >Verify and recover</button
+                  >
+                  <button
+                    type="button"
+                    onclick={() => void preserveOperation(operation.id)}
+                    >Keep files and close</button
+                  >
+                </div>
               </li>
             {/each}
           </ul>
@@ -1869,40 +1942,74 @@
         </section>
       {/if}
       {#if applicationWorkflow === "existing"}
-        <section aria-label="Existing Windows applications">
-          <h3>Existing Windows applications</h3>
+        <section
+          class="application-picker"
+          aria-label="Existing Windows applications"
+        >
+          <div class="section-heading">
+            <h3>Associate existing application</h3>
+          </div>
           <p>
-            Associations are references. Casklet did not install or own these
-            applications and will not uninstall them.
+            Link an installation to this activity. Association does not grant
+            ownership or uninstall permission.
           </p>
-          <label for="installed-search">Search installed applications</label>
-          <input
-            id="installed-search"
-            bind:value={installedQuery}
-            maxlength="120"
-          />
-          <button
-            type="button"
-            disabled={installedBusy}
-            onclick={() => void searchInstalled()}>Search</button
+          <form
+            class="picker-search"
+            onsubmit={(event) => {
+              event.preventDefault();
+              void searchInstalled();
+            }}
           >
-          <button
-            type="button"
-            disabled={installedBusy}
-            onclick={() => void refreshInstalled()}>Refresh inventory</button
-          >
-          {#if detectedApps.length}
-            <ul>
+            <label for="installed-search">Search installed applications</label>
+            <div class="picker-search-row">
+              <label class="search-field"
+                ><Icon name="search" size={16} /><input
+                  id="installed-search"
+                  bind:value={installedQuery}
+                  maxlength="120"
+                  placeholder="Application name or publisher…"
+                /></label
+              ><button class="primary-button" disabled={installedBusy}
+                >{installedBusy ? "Searching…" : "Search"}</button
+              >
+            </div>
+          </form>
+          <div class="picker-results-heading">
+            <span
+              >{installedSearched
+                ? `${detectedApps.length} ${detectedApps.length === 1 ? "installation" : "installations"} found`
+                : "Windows installation inventory"}</span
+            ><button
+              class="text-button"
+              type="button"
+              disabled={installedBusy}
+              onclick={() => void refreshInstalled()}
+              ><Icon name="refresh" size={14} />Refresh inventory</button
+            >
+          </div>
+          {#if installedBusy}<p class="loading" role="status">
+              Reading installed applications…
+            </p>{:else if detectedApps.length}
+            <ul class="application-list picker-results">
               {#each detectedApps as item (item.installationId)}
                 <li>
-                  {item.name}
-                  {item.displayVersion ?? ""} — {item.publisher ??
-                    "Unknown publisher"} ({item.scope})
-                  {#if item.ambiguousName}<span class="warning"
-                      >Same display name appears on multiple registrations.
-                      Check the registry source.</span
-                    >{/if}
-                  <small>{item.sourceKey}</small>
+                  <Icon name="package" size={18} />
+                  <div class="item-text">
+                    <strong title={item.name}>{item.name}</strong><span
+                      >{item.publisher ?? "Unknown publisher"} · {item.displayVersion ??
+                        "Version not recorded"} · {label(item.scope)}</span
+                    >
+                    <details class="metadata-disclosure">
+                      <summary>Installation details</summary>
+                      <p class="mono">{item.sourceKey}</p>
+                      {#if item.installLocation}<p>
+                          {item.installLocation}
+                        </p>{/if}{#if item.ambiguousName}<p class="warning">
+                          Other registrations use the same name. Check the
+                          source before associating.
+                        </p>{/if}
+                    </details>
+                  </div>
                   <button
                     type="button"
                     disabled={installedBusy ||
@@ -1910,112 +2017,179 @@
                         (a) => a.installationId === item.installationId,
                       )}
                     onclick={() => void associateDetected(item)}
-                    >Associate with this Cask</button
+                    >{associatedApps.some(
+                      (a) => a.installationId === item.installationId,
+                    )
+                      ? "Associated"
+                      : "Associate"}</button
                   >
                 </li>
               {/each}
             </ul>
-          {/if}
-          {#if associatedApps.length}
-            <h4>Associated installations</h4>
-            <ul>
-              {#each associatedApps as item (item.installationId)}
-                <li>
-                  {item.name} ({item.state}) — {item.sourceKey}
-                  <button
-                    type="button"
-                    disabled={installedBusy}
-                    onclick={() => void disassociateDetected(item)}
-                    >Remove association</button
-                  >
-                </li>
-              {/each}
-            </ul>
-          {/if}
+          {:else}<div class="empty-state compact">
+              <Icon name="search" size={24} />
+              <h3>
+                {installedSearched
+                  ? "No matching applications"
+                  : "Find an application"}
+              </h3>
+              <p>
+                {installedSearched
+                  ? "Try a different name, or refresh the inventory."
+                  : "Search by name or publisher. Refresh to discover recent installations."}
+              </p>
+            </div>{/if}
         </section>
       {/if}
     {/if}
     {#if selected && detailTab === "files"}
       {#if adding || pendingPath}
-        <section aria-label="Resource intake">
-          <h3>Add a resource</h3>
-          <p>
-            Choose a file or folder, or drop one into this window. Review the
-            action before adding it.
-          </p>
-          <div class="form-row">
-            <button type="button" onclick={() => void pick(false)}
-              >Add File</button
-            ><button type="button" onclick={() => void pick(true)}
-              >Add Folder</button
+        <section class="resource-intake" aria-label="Resource intake">
+          <div class="section-heading">
+            <h3>Add a resource</h3>
+            <button
+              class="icon-button"
+              type="button"
+              aria-label="Close resource intake"
+              disabled={busy}
+              onclick={() => {
+                adding = false;
+                pendingPath = "";
+                pendingMode = "";
+                referencePicker = false;
+              }}><Icon name="close" size={16} /></button
             >
-            <details>
-              <summary>Add Reference</summary>
-              <div class="form-row">
-                <button
-                  type="button"
-                  onclick={async () => {
-                    await pick(false);
-                    if (pendingPath) pendingMode = "reference";
-                  }}>Reference file</button
-                ><button
-                  type="button"
-                  onclick={async () => {
-                    await pick(true);
-                    if (pendingPath) pendingMode = "reference";
-                  }}>Reference folder</button
+          </div>
+          {#if !pendingPath}<p>
+              Choose a file or folder, or drop one into this window.
+            </p>
+            <div class="resource-source-actions">
+              <button type="button" onclick={() => void pick(false)}
+                ><Icon name="file" size={16} />Add File</button
+              ><button type="button" onclick={() => void pick(true)}
+                ><Icon name="folder" size={16} />Add Folder</button
+              ><button
+                class="text-button"
+                type="button"
+                aria-expanded={referencePicker}
+                onclick={() => {
+                  referencePicker = !referencePicker;
+                }}><Icon name="link" size={16} />Add Reference</button
+              >
+            </div>
+            {#if referencePicker}<div class="reference-picker">
+                <p>
+                  Track an existing item where it is. Its source remains
+                  unchanged.
+                </p>
+                <div class="form-row">
+                  <button type="button" onclick={() => void pick(false, true)}
+                    >Reference file</button
+                  ><button type="button" onclick={() => void pick(true, true)}
+                    >Reference folder</button
+                  >
+                </div>
+              </div>{/if}
+          {:else}
+            <div class="intake-source">
+              <Icon name="file" size={18} />
+              <div>
+                <strong title={pendingPath}
+                  >{pendingPath.split(/[\\/]/).pop()}</strong
+                ><span class="truncate path" title={pendingPath}
+                  >{pendingPath}</span
                 >
               </div>
-            </details>
-          </div>
-          {#if pendingPath}
-            <div class="review">
-              <p><strong>Source:</strong> {pendingPath}</p>
-              <fieldset>
-                <legend>How should Casklet add it?</legend>
-                <label
-                  ><input
-                    type="radio"
-                    name="intake-mode"
-                    value="copy"
-                    bind:group={pendingMode}
-                  /> Copy into managed storage</label
-                >
-                <label
-                  ><input
-                    type="radio"
-                    name="intake-mode"
-                    value="move"
-                    bind:group={pendingMode}
-                  /> Move into managed storage</label
-                >
-                <label
-                  ><input
-                    type="radio"
-                    name="intake-mode"
-                    value="reference"
-                    bind:group={pendingMode}
-                  /> Reference at current location</label
-                >
-              </fieldset>
-              {#if pendingMode === "move"}<p class="warning">
-                  Move changes the source location. Casklet will verify the
-                  managed destination before recording it.
-                </p>{/if}
-              <label for="intake-category">Category</label>
-              <select id="intake-category" bind:value={pendingCategory}
+              <button
+                class="text-button"
+                type="button"
+                disabled={busy}
+                onclick={() => {
+                  pendingPath = "";
+                  pendingMode = "";
+                }}>Change</button
+              >
+            </div>
+            <fieldset class="intake-modes" disabled={busy}>
+              <legend>How should Casklet add it?</legend>
+              <label class:chosen={pendingMode === "copy"}
+                ><input
+                  type="radio"
+                  name="intake-mode"
+                  value="copy"
+                  aria-label="Copy into managed storage"
+                  bind:group={pendingMode}
+                /><span
+                  ><strong>Copy into managed storage</strong><small
+                    >Keep the original and create a managed copy.</small
+                  ></span
+                ></label
+              >
+              <label class:chosen={pendingMode === "move"}
+                ><input
+                  type="radio"
+                  name="intake-mode"
+                  value="move"
+                  aria-label="Move into managed storage"
+                  bind:group={pendingMode}
+                /><span
+                  ><strong>Move into managed storage</strong><small
+                    >Verify the destination, then remove the source.</small
+                  ></span
+                ></label
+              >
+              <label class:chosen={pendingMode === "reference"}
+                ><input
+                  type="radio"
+                  name="intake-mode"
+                  value="reference"
+                  aria-label="Reference at current location"
+                  bind:group={pendingMode}
+                /><span
+                  ><strong>Reference at current location</strong><small
+                    >Track the item without changing its location.</small
+                  ></span
+                ></label
+              >
+            </fieldset>
+            <div class="intake-category">
+              <label for="intake-category">Category</label><select
+                id="intake-category"
+                bind:value={pendingCategory}
+                disabled={busy}
                 >{#each categories as category (category.key)}<option
                     value={category.key}>{category.name}</option
                   >{/each}</select
               >
+            </div>
+            {#if pendingMode}<p
+                class="intake-explanation"
+                class:warning={pendingMode === "move"}
+              >
+                {pendingMode === "copy"
+                  ? "A verified copy will be stored in this Cask. The original stays where it is."
+                  : pendingMode === "move"
+                    ? "Move changes the source location. The original is removed only after the managed destination verifies."
+                    : "The item stays at its current location. Reference does not give Casklet deletion ownership."}
+              </p>{:else}<p class="intake-explanation">
+                Choose Copy, Move or Reference to continue.
+              </p>{/if}
+            <div class="intake-actions">
               <button
+                class="primary-button"
                 type="button"
                 disabled={busy || !pendingMode}
-                onclick={() => void addResource()}>Add resource</button
+                onclick={() => void addResource()}
+                >{busy
+                  ? "Adding…"
+                  : pendingMode === "reference"
+                    ? "Add reference"
+                    : "Add resource"}</button
               >
             </div>
           {/if}
-          {#if activeOperation}<button
+          {#if activeOperation && busy}<button
+              class="text-button"
               type="button"
               onclick={() => void cancelOperation(activeOperation)}
               >Cancel operation</button
@@ -2067,7 +2241,7 @@
               >
             </li>{/each}
         </ul>
-        {#if selectedResource}<div class="review">
+        {#if selectedResource}<div class="review resource-inspector">
             <div class="section-heading">
               <h3 title={selectedResource.name}>{selectedResource.name}</h3>
               <button
@@ -2093,22 +2267,29 @@
                 )}
               </dd>
             </dl>
-            <label for="resource-category">Category</label><select
-              id="resource-category"
-              value={selectedResource.categoryKey}
-              onchange={(event) => {
-                if (selectedResource)
-                  void recategorize(
-                    selectedResource,
-                    event.currentTarget.value,
-                  );
-              }}
-              >{#each categories as category (category.key)}<option
-                  value={category.key}>{category.name}</option
-                >{/each}</select
-            ><button type="button" onclick={previewSelectedResource}
-              >Preview cleanup</button
-            >
+            <div class="resource-category-row">
+              <label for="resource-category">Category</label><select
+                id="resource-category"
+                value={selectedResource.categoryKey}
+                onchange={(event) => {
+                  if (selectedResource)
+                    void recategorize(
+                      selectedResource,
+                      event.currentTarget.value,
+                    );
+                }}
+                >{#each categories as category (category.key)}<option
+                    value={category.key}>{category.name}</option
+                  >{/each}</select
+              >
+            </div>
+            <div class="resource-inspector-actions">
+              <button
+                class="text-button"
+                type="button"
+                onclick={previewSelectedResource}>Preview cleanup</button
+              >
+            </div>
           </div>{/if}
       </section>
     {/if}
@@ -2286,7 +2467,6 @@
           </div>
         </form>
       </section>
-
       <section aria-label="Export Cask">
         <h2>Export Cask</h2>
         <p class="intro">
