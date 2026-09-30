@@ -4,6 +4,12 @@ Casklet groups an activity's files and applications in a Cask. Create a Cask in 
 
 ## Add and inspect resources
 
+The fixed main window opens to **Casks**, with search, sortable inventory, and **New Cask**. Selecting a row opens a separate desktop workspace; selecting it again focuses that workspace. Use its back arrow or close control to return to the inventory. Both windows provide minimize and close controls without maximize.
+
+Each workspace has **Overview**, **Files & Folders**, **Applications**, **Activity**, and **Settings**. Add items or generate a cleanup plan from its bottom action bar. Cask Settings edits the name and description and can archive a Cask without removing its resources. Global sidebar Settings provides database backup and diagnostics; global Activity includes interrupted operations and manifest recovery. Installed applications are discovered through the Installations page and associated from a Cask's Applications tab.
+
+Storage summaries show known managed logical sizes, not invented volume capacity or installed-application measurements. Shared labels describe multiple active associations and never imply cleanup ownership.
+
 Choose or drop one file or folder. Review **Copy**, **Move**, or **Reference** before pressing **Add resource**. Copy retains the source; Move changes its location after verification; Reference leaves it in place and never grants deletion ownership. Inspect the resource's availability and size in the Cask detail. Storage values distinguish managed, referenced, physical, and reclaimable estimates; unknown values are shown as unknown.
 
 Portable ZIPs are inspected before installation. WinGet packages require explicit review. Existing Windows applications are associated as references only. A registered MSI/EXE installer is copied and inspected; launching it is an explicit separate action. A resulting Windows registration is a candidate for review, never automatic ownership.

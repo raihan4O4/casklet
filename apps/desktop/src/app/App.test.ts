@@ -7,6 +7,14 @@ import {
 } from "@testing-library/svelte";
 import { afterEach, expect, test, vi } from "vitest";
 import App from "./App.svelte";
+import Workspace from "./Workspace.svelte";
+
+HTMLDialogElement.prototype.showModal = function () {
+  this.setAttribute("open", "");
+};
+HTMLDialogElement.prototype.close = function () {
+  this.removeAttribute("open");
+};
 
 const calls = vi.hoisted(() => ({
   invoke: vi.fn(),
@@ -20,6 +28,9 @@ vi.mock("@tauri-apps/api/event", () => ({
 }));
 vi.mock("@tauri-apps/api/window", () => ({
   getCurrentWindow: () => ({
+    title: async () => "Casklet",
+    minimize: vi.fn(),
+    close: vi.fn(),
     onDragDropEvent: async (handler: typeof calls.drop) => {
       calls.drop = handler;
       return () => {
@@ -45,7 +56,7 @@ test("settings creates a metadata-only backup through the shared command", async
       return { version: 1, path: "C:/backup.db", sizeBytes: 4096 };
     throw new Error(`Unexpected command: ${command}`);
   });
-  render(App);
+  render(Workspace, { mode: "settings" });
   await fireEvent.click(
     screen.getByRole("button", { name: "Back up database metadata" }),
   );
@@ -106,8 +117,8 @@ test("a dropped file waits for an explicit intake mode and Add action", async ()
     if (command === "add_resource") return resource;
     throw new Error(`Unexpected command: ${command}`);
   });
-  render(App);
-  await fireEvent.click(await screen.findByRole("button", { name: "Work" }));
+  render(Workspace, { caskId: "cask-2" });
+  await screen.findByRole("heading", { name: "Work" });
   await waitFor(() => expect(calls.drop).not.toBeNull());
   calls.drop?.({ payload: { type: "drop", paths: ["C:/notes.txt"] } });
   const add = await screen.findByRole("button", { name: "Add resource" });
@@ -130,11 +141,12 @@ test("a dropped file waits for an explicit intake mode and Add action", async ()
   );
 });
 
-test("creates and inspects a Cask through typed Tauri commands", async () => {
+test("creates a Cask and opens a native detail window without replacing the library", async () => {
   const cask = {
     version: 1,
     id: "cask-1",
     name: "Research",
+    description: "",
     state: "ACTIVE",
     managedStorageRoot: "C:/Casklets/cask-1",
     createdAtMs: 1,
@@ -143,44 +155,53 @@ test("creates and inspects a Cask through typed Tauri commands", async () => {
   };
   let items: (typeof cask)[] = [];
   calls.invoke.mockImplementation(async (command: string) => {
-    if (command === "recovery_status")
-      return { version: 1, operations: [], pendingManifestCasks: [] };
-    if (command === "list_operations") return [];
-    if (command === "list_casks") return items;
+    if (command === "cask_library")
+      return {
+        version: 1,
+        casks: items.map((cask) => ({
+          cask,
+          itemCount: 0,
+          fileCount: 0,
+          applicationCount: 0,
+          managedBytes: 0,
+          referencedBytes: 0,
+          unknownEntries: 0,
+        })),
+        totalItems: 0,
+        managedBytes: 0,
+        unknownEntries: 0,
+        storageRoot: "C:/Casklets",
+      };
     if (command === "create_cask") {
       items = [cask];
       return cask;
     }
-    if (command === "get_cask") return cask;
-    if (command === "list_resources" || command === "list_categories")
-      return [];
-    if (command === "storage_summary")
-      return {
-        managedLogicalBytes: 0,
-        referencedLogicalBytes: 0,
-        physicalBytes: null,
-        reclaimableMinBytes: 0,
-        reclaimableMaxBytes: 0,
-        unknownEntries: 0,
-      };
+    if (command === "open_cask_window") return;
     throw new Error(`Unexpected command: ${command}`);
   });
   render(App);
-  await screen.findByText("No Casks yet.");
-  await fireEvent.input(screen.getByLabelText("New Cask name"), {
+  await screen.findByText("No Casks yet");
+  await fireEvent.click(screen.getByRole("button", { name: "New Cask" }));
+  await fireEvent.input(screen.getByLabelText("Cask name"), {
     target: { value: "Research" },
   });
   await fireEvent.click(screen.getByRole("button", { name: "Create Cask" }));
   await waitFor(() =>
-    expect(screen.getByRole("button", { name: "Research" })).toBeTruthy(),
-  );
-  await fireEvent.click(screen.getByRole("button", { name: "Research" }));
-  await waitFor(() =>
-    expect(calls.invoke).toHaveBeenCalledWith("get_cask", {
+    expect(calls.invoke).toHaveBeenCalledWith("open_cask_window", {
       request: { version: 1, id: "cask-1" },
     }),
   );
-  expect(screen.getByText("C:/Casklets/cask-1")).toBeTruthy();
+  expect(screen.getByRole("heading", { name: "Casks" })).toBeTruthy();
+  const row = await screen.findByRole("button", { name: "Open Research" });
+  await fireEvent.click(row);
+  expect(
+    screen.queryByRole("navigation", { name: "Cask sections" }),
+  ).toBeNull();
+  await fireEvent.input(screen.getByLabelText("Search casks"), {
+    target: { value: "Missing" },
+  });
+  expect(await screen.findByText("No matching Casks")).toBeTruthy();
+  expect(screen.queryByRole("button", { name: "Open Research" })).toBeNull();
 });
 
 test("shows interrupted work and requires an explicit recovery action", async () => {
@@ -224,7 +245,7 @@ test("shows interrupted work and requires an explicit recovery action", async ()
     }
     throw new Error(`Unexpected command: ${command}`);
   });
-  render(App);
+  render(Workspace, { mode: "activity" });
   await screen.findByText("Recovery needed");
   await fireEvent.click(screen.getByRole("button", { name: "Inspect paths" }));
   expect(await screen.findByText("C:/stage.txt (PRESENT_FILE)")).toBeTruthy();
@@ -303,10 +324,10 @@ test("cleanup execution requires the exact reviewed plan ID", async () => {
       };
     throw new Error(`Unexpected command: ${command}`);
   });
-  render(App);
-  await fireEvent.click(await screen.findByRole("button", { name: "Work" }));
+  render(Workspace, { caskId: "cask-1" });
+  await screen.findByRole("heading", { name: "Work" });
   await fireEvent.click(
-    screen.getByRole("button", { name: "Create cleanup preview" }),
+    screen.getByRole("button", { name: "Create Cleanup Plan" }),
   );
   await fireEvent.click(
     await screen.findByRole("button", { name: "Approve this plan" }),

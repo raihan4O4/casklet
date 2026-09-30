@@ -265,9 +265,24 @@ enum InstallerAction {
 
 #[derive(Debug, Subcommand)]
 enum CaskAction {
-    Create { name: String },
+    Create {
+        name: String,
+    },
     List,
-    Get { id: String },
+    Get {
+        id: String,
+    },
+    Update {
+        id: String,
+        #[arg(long)]
+        name: String,
+        #[arg(long, default_value = "")]
+        description: String,
+        #[arg(long)]
+        archived: bool,
+        #[arg(long)]
+        revision: i64,
+    },
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -951,6 +966,28 @@ fn main() -> ExitCode {
                 &GetCask {
                     version: CONTRACT_VERSION,
                     id,
+                },
+                &correlation_id,
+            )
+            .map(|cask| render_cask_detail(&cask, cli.output)),
+        Command::Cask {
+            action:
+                CaskAction::Update {
+                    id,
+                    name,
+                    description,
+                    archived,
+                    revision,
+                },
+        } => service
+            .update_cask(
+                &casklet_contracts::UpdateCask {
+                    version: CONTRACT_VERSION,
+                    id,
+                    name,
+                    description,
+                    archived,
+                    expected_revision: revision,
                 },
                 &correlation_id,
             )

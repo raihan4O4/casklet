@@ -1,10 +1,11 @@
 //! Cask use cases and persistence port.
 use casklet_contracts::{ApiError, CONTRACT_VERSION, CaskView, CreateCask, GetCask, ListCasks};
-use casklet_domain::{Cask, DomainError};
+use casklet_domain::Cask;
 use std::time::{SystemTime, UNIX_EPOCH};
 pub mod backup;
 pub mod diagnostics;
 pub mod installer;
+pub mod library;
 pub mod operation;
 pub mod portable;
 pub mod projection;
@@ -32,6 +33,9 @@ pub trait CaskRepository {
     /// # Errors
     /// Returns a persistence error.
     fn list(&self) -> Result<Vec<Cask>, String>;
+    /// # Errors
+    /// Atomically updates metadata if the revision still matches and no mutation is running.
+    fn update(&self, cask: &Cask, expected_revision: i64) -> Result<bool, String>;
 }
 
 pub trait ManagedStorage {
@@ -64,14 +68,13 @@ impl<
                 .as_millis(),
         )
         .map_err(|e| api_error("CLOCK", e.to_string(), correlation_id))?;
-        let mut cask =
-            Cask::new(&request.name, id_root, now).map_err(|DomainError::InvalidName| {
-                api_error(
-                    "INVALID_NAME",
-                    "Name must contain 1–120 non-control characters".into(),
-                    correlation_id,
-                )
-            })?;
+        let mut cask = Cask::new(&request.name, id_root, now).map_err(|_| {
+            api_error(
+                "INVALID_NAME",
+                "Name must contain 1–120 non-control characters".into(),
+                correlation_id,
+            )
+        })?;
         cask.managed_storage_root = self.storage.root_for(&cask.storage_key);
         self.repository
             .create(&cask)
@@ -132,6 +135,7 @@ fn view(cask: Cask) -> CaskView {
         version: CONTRACT_VERSION,
         id: cask.id,
         name: cask.name,
+        description: cask.description,
         state: cask.state.code().into(),
         managed_storage_root: cask.managed_storage_root,
         created_at_ms: cask.created_at_ms,

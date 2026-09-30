@@ -175,6 +175,9 @@ importers:
 
   apps/desktop:
     dependencies:
+      '@lucide/svelte':
+        specifier: 1.48.0
+        version: 1.48.0(svelte@5.57.0(@typescript-eslint/types@8.70.1))
       '@tauri-apps/api':
         specifier: 2.11.1
         version: 2.11.1
@@ -541,6 +544,11 @@ packages:
 
   '@keyv/serialize@1.1.1':
     resolution: {integrity: sha512-dXn3FZhPv0US+7dtJsIi2R+c7qWYiReoEh5zUntWCf4oSpMNib8FDhSoed6m3QyZdx5hK7iLFkYk3rNxwt8vTA==}
+
+  '@lucide/svelte@1.48.0':
+    resolution: {integrity: sha512-bLimVDjehxu3fpu9XEUpqEkBk2sJAHAT2sVcLHhlM70EdNsXuj9ZnYENWv5xgw3+05h4i5TirAxTiTgnZZf8gw==}
+    peerDependencies:
+      svelte: ^5
 
   '@napi-rs/lzma-linux-x64-gnu@1.5.1':
     resolution: {integrity: sha512-oTXEIha4SsuXdTA4Iyskj0kpdx2yVXdhd75c2v3xGrHFfVMsbhTPZU/nMPL4sWKo4pBHm3aucLaqGlF696dTyQ==}
@@ -2131,6 +2139,10 @@ snapshots:
       keyv: 5.6.0
 
   '@keyv/serialize@1.1.1': {}
+
+  '@lucide/svelte@1.48.0(svelte@5.57.0(@typescript-eslint/types@8.70.1))':
+    dependencies:
+      svelte: 5.57.0(@typescript-eslint/types@8.70.1)
 
   '@napi-rs/lzma-linux-x64-gnu@1.5.1':
     optional: true

@@ -1,6 +1,6 @@
 # Casklet Project Context
 
-Last updated: 2026-09-28
+Last updated: 2026-09-30
 
 This is the canonical handoff for humans and new Codex tasks. Keep it concise and current. Detailed specifications belong in linked documents.
 
@@ -14,7 +14,7 @@ Core principle:
 
 ## Current phase
 
-The initial design program is approved. Milestones 0–9 are merged into `develop`. Milestone 10 release hardening is in progress on `codex/milestone-10-release-hardening`; manual Windows release gates remain open. Milestone 4 removal and Milestone 8 uninstall remain behind the disabled `reviewed-removal` feature and require independent security review before destructive functionality is enabled in public builds.
+The initial design program is approved. Milestones 0–10 are integrated into `develop`. The desktop GUI redesign is tracked in PR #14 from `ui` to `develop`; manual Windows release gates remain open. Milestone 4 removal and Milestone 8 uninstall remain behind the disabled `reviewed-removal` feature and require independent security review before destructive functionality is enabled in public builds.
 
 - Phase 1 — Requirements: approved.
 - Phase 2 — Cross-platform and installation workflow: approved.
@@ -149,6 +149,6 @@ Exact dependencies will be approved during repository/tooling design; do not add
 
 ## Current implementation milestone
 
-Milestones 0–9 are integrated into `develop`. Milestone 10 adds release-profile storage separation, database integrity checks and pre-migration backup, initial accessibility improvements, packaging tooling, and product/release documentation. Its release gate remains open for Windows manual testing, installer uninstall evidence, performance profiling, and independent security review. Real installer/UAC behavior still needs isolated manual validation. Keep `main` unchanged until planned milestone integration.
-The project license is Apache-2.0 (selected during Milestone 10). CLI and GUI now expose an explicit, metadata-only SQLite backup through the shared application core. The Windows host available for this work has no isolated test machine or independent reviewer, so those release gates remain open.
+Milestones 0–10 are integrated into `develop`. Milestone 10 adds release-profile storage separation, database integrity checks and pre-migration backup, initial accessibility improvements, packaging tooling, and product/release documentation. Its release gate remains open for Windows manual testing, installer uninstall evidence, performance profiling, and independent security review. Real installer/UAC behavior still needs isolated manual validation. Keep `main` unchanged until planned milestone integration.
+The project license is Apache-2.0 (selected during Milestone 10). CLI and GUI expose metadata-only SQLite backup through the shared application core. The GUI now uses fixed native main and owned Cask windows, monochrome styling, the supplied logo, bundled Inter, and Lucide icons. Cask workspaces retain all resource/provider/recovery/removal workflows across Overview, Files & Folders, Applications, Activity, and Settings. Schema 11 adds descriptions and revision-checked metadata/archive commands shared by CLI and GUI. See `docs/adr/0018-desktop-cask-workspaces.md` and `docs/engineering/desktop-gui-design.md`. The Windows host has no isolated test machine or independent reviewer, so release gates remain open.
 The per-user NSIS installer uses `%LOCALAPPDATA%\Casklet` for program files. A local install test exposed that the original release database path collided with this directory; the empty test install was uninstalled and operational state moved to `%LOCALAPPDATA%\CaskletData`. The corrected package passed a local silent install/create/uninstall preservation test; Windows Settings, upgrade, and clean-machine tests remain pending.

@@ -20,6 +20,7 @@
       "required": ["name", "state"],
       "properties": {
         "name": { "type": "string" },
+        "description": { "type": "string", "maxLength": 500 },
         "state": { "type": "string" },
         "id": { "type": "string", "format": "uuid" },
         "managedStorageRoot": { "type": "string" }

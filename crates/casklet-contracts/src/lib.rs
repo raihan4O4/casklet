@@ -30,11 +30,46 @@ pub struct CaskView {
     pub version: u32,
     pub id: String,
     pub name: String,
+    pub description: String,
     pub state: String,
     pub managed_storage_root: String,
     pub created_at_ms: i64,
     pub updated_at_ms: i64,
     pub revision: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct UpdateCask {
+    pub version: u32,
+    pub id: String,
+    pub name: String,
+    pub description: String,
+    pub archived: bool,
+    pub expected_revision: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CaskSummaryView {
+    pub cask: CaskView,
+    pub item_count: usize,
+    pub file_count: usize,
+    pub application_count: usize,
+    pub managed_bytes: u64,
+    pub referenced_bytes: u64,
+    pub unknown_entries: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CaskLibraryView {
+    pub version: u32,
+    pub casks: Vec<CaskSummaryView>,
+    pub total_items: usize,
+    pub managed_bytes: u64,
+    pub unknown_entries: u64,
+    pub storage_root: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -88,6 +123,8 @@ pub struct ResourceView {
     pub path: String,
     pub kind: String,
     pub management: String,
+    #[serde(default)]
+    pub shared: bool,
     pub containment: String,
     pub availability: String,
     pub category_key: String,
@@ -739,13 +776,16 @@ export const CONTRACT_VERSION = 1;
 export type CreateCask = { version: number; name: string };
 export type GetCask = { version: number; id: string };
 export type ListCasks = { version: number };
-export type CaskView = { version: number; id: string; name: string; state: string; managedStorageRoot: string; createdAtMs: number; updatedAtMs: number; revision: number };
+export type CaskView = { version: number; id: string; name: string; description: string; state: string; managedStorageRoot: string; createdAtMs: number; updatedAtMs: number; revision: number };
+export type UpdateCask = { version: number; id: string; name: string; description: string; archived: boolean; expectedRevision: number };
+export type CaskSummaryView = { cask: CaskView; itemCount: number; fileCount: number; applicationCount: number; managedBytes: number; referencedBytes: number; unknownEntries: number };
+export type CaskLibraryView = { version: number; casks: CaskSummaryView[]; totalItems: number; managedBytes: number; unknownEntries: number; storageRoot: string };
 export type ApiError = { version: number; code: string; message: string; correlationId: string };
 export type AddMode = 'copy' | 'move' | 'reference';
 export type AddResource = { version: number; caskId: string; sourcePath: string; mode: AddMode; categoryKey: string };
 export type ListResources = { version: number; caskId: string };
 export type GetResource = { version: number; id: string };
-export type ResourceView = { version: number; id: string; caskId: string; name: string; path: string; kind: string; management: string; containment: string; availability: string; categoryKey: string; sizeBytes: number | null; sizeMeasurement: string; unknownEntries: number };
+export type ResourceView = { version: number; id: string; caskId: string; name: string; path: string; kind: string; management: string; shared: boolean; containment: string; availability: string; categoryKey: string; sizeBytes: number | null; sizeMeasurement: string; unknownEntries: number };
 export type InspectPortableZip = { version: number; archivePath: string };
 export type PortableZipPreview = { version: number; archiveSha256: string; fileCount: number; expandedBytes: number; executablePaths: string[]; warnings: string[] };
 export type InstallPortableZip = { version: number; caskId: string; archivePath: string; archiveSha256: string; applicationName: string; applicationVersion: string | null; executableRelativePath: string };

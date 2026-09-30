@@ -1,0 +1,1 @@
+ALTER TABLE casks ADD COLUMN description TEXT NOT NULL DEFAULT '';
