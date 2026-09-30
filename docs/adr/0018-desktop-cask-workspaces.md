@@ -21,3 +21,7 @@ Filesystem intake, providers, export, recovery, and removal remain application-l
 ## Consequences
 
 There is one frontend entry point with inventory and Cask workspace routes. Main inventory and detail workflows evolve independently, and each workspace scrolls internally. Multiple open Casks increase WebView memory. Native keyboard, high-DPI, screen-reader, clean-machine, and installer release checks remain required.
+
+## Startup refinement
+
+Create windows hidden with a white native WebView background. Reveal through a caller-scoped typed transport command after initial UI data, styles, fonts, and layout are ready. This prevents exposing an uninitialized WebView and avoids a timer or overlay workaround. Hidden-window layout readiness must not rely on animation frames, which can be throttled.

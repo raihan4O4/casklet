@@ -15,7 +15,22 @@
   import logo from "../assets/casklet-logo.png";
   import Icon from "./Icon.svelte";
   import Workspace from "./Workspace.svelte";
-  import { bytes, relativeTime, label } from "./format";
+  import PopupMenu from "./PopupMenu.svelte";
+  import { notify } from "./notifications";
+  let { onReady = () => {} }: { onReady?: () => void } = $props();
+  $effect(() => {
+    if (error) {
+      notify(error, "error", "main-error");
+      error = "";
+    }
+  });
+  $effect(() => {
+    if (notice) {
+      notify(notice);
+      notice = "";
+    }
+  });
+  import { caskColor, bytes, relativeTime, label } from "./format";
 
   let page: "casks" | "installations" | "activity" | "settings" =
     $state("casks");
@@ -113,7 +128,7 @@
     if (sort === next) ascending = !ascending;
     else {
       sort = next;
-      ascending = next === "name";
+      ascending = true;
     }
   }
   async function showCreate() {
@@ -134,6 +149,7 @@
         request: { version: CONTRACT_VERSION, name },
       });
       closeCreate();
+      notice = "Cask created.";
       await refresh();
       await openCask(cask.id);
     } catch (cause) {
@@ -162,7 +178,7 @@
     }
   }
   onMount(() => {
-    void refresh();
+    void refresh().then(onReady);
     const poll = window.setInterval(() => {
       void refresh(true);
       void invoke<RecoveryStatus>("recovery_status")
@@ -268,17 +284,6 @@
           >
         </div>{/if}
     </header>
-    {#if error}<div class="notice error" role="alert">
-        {error}<button
-          class="icon-button"
-          type="button"
-          aria-label="Dismiss error"
-          onclick={() => {
-            error = "";
-          }}><Icon name="close" size={14} /></button
-        >
-      </div>{/if}
-    {#if notice}<div class="notice" role="status">{notice}</div>{/if}
     {#if page === "casks"}
       <div class="summary-cards">
         <div class="summary-card">
@@ -312,15 +317,27 @@
       </div>
       <section class="cask-table" aria-label="Casks">
         <div class="table-heading">
-          <button type="button" onclick={() => changeSort("name")}
-            >Name<Icon name="down" size={12} /></button
-          ><button type="button" onclick={() => changeSort("items")}
-            >Items<Icon name="down" size={12} /></button
-          ><button type="button" onclick={() => changeSort("storage")}
-            >Storage<Icon name="down" size={12} /></button
-          ><button type="button" onclick={() => changeSort("updated")}
-            >Updated<Icon name="down" size={12} /></button
-          ><span class="sr-only">Actions</span>
+          {#each [{ key: "name", title: "Name" }, { key: "items", title: "Items" }, { key: "storage", title: "Storage" }, { key: "updated", title: "Updated" }] as column (column.key)}
+            <button
+              type="button"
+              class:active={sort === column.key}
+              aria-pressed={sort === column.key}
+              title={sort === column.key
+                ? `Sorted ${ascending ? "ascending" : "descending"}. Click to reverse.`
+                : `Sort by ${column.title.toLowerCase()}`}
+              data-direction={sort === column.key
+                ? ascending
+                  ? "ascending"
+                  : "descending"
+                : undefined}
+              onclick={() => changeSort(column.key as typeof sort)}
+              >{column.title}{#if sort === column.key}<Icon
+                  name={ascending ? "up" : "down"}
+                  size={13}
+                />{/if}</button
+            >
+          {/each}
+          <span class="sr-only">Actions</span>
         </div>
         <div class="cask-table-scroll">
           {#if loading}<div class="empty-state" role="status">
@@ -365,7 +382,9 @@
                     ><div class="cask-name-cell">
                       <span
                         class="status-dot"
-                        class:neutral={item.cask.state !== "ACTIVE"}
+                        style:background={item.cask.state === "ACTIVE"
+                          ? caskColor(item.cask.id)
+                          : "#999"}
                         title={label(item.cask.state)}
                       ></span>
                       <div>
@@ -386,28 +405,29 @@
                       >{relativeTime(item.cask.updatedAtMs)}</time
                     ></button
                   >
-                  <details class="row-actions">
-                    <summary
-                      aria-label={`Actions for ${item.cask.name}`}
-                      title="Cask actions"
-                      ><Icon name="more" size={18} /></summary
+                  <div class="row-actions">
+                    <PopupMenu
+                      id={`cask-actions-${item.cask.id}`}
+                      label={`Actions for ${item.cask.name}`}
                     >
-                    <div class="menu">
                       <button
+                        role="menuitem"
                         type="button"
                         onclick={() => void openCask(item.cask.id)}
                         >Open workspace</button
                       ><button
+                        role="menuitem"
                         type="button"
                         onclick={() => void openStorage(item.cask.id)}
                         >Open storage folder</button
                       ><button
+                        role="menuitem"
                         type="button"
                         onclick={() => void exportReport(item)}
                         >Export report</button
                       >
-                    </div>
-                  </details>
+                    </PopupMenu>
+                  </div>
                 </li>{/each}
             </ul>
           {/if}

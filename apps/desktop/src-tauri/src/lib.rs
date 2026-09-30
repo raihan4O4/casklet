@@ -21,6 +21,7 @@ pub fn run() {
             update_cask,
             cask_library,
             open_cask_window,
+            window_ready,
             open_cask_storage,
             open_storage_root,
             export_cask,
@@ -117,6 +118,13 @@ async fn open_cask_window(
         .map_err(|_| window_error("Window manager unavailable"))?;
     let label = format!("cask-{}", cask.id);
     if let Some(window) = app.get_webview_window(&label) {
+        // A second click during initialization must not expose the hidden WebView.
+        if !window
+            .is_visible()
+            .map_err(|e| window_error(e.to_string()))?
+        {
+            return Ok(());
+        }
         window
             .unminimize()
             .map_err(|e| window_error(e.to_string()))?;
@@ -146,6 +154,8 @@ async fn open_cask_window(
     .decorations(false)
     .maximizable(false)
     .minimizable(true)
+    .visible(false)
+    .background_color(tauri::window::Color(255, 255, 255, 255))
     .position(x, y.max(0.0))
     .parent(&main)
     .map_err(|e| window_error(e.to_string()))?
@@ -158,6 +168,14 @@ async fn open_cask_window(
             let _ = owner.emit("casks.changed", ());
         }
     });
+    Ok(())
+}
+
+/// The invoking `WebView` reveals only its own already-rendered native window.
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+async fn window_ready(window: tauri::WebviewWindow) -> Result<(), casklet_contracts::ApiError> {
+    window.show().map_err(|e| window_error(e.to_string()))?;
     window.set_focus().map_err(|e| window_error(e.to_string()))
 }
 

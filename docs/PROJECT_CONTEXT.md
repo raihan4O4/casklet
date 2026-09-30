@@ -14,7 +14,7 @@ Core principle:
 
 ## Current phase
 
-The initial design program is approved. Milestones 0–10 are integrated into `develop`. The desktop GUI redesign is tracked in PR #14 from `ui` to `develop`; manual Windows release gates remain open. Milestone 4 removal and Milestone 8 uninstall remain behind the disabled `reviewed-removal` feature and require independent security review before destructive functionality is enabled in public builds.
+The initial design program is approved. Milestones 0–10 are integrated into `develop`. The desktop GUI redesign was merged in PR #14. A follow-up UI polish pass adds consistent menus, focus states, floating notifications, resource/application picker hierarchy, and hidden-window readiness. Manual Windows release gates remain open. Milestone 4 removal and Milestone 8 uninstall remain behind the disabled `reviewed-removal` feature and require independent security review before destructive functionality is enabled in public builds.
 
 - Phase 1 — Requirements: approved.
 - Phase 2 — Cross-platform and installation workflow: approved.

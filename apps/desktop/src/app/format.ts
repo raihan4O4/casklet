@@ -23,3 +23,32 @@ export function label(value: string): string {
     .replaceAll("_", " ")
     .replace(/^./, (letter) => letter.toUpperCase());
 }
+
+/** Stable identity accents: never interpreted as ownership or health. */
+export function caskColor(id: string): string {
+  const colors = [
+    "#5b8b6b",
+    "#5d7d9e",
+    "#85709c",
+    "#ae8154",
+    "#ae6e70",
+    "#5c8d91",
+  ];
+  let hash = 0;
+  for (const character of id)
+    hash = (hash * 31 + character.charCodeAt(0)) >>> 0;
+  return colors[hash % colors.length];
+}
+
+export function activityDay(timestamp: number): string {
+  const date = new Date(timestamp);
+  const now = new Date();
+  if (date.toDateString() === now.toDateString()) return "Today";
+  now.setDate(now.getDate() - 1);
+  if (date.toDateString() === now.toDateString()) return "Yesterday";
+  return date.toLocaleDateString(undefined, {
+    month: "short",
+    day: "numeric",
+    year: "numeric",
+  });
+}

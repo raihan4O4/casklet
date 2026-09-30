@@ -11,6 +11,7 @@
   import MoreHorizontal from "@lucide/svelte/icons/ellipsis";
   import ArrowLeft from "@lucide/svelte/icons/arrow-left";
   import Trash2 from "@lucide/svelte/icons/trash-2";
+  import ChevronUp from "@lucide/svelte/icons/chevron-up";
   import ChevronDown from "@lucide/svelte/icons/chevron-down";
   import ExternalLink from "@lucide/svelte/icons/external-link";
   import X from "@lucide/svelte/icons/x";
@@ -37,6 +38,7 @@
     back: ArrowLeft,
     trash: Trash2,
     down: ChevronDown,
+    up: ChevronUp,
     open: ExternalLink,
     close: X,
     refresh: RefreshCw,
