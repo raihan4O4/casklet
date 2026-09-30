@@ -82,6 +82,12 @@ fn validate_manifest(path: &Path) -> Result<(Value, ManifestPreview), String> {
     if !safe_text(name, 120) {
         return Err("Invalid Cask name".into());
     }
+    if let Some(description) = cask.get("description") {
+        let description = description.as_str().ok_or("Invalid Cask description")?;
+        if description.chars().count() > 500 || description.chars().any(char::is_control) {
+            return Err("Invalid Cask description".into());
+        }
+    }
     let resources = value
         .get("resources")
         .and_then(Value::as_array)
@@ -311,7 +317,7 @@ impl SqliteCasks {
             item
         }).collect();
         let mut result = json!({"schemaVersion":1,"profile":if profile == ExportProfile::Portable {"portable"} else {"machine"},
-            "cask":{"name":cask.name,"state":cask.state.code()},
+            "cask":{"name":cask.name,"description":cask.description,"state":cask.state.code()},
             "categories":categories.iter().map(|c| json!({"key":c.key,"name":c.name})).collect::<Vec<_>>(),
             "resources":entries,
             "warnings":["Inventory is informational and does not grant deletion authority."]});
@@ -387,8 +393,8 @@ impl SqliteCasks {
             .as_i64()
             .filter(|n| *n >= 0)
             .ok_or("Invalid creation time")?;
-        transaction.execute("INSERT INTO casks(id,name,storage_key,managed_storage_root,created_at_ms,updated_at_ms,revision,state) VALUES (?1,?2,?1,?3,?4,?4,0,'RECOVERY_REQUIRED')",
-            params![preview.cask_id,preview.cask_name,root.to_string_lossy(),created]).map_err(|e|e.to_string())?;
+        transaction.execute("INSERT INTO casks(id,name,description,storage_key,managed_storage_root,created_at_ms,updated_at_ms,revision,state) VALUES (?1,?2,?5,?1,?3,?4,?4,0,'RECOVERY_REQUIRED')",
+            params![preview.cask_id,preview.cask_name,root.to_string_lossy(),created,manifest["cask"]["description"].as_str().unwrap_or("")]).map_err(|e|e.to_string())?;
         if let Some(categories) = manifest["categories"].as_array() {
             for category in categories {
                 if category["isBuiltin"] == false {

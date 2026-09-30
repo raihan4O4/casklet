@@ -98,7 +98,7 @@ impl ManifestProjection for LocalStorage {
         restore_previous_manifest(&metadata, &cask.id)?;
         let manifest = serde_json::json!({
             "schemaVersion":1,
-            "cask":{"id":cask.id,"name":cask.name,"state":cask.state.code(),"createdAtMs":cask.created_at_ms},
+            "cask":{"id":cask.id,"name":cask.name,"description":cask.description,"state":cask.state.code(),"createdAtMs":cask.created_at_ms},
             "resources":resources.iter().map(|item| serde_json::json!({
                 "id":item.id,"name":item.name,"kind":item.kind,"management":item.management,
                 "path":item.path,"containment":item.containment,"categoryKey":item.category_key,

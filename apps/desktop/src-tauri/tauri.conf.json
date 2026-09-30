@@ -13,7 +13,18 @@
     "security": {
       "csp": "default-src 'self'; connect-src ipc: http://ipc.localhost; img-src 'self' asset: http://asset.localhost; style-src 'self' 'unsafe-inline'"
     },
-    "windows": [{ "title": "Casklet", "width": 960, "height": 640 }]
+    "windows": [
+      {
+        "label": "main",
+        "title": "Casklet",
+        "width": 1024,
+        "height": 720,
+        "resizable": false,
+        "maximizable": false,
+        "minimizable": true,
+        "decorations": false
+      }
+    ]
   },
   "bundle": {
     "active": true,
@@ -23,6 +34,8 @@
     "licenseFile": "../../../LICENSE",
     "resources": {
       "../../../NOTICE": "NOTICE",
+      "../../../LICENSES/Inter-OFL.txt": "licenses/Inter-OFL.txt",
+      "../../../LICENSES/Lucide-ISC.txt": "licenses/Lucide-ISC.txt",
       "../../../LICENSES/README.md": "THIRD-PARTY-NOTICES.md"
     },
     "windows": { "nsis": { "installMode": "currentUser" } }

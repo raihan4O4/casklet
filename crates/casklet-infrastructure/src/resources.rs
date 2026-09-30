@@ -6,7 +6,7 @@ use casklet_domain::resource::{IntakeMode, Resource};
 use rusqlite::{OptionalExtension, params};
 use uuid::Uuid;
 
-const SELECT_RESOURCE: &str = "SELECT r.id,a.cask_id,r.display_name,l.path_display,r.kind,r.management,l.containment,r.availability,a.category_key,r.size_bytes,r.size_measurement,r.unknown_entries FROM resources r JOIN resource_associations a ON a.resource_id=r.id AND a.removed_at_ms IS NULL JOIN resource_locations l ON l.resource_id=r.id AND l.is_primary=1 AND l.retired_at_ms IS NULL";
+const SELECT_RESOURCE: &str = "SELECT r.id,a.cask_id,r.display_name,l.path_display,r.kind,r.management,l.containment,r.availability,a.category_key,r.size_bytes,r.size_measurement,r.unknown_entries,(SELECT COUNT(*) > 1 FROM resource_associations shared WHERE shared.resource_id=r.id AND shared.removed_at_ms IS NULL) FROM resources r JOIN resource_associations a ON a.resource_id=r.id AND a.removed_at_ms IS NULL JOIN resource_locations l ON l.resource_id=r.id AND l.is_primary=1 AND l.retired_at_ms IS NULL";
 
 fn resource_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ResourceView> {
     let size: Option<i64> = row.get(9)?;
@@ -19,6 +19,7 @@ fn resource_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ResourceView> {
         path: row.get(3)?,
         kind: row.get(4)?,
         management: row.get(5)?,
+        shared: row.get(12)?,
         containment: row.get(6)?,
         availability: row.get(7)?,
         category_key: row.get(8)?,

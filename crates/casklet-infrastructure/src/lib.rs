@@ -53,10 +53,10 @@ impl SqliteCasks {
         if integrity != "ok" {
             return Err(format!("database integrity check failed: {integrity}"));
         }
-        if !(0..=10).contains(&version) {
+        if !(0..=11).contains(&version) {
             return Err(format!("unsupported database schema version: {version}"));
         }
-        if version > 0 && version < 10 {
+        if version > 0 && version < 11 {
             backup_before_migration(&connection, &this.db_path, version)?;
         }
         match version {
@@ -70,7 +70,7 @@ impl SqliteCasks {
                     .map_err(|e| e.to_string())?;
                 transaction.commit().map_err(|e| e.to_string())?;
             }
-            1..=10 => {}
+            1..=11 => {}
             _ => unreachable!("schema version checked above"),
         }
         if version == 1 || version == 0 {
@@ -175,6 +175,16 @@ impl SqliteCasks {
                 .map_err(|e| e.to_string())?;
             transaction.commit().map_err(|e| e.to_string())?;
         }
+        if version <= 10 {
+            let transaction = connection.transaction().map_err(|e| e.to_string())?;
+            transaction
+                .execute_batch(include_str!("../../../migrations/0011_cask_metadata.sql"))
+                .map_err(|e| e.to_string())?;
+            transaction
+                .execute_batch("PRAGMA user_version=11")
+                .map_err(|e| e.to_string())?;
+            transaction.commit().map_err(|e| e.to_string())?;
+        }
         Ok(this)
     }
     fn connection(&self) -> Result<Connection, String> {
@@ -251,6 +261,7 @@ fn row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Cask> {
     Ok(Cask {
         id: row.get(0)?,
         name: row.get(1)?,
+        description: row.get(8)?,
         storage_key: row.get(2)?,
         managed_storage_root: row.get(3)?,
         created_at_ms: row.get(4)?,
@@ -259,9 +270,19 @@ fn row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Cask> {
         state,
     })
 }
-const SELECT: &str = "SELECT id,name,storage_key,managed_storage_root,created_at_ms,updated_at_ms,revision,state FROM casks";
+const SELECT: &str = "SELECT id,name,storage_key,managed_storage_root,created_at_ms,updated_at_ms,revision,state,description FROM casks";
 
 impl CaskRepository for SqliteCasks {
+    fn update(&self, cask: &Cask, expected_revision: i64) -> Result<bool, String> {
+        let mut connection = self.connection()?;
+        let transaction = connection.transaction().map_err(|e| e.to_string())?;
+        let changed = transaction.execute("UPDATE casks SET name=?1,description=?2,state=?3,updated_at_ms=?4,revision=?5 WHERE id=?6 AND revision=?7 AND NOT EXISTS (SELECT 1 FROM operation_locks WHERE lock_key=?8)", params![cask.name,cask.description,cask.state.code(),cask.updated_at_ms,cask.revision,cask.id,expected_revision,format!("cask:{}:mutation",cask.id)]).map_err(|e|e.to_string())?;
+        if changed == 1 {
+            transaction.execute("INSERT INTO projection_jobs(cask_id,target_revision,state,updated_at_ms) VALUES (?1,?2,'PENDING',?3) ON CONFLICT(cask_id) DO UPDATE SET target_revision=excluded.target_revision,state='PENDING',updated_at_ms=excluded.updated_at_ms", params![cask.id,cask.revision,cask.updated_at_ms]).map_err(|e|e.to_string())?;
+        }
+        transaction.commit().map_err(|e| e.to_string())?;
+        Ok(changed == 1)
+    }
     fn create(&self, cask: &Cask) -> Result<(), String> {
         let mut connection = self.connection()?;
         let transaction = connection.transaction().map_err(|e| e.to_string())?;
@@ -300,6 +321,33 @@ impl LocalStorage {
     #[must_use]
     pub fn new(root: PathBuf) -> Self {
         Self { root }
+    }
+}
+impl casklet_application::library::StorageBrowser for LocalStorage {
+    fn storage_root(&self) -> String {
+        self.root.to_string_lossy().into_owned()
+    }
+    fn open_directory(&self, path: &str) -> Result<(), String> {
+        let directory = Path::new(path).canonicalize().map_err(|e| e.to_string())?;
+        let root = self.root.canonicalize().map_err(|e| e.to_string())?;
+        if !directory.is_dir() || !directory.starts_with(root) {
+            return Err("Storage directory is unavailable or outside the configured root".into());
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            let windows = std::env::var_os("WINDIR").ok_or("Windows directory unavailable")?;
+            std::process::Command::new(PathBuf::from(windows).join("explorer.exe"))
+                .arg(directory)
+                .creation_flags(0x0800_0000)
+                .spawn()
+                .map_err(|e| e.to_string())?;
+            Ok(())
+        }
+        #[cfg(not(windows))]
+        {
+            Err("Opening storage is supported on Windows only".into())
+        }
     }
 }
 impl ManagedStorage for LocalStorage {
@@ -387,6 +435,113 @@ mod tests {
     };
     use casklet_domain::resource::IntakeMode;
     use casklet_domain::resource::Resource;
+
+    #[test]
+    #[allow(clippy::too_many_lines)] // Integration fixture covers cross-layer persistence and sharing.
+    fn library_deduplicates_shared_resources_and_metadata_survives_restart() {
+        let root = std::env::temp_dir().join(format!("casklet-library-{}", uuid::Uuid::new_v4()));
+        let db = root.join("db/casklet.db");
+        let service = CaskService {
+            repository: SqliteCasks::open(db.clone()).unwrap(),
+            storage: LocalStorage::new(root.join("casks")),
+        };
+        let create = |name: &str| {
+            service
+                .create(
+                    &CreateCask {
+                        version: CONTRACT_VERSION,
+                        name: name.into(),
+                    },
+                    "test",
+                )
+                .unwrap()
+        };
+        let first = create("First");
+        let second = create("Second");
+        let source = root.join("notes.txt");
+        fs::write(&source, b"notes").unwrap();
+        service
+            .add_resource(
+                &AddResource {
+                    version: CONTRACT_VERSION,
+                    cask_id: first.id.clone(),
+                    source_path: source.to_string_lossy().into_owned(),
+                    mode: AddMode::Copy,
+                    category_key: "other".into(),
+                },
+                "test",
+                &|_, _| {},
+            )
+            .unwrap();
+        let resources = service
+            .list_resources(
+                &ListResources {
+                    version: CONTRACT_VERSION,
+                    cask_id: first.id.clone(),
+                },
+                "test",
+            )
+            .unwrap();
+        Connection::open(&db).unwrap().execute("INSERT INTO resource_associations(id,cask_id,resource_id,category_key,relationship,removal_policy,added_at_ms) VALUES (?1,?2,?3,'other','REFERENCED','DETACH_ONLY',1)", params![uuid::Uuid::new_v4().to_string(),second.id,resources[0].id]).unwrap();
+        let library = service
+            .cask_library(
+                &ListCasks {
+                    version: CONTRACT_VERSION,
+                },
+                "test",
+            )
+            .unwrap();
+        assert_eq!(library.total_items, 1);
+        assert_eq!(library.managed_bytes, 5);
+        assert!(library.casks.iter().all(|item| item.item_count == 1));
+        assert!(
+            service
+                .list_resources(
+                    &ListResources {
+                        version: CONTRACT_VERSION,
+                        cask_id: second.id.clone()
+                    },
+                    "test"
+                )
+                .unwrap()[0]
+                .shared
+        );
+        let current = service
+            .get(
+                &GetCask {
+                    version: CONTRACT_VERSION,
+                    id: first.id.clone(),
+                },
+                "test",
+            )
+            .unwrap();
+        let request = casklet_contracts::UpdateCask {
+            version: CONTRACT_VERSION,
+            id: first.id.clone(),
+            name: "Renamed".into(),
+            description: "Project notes".into(),
+            archived: true,
+            expected_revision: current.revision,
+        };
+        let updated = service.update_cask(&request, "test").unwrap();
+        assert_eq!(updated.managed_storage_root, first.managed_storage_root);
+        assert!(service.update_cask(&request, "test").is_err());
+        let manifest = fs::read_to_string(
+            Path::new(&first.managed_storage_root).join(".casklet/manifest.json"),
+        )
+        .unwrap();
+        assert!(manifest.contains("Project notes"));
+        drop(service);
+        let reopened = SqliteCasks::open(db)
+            .unwrap()
+            .get(&first.id)
+            .unwrap()
+            .unwrap();
+        assert_eq!(reopened.description, "Project notes");
+        assert_eq!(reopened.state, casklet_domain::CaskState::Archived);
+        assert_eq!(fs::read(source).unwrap(), b"notes");
+        fs::remove_dir_all(root).unwrap();
+    }
 
     #[cfg(windows)]
     #[test]
@@ -525,8 +680,9 @@ mod tests {
             include_str!("../../../migrations/0008_windows_inventory.sql"),
             include_str!("../../../migrations/0009_winget_lifecycle.sql"),
             include_str!("../../../migrations/0010_installer_artifacts.sql"),
+            include_str!("../../../migrations/0011_cask_metadata.sql"),
         ];
-        for version in 1..=10 {
+        for version in 1..=11 {
             let root = std::env::temp_dir().join(format!(
                 "casklet-upgrade-{version}-{}",
                 uuid::Uuid::new_v4()
@@ -545,7 +701,8 @@ mod tests {
             drop(connection);
             let reopened = SqliteCasks::open(db).unwrap();
             assert_eq!(reopened.list().unwrap()[0].name, "Existing");
-            if version < 10 {
+            assert!(reopened.list().unwrap()[0].description.is_empty());
+            if version < 11 {
                 let backups = fs::read_dir(root.join("backups"))
                     .unwrap()
                     .collect::<Result<Vec<_>, _>>()
@@ -954,7 +1111,7 @@ mod tests {
             .unwrap()
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(schema_version, 10);
+        assert_eq!(schema_version, 11);
         assert_eq!(
             reopened
                 .list(

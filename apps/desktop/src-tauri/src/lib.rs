@@ -1,4 +1,4 @@
-use tauri::Emitter;
+use tauri::{Emitter, Manager};
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 /// Starts the desktop shell and shared Cask service.
 ///
@@ -15,8 +15,14 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .manage(service)
+        .manage(std::sync::Mutex::new(()))
         .invoke_handler(tauri::generate_handler![
             create_cask,
+            update_cask,
+            cask_library,
+            open_cask_window,
+            open_cask_storage,
+            open_storage_root,
             export_cask,
             preview_recovery_manifest,
             recover_manifest,
@@ -87,6 +93,128 @@ type Service = casklet_application::CaskService<
     casklet_infrastructure::LocalStorage,
 >;
 
+const DETAIL_WIDTH: f64 = 560.0;
+const DETAIL_HEIGHT: f64 = 760.0;
+
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+async fn open_cask_window(
+    app: tauri::AppHandle,
+    service: tauri::State<'_, Service>,
+    gate: tauri::State<'_, std::sync::Mutex<()>>,
+    request: casklet_contracts::GetCask,
+) -> Result<(), casklet_contracts::ApiError> {
+    let cask = service.get(&request, "desktop")?;
+    if !cask
+        .id
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || c == '-')
+    {
+        return Err(window_error("Invalid Cask window identity"));
+    }
+    let _guard = gate
+        .lock()
+        .map_err(|_| window_error("Window manager unavailable"))?;
+    let label = format!("cask-{}", cask.id);
+    if let Some(window) = app.get_webview_window(&label) {
+        window
+            .unminimize()
+            .map_err(|e| window_error(e.to_string()))?;
+        window.show().map_err(|e| window_error(e.to_string()))?;
+        return window.set_focus().map_err(|e| window_error(e.to_string()));
+    }
+    let main = app
+        .get_webview_window("main")
+        .ok_or_else(|| window_error("Main window unavailable"))?;
+    let scale = main
+        .scale_factor()
+        .map_err(|e| window_error(e.to_string()))?;
+    let position = main
+        .inner_position()
+        .map_err(|e| window_error(e.to_string()))?;
+    let size = main.inner_size().map_err(|e| window_error(e.to_string()))?;
+    let x = f64::from(position.x) / scale + (f64::from(size.width) / scale - DETAIL_WIDTH) / 2.0;
+    let y = f64::from(position.y) / scale + (f64::from(size.height) / scale - DETAIL_HEIGHT) / 2.0;
+    let window = tauri::WebviewWindowBuilder::new(
+        &app,
+        label,
+        tauri::WebviewUrl::App(format!("index.html?cask={}", cask.id).into()),
+    )
+    .title(format!("{} — Casklet", cask.name))
+    .inner_size(DETAIL_WIDTH, DETAIL_HEIGHT)
+    .resizable(false)
+    .decorations(false)
+    .maximizable(false)
+    .minimizable(true)
+    .position(x, y.max(0.0))
+    .parent(&main)
+    .map_err(|e| window_error(e.to_string()))?
+    .build()
+    .map_err(|e| window_error(e.to_string()))?;
+    let owner = main.clone();
+    window.on_window_event(move |event| {
+        if matches!(event, tauri::WindowEvent::Destroyed) {
+            let _ = owner.set_focus();
+            let _ = owner.emit("casks.changed", ());
+        }
+    });
+    window.set_focus().map_err(|e| window_error(e.to_string()))
+}
+
+fn window_error(message: impl Into<String>) -> casklet_contracts::ApiError {
+    casklet_contracts::ApiError {
+        version: casklet_contracts::CONTRACT_VERSION,
+        code: "WINDOW".into(),
+        message: message.into(),
+        correlation_id: "desktop".into(),
+    }
+}
+
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+async fn cask_library(
+    service: tauri::State<'_, Service>,
+    request: casklet_contracts::ListCasks,
+) -> Result<casklet_contracts::CaskLibraryView, casklet_contracts::ApiError> {
+    let service = service.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || service.cask_library(&request, "desktop"))
+        .await
+        .map_err(|e| window_error(e.to_string()))?
+}
+
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+fn update_cask(
+    app: tauri::AppHandle,
+    service: tauri::State<'_, Service>,
+    request: casklet_contracts::UpdateCask,
+) -> Result<casklet_contracts::CaskView, casklet_contracts::ApiError> {
+    let result = service.update_cask(&request, "desktop")?;
+    if let Some(window) = app.get_webview_window(&format!("cask-{}", result.id)) {
+        let _ = window.set_title(&format!("{} — Casklet", result.name));
+    }
+    let _ = app.emit("casks.changed", &result.id);
+    Ok(result)
+}
+
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+fn open_cask_storage(
+    service: tauri::State<'_, Service>,
+    request: casklet_contracts::GetCask,
+) -> Result<(), casklet_contracts::ApiError> {
+    service.open_cask_storage(&request, "desktop")
+}
+
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+fn open_storage_root(
+    service: tauri::State<'_, Service>,
+    request: casklet_contracts::ListCasks,
+) -> Result<(), casklet_contracts::ApiError> {
+    service.open_storage_root(&request, "desktop")
+}
+
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
 async fn inspect_installer_artifact(
@@ -124,14 +252,14 @@ fn list_installer_artifacts(
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
 async fn launch_installer_artifact(
-    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
     service: tauri::State<'_, Service>,
     request: casklet_contracts::LaunchInstallerArtifact,
 ) -> Result<casklet_contracts::InstallerOperationView, casklet_contracts::ApiError> {
     let service = service.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
         service.launch_installer_artifact(&request, "desktop", &|id| {
-            let _ = app.emit("installer.operation.started", id);
+            let _ = window.emit_to(window.label(), "installer.operation.started", id);
         })
     })
     .await
@@ -210,14 +338,14 @@ async fn review_winget_package(
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
 async fn install_winget_package(
-    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
     service: tauri::State<'_, Service>,
     request: casklet_contracts::InstallWingetPackage,
 ) -> Result<casklet_contracts::WingetInstallationView, casklet_contracts::ApiError> {
     let service = service.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
         service.install_winget_package(&request, "desktop", &|id| {
-            let _ = app.emit("winget.operation.started", id);
+            let _ = window.emit_to(window.label(), "winget.operation.started", id);
         })
     })
     .await
@@ -279,7 +407,7 @@ fn approve_winget_uninstall_plan(
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value, unused_variables)]
 async fn execute_winget_uninstall_plan(
-    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
     service: tauri::State<'_, Service>,
     request: casklet_contracts::ExecuteWingetUninstallPlan,
 ) -> Result<casklet_contracts::WingetUninstallPlanView, casklet_contracts::ApiError> {
@@ -288,7 +416,7 @@ async fn execute_winget_uninstall_plan(
         let service = service.inner().clone();
         tauri::async_runtime::spawn_blocking(move || {
             service.execute_winget_uninstall_plan(&request, "desktop", &|id| {
-                let _ = app.emit("winget.operation.started", id);
+                let _ = window.emit_to(window.label(), "winget.operation.started", id);
             })
         })
         .await
@@ -381,7 +509,7 @@ fn inspect_portable_zip(
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
 async fn install_portable_zip(
-    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
     service: tauri::State<'_, Service>,
     request: casklet_contracts::InstallPortableZip,
 ) -> Result<casklet_contracts::PortableInstallationView, casklet_contracts::ApiError> {
@@ -391,10 +519,10 @@ async fn install_portable_zip(
             &request,
             "desktop",
             &|done, total| {
-                let _ = app.emit("portable.progress", (done, total));
+                let _ = window.emit_to(window.label(), "portable.progress", (done, total));
             },
             &|id| {
-                let _ = app.emit("operation.started", id);
+                let _ = window.emit_to(window.label(), "operation.started", id);
             },
         )
     })
@@ -564,7 +692,7 @@ fn get_cask(
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
 async fn add_resource(
-    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
     service: tauri::State<'_, Service>,
     request: casklet_contracts::AddResource,
 ) -> Result<casklet_contracts::ResourceView, casklet_contracts::ApiError> {
@@ -574,10 +702,10 @@ async fn add_resource(
             &request,
             "desktop",
             &|done, total| {
-                let _ = app.emit("resource.progress", (done, total));
+                let _ = window.emit_to(window.label(), "resource.progress", (done, total));
             },
             &|id| {
-                let _ = app.emit("operation.started", id);
+                let _ = window.emit_to(window.label(), "operation.started", id);
             },
         )
     })

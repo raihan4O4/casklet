@@ -11,7 +11,7 @@ Run `cargo xtask check` and, from a clean Windows 11 x64 checkout with a checksu
 ## Automated evidence
 
 - Workspace Rust tests, lint, formatting, CLI and desktop builds: `cargo xtask check`.
-- Every milestone schema 1–10 upgrades to current schema with Cask data intact; versions 1–9 produce a readable pre-migration SQLite backup.
+- Every milestone schema 1–11 upgrades to current schema with Cask data intact; versions 1–10 produce a readable pre-migration SQLite backup.
 - Corrupt database startup rejects the file without overwriting it.
 - Frontend smoke tests cover typed commands and explicit resource intake.
 
@@ -41,6 +41,12 @@ Solo developer host: Windows 11 x64 build 26200.9457, NTFS per-user profile. The
 On this host, the explicitly invoked release-mode 1,000-resource test measured inventory at 60 ms and storage aggregation at 62 ms. Cold startup and scan progress have not been profiled.
 
 The project is licensed under Apache-2.0 (`LICENSE` and `NOTICE`). The package script includes those files and emits dependency-license evidence. Third-party notice and source obligations still need review before public distribution.
+
+## GUI implementation evidence (2026-09-30)
+
+`cargo xtask check` passed: all-feature Rust lint/tests/builds, formatting, frontend lint, Svelte checks, five interaction tests, production frontend build, and generated-contract consistency. The schema 11 sharing/metadata test verifies deduplicated library totals, shared association presentation, description persistence/projection, archive preservation, and stale-revision rejection. The standard Tauri release build produced the x64 NSIS installer with destructive execution disabled. Its logo source matches the supplied PNG byte-for-byte; Inter and Lucide notices are bundled.
+
+Native visual inspection used isolated development state under `target/gui-qa`, five Casks, and a real copied notes file. Main inventory and an owned secondary workspace rendered with real totals, separate content scrolling, and visible minimize/close controls without a maximize button. Caption controls replace Windows' otherwise visible disabled maximize control. Full keyboard/screen-reader, high-DPI, repeated-window-focus, clean-machine, and installer upgrade/uninstall checks are still pending; this evidence does not close the manual release matrix.
 
 ## Performance budget proposal
 
