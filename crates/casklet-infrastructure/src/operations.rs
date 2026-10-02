@@ -301,7 +301,12 @@ pub(super) fn owner_process_alive(owner: &str) -> bool {
     };
     #[cfg(windows)]
     {
-        let output = Command::new("powershell.exe")
+        let Ok(powershell) =
+            super::windows_process::system_binary(r"WindowsPowerShell\v1.0\powershell.exe")
+        else {
+            return true;
+        };
+        let output = Command::new(powershell)
             .args(["-NoProfile", "-NonInteractive", "-Command", &format!("if (Get-Process -Id {pid} -ErrorAction SilentlyContinue) {{ 'ALIVE' }} else {{ 'DEAD' }}")])
             .output();
         let Ok(output) = output else {

@@ -14,3 +14,7 @@ Status: internal review only. Independent removal/elevation review remains a rel
 | Supply chain               | Locked Rust and pnpm dependencies; release script emits checksums, provenance, SPDX SBOM                      | Signed publisher path, license review, candidate artifact inspection   |
 
 This review does not certify absence of critical or high issues. The release must remain gated until an independent reviewer records findings, fixes are verified, and the manual matrix in `docs/engineering/milestone-10-release-gates.md` is complete.
+
+## Alpha readiness internal pass
+
+ADR 0021 records the user-authorized file-cleanup profile separately from independently gated provider uninstall. Reviewed default/Alpha/full feature builds, shared-core recovery history, immutable plan/approval state, protected path and dependency checks, short migration transactions, system-binary resolution, CSP/capabilities, bounded provider output and portable archives, and redacted diagnostics. Added restart/failure UI recovery, path-free cleanup diagnostic events, startup error reporting, exact-source package traceability, and full dependency auditing. This remains an internal pass, not an independent security certification. See the Alpha readiness report for concrete verification and remaining manual/publication gates.

@@ -32,7 +32,7 @@ jobs:
       - name: Run shared local gate
         run: cargo xtask check
       - name: Audit frontend dependencies
-        run: corepack pnpm audit --prod --audit-level high
+        run: corepack pnpm audit --audit-level high
 
   dependency-policy:
     runs-on: windows-2025

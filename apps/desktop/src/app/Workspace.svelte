@@ -5,7 +5,7 @@
   import { open, save } from "@tauri-apps/plugin-dialog";
   import { onMount, tick } from "svelte";
   import type {
-    AddMode,
+    CaskRemovalStatus,
     ApiError,
     CaskView,
     CategoryView,
@@ -30,6 +30,7 @@
     DatabaseBackupView,
   } from "../contracts/generated/casklet";
   import { CONTRACT_VERSION } from "../contracts/generated/casklet";
+  import CleanupReview from "./CleanupReview.svelte";
   import PopupMenu from "./PopupMenu.svelte";
   import { notify } from "./notifications";
   import Icon from "./Icon.svelte";
@@ -70,7 +71,8 @@
   let categories: CategoryView[] = $state([]);
   let summary: StorageSummary | null = $state(null);
   let pendingPath = $state("");
-  let pendingMode: AddMode | "" = $state("");
+  let ownershipConfirmed = $state(false);
+  let pendingMode: "reference" | "adopt" | "" = $state("");
   let pendingCategory = $state("other");
   let progress = $state("");
   let categoryName = $state("");
@@ -98,13 +100,25 @@
       progress = "";
     }
   });
+  let caskRemovalStatus: CaskRemovalStatus | null = $state(null);
+  let removeConfirmation = $state(false);
+  let removed = $state(false);
+  let reviewedPlanHash = $state("");
+  let executionConfirmed = $state(false);
+  let cleanupResourceIds: string[] = $state([]);
   let removalPlan: RemovalPlanView | null = $state(null);
   let removalCategory = $state("");
   let removalEnabled = $state(false);
-  let removalConfirmation = $state("");
+  let preserveConfirmed = $state(false);
   let permanentPlan = $state(false);
   let permanentConfirmation = $state(false);
   let removalBusy = $state(false);
+  let cleanupHistory: RemovalPlanView[] = $state([]);
+  const cleanupPending = $derived(
+    cleanupHistory.some((plan) =>
+      ["PARTIAL", "EXECUTING"].includes(plan.state),
+    ),
+  );
   let portablePreview: PortableZipPreview | null = $state(null);
   let portablePath = $state("");
   let portableExe = $state("");
@@ -609,6 +623,7 @@
         "Portable application installed. Launch only if you trust its source.";
       await refreshResources();
       await refreshOperations();
+      await refreshCleanupHistory();
       error = "";
     } catch (cause) {
       error = message(cause);
@@ -632,7 +647,7 @@
     }
   }
   async function previewPortableRemoval(item: PortableInstallationView) {
-    await previewRemoval([item.resourceId]);
+    navigateCleanup([item.resourceId]);
   }
   let recoveryManifestPath = $state("");
   let recoveryManifestPreview = $state("");
@@ -707,8 +722,26 @@
       error = message(cause);
     }
   }
-  async function previewRemoval(resourceIds: string[] = []) {
-    if (!selected) return;
+  async function previewRemoval(resourceIds: string[] = cleanupResourceIds) {
+    if (
+      !selected ||
+      removalBusy ||
+      cleanupPending ||
+      ["PARTIAL", "EXECUTING"].includes(removalPlan?.state ?? "")
+    )
+      return;
+    detailTab = "cleanup";
+    const scoped = resources.filter((item) =>
+      resourceIds.length
+        ? resourceIds.includes(item.id)
+        : !removalCategory || item.categoryKey === removalCategory,
+    );
+    if (!scoped.length) {
+      removalPlan = null;
+      return;
+    }
+    removalBusy = true;
+    const previous = removalPlan?.id;
     try {
       removalPlan = await invoke<RemovalPlanView>("create_removal_plan", {
         request: {
@@ -719,18 +752,90 @@
           permanent: permanentPlan,
         },
       });
-      detailTab = "cleanup";
       permanentConfirmation = false;
+      preserveConfirmed = false;
+      reviewedPlanHash = "";
+      executionConfirmed = false;
+      progress =
+        removalPlan.id === previous
+          ? "Current cleanup plan loaded."
+          : "Cleanup plan ready.";
       error = "";
+      await tick();
+      document.getElementById("cleanup-plan-heading")?.focus();
     } catch (cause) {
       error = message(cause);
+    } finally {
+      removalBusy = false;
     }
   }
+  async function removeCask() {
+    if (!selected || !removeConfirmation || metadataBusy) return;
+    metadataBusy = true;
+    try {
+      await invoke("remove_cask", {
+        request: {
+          version: CONTRACT_VERSION,
+          id: selected.id,
+          expectedRevision: selected.revision,
+          confirm: true,
+        },
+      });
+      removed = true;
+      selected = null;
+      removalPlan = null;
+      progress = "Cask permanently removed.";
+    } catch (cause) {
+      error = message(cause);
+      await refreshResources();
+    } finally {
+      metadataBusy = false;
+    }
+  }
+  async function navigateCleanup(resourceIds: string[] = []) {
+    if (cleanupResourceIds.join() !== resourceIds.join()) {
+      removalPlan = null;
+      reviewedPlanHash = "";
+      executionConfirmed = false;
+    }
+    cleanupResourceIds = resourceIds;
+    detailTab = "cleanup";
+    await tick();
+    document.getElementById("cleanup-heading")?.focus();
+  }
+  function invalidateCleanupReview() {
+    removalPlan = null;
+    reviewedPlanHash = "";
+    executionConfirmed = false;
+    permanentConfirmation = false;
+  }
   function previewSelectedResource() {
-    if (selectedResource) void previewRemoval([selectedResource.id]);
+    if (selectedResource) navigateCleanup([selectedResource.id]);
+  }
+  async function reconcileCleanupFailure(cause: unknown) {
+    executionConfirmed = false;
+    permanentConfirmation = false;
+    preserveConfirmed = false;
+    if (removalPlan) {
+      try {
+        removalPlan = await invoke<RemovalPlanView>("get_removal_plan", {
+          request: { version: CONTRACT_VERSION, id: removalPlan.id },
+        });
+        await refreshCleanupHistory();
+      } catch {
+        // Retain the last inspected plan and original error if persistence is unavailable.
+      }
+    }
+    error = message(cause);
   }
   async function approveRemoval() {
-    if (!removalPlan || !removalEnabled) return;
+    if (
+      !removalPlan ||
+      removalBusy ||
+      !removalEnabled ||
+      reviewedPlanHash !== removalPlan.planHash
+    )
+      return;
     removalBusy = true;
     try {
       removalPlan = await invoke<RemovalPlanView>("approve_removal_plan", {
@@ -742,7 +847,7 @@
       });
       error = "";
     } catch (cause) {
-      error = message(cause);
+      await reconcileCleanupFailure(cause);
     } finally {
       removalBusy = false;
     }
@@ -750,8 +855,10 @@
   async function executeRemoval() {
     if (
       !removalPlan ||
+      removalBusy ||
       !removalEnabled ||
-      removalConfirmation !== removalPlan.id ||
+      !executionConfirmed ||
+      reviewedPlanHash !== removalPlan.planHash ||
       (removalPlan.permanent && !permanentConfirmation)
     )
       return;
@@ -765,22 +872,23 @@
           confirmPermanent: removalPlan.permanent && permanentConfirmation,
         },
       });
-      removalConfirmation = "";
+      preserveConfirmed = false;
+      executionConfirmed = false;
       await refreshResources();
+      await refresh();
       if (selected)
         selected = await invoke<CaskView>("get_cask", {
           request: { version: CONTRACT_VERSION, id: selected.id },
         });
       error = "";
     } catch (cause) {
-      error = message(cause);
+      await reconcileCleanupFailure(cause);
     } finally {
       removalBusy = false;
     }
   }
   async function closeUncertainRemoval() {
-    if (!removalPlan?.runId || removalConfirmation !== removalPlan.runId)
-      return;
+    if (!removalPlan?.runId || !preserveConfirmed || removalBusy) return;
     removalBusy = true;
     try {
       removalPlan = await invoke<RemovalPlanView>("close_uncertain_removal", {
@@ -789,14 +897,16 @@
           runId: removalPlan.runId,
         },
       });
-      removalConfirmation = "";
+      preserveConfirmed = false;
+      await refreshResources();
+      await refresh();
       if (selected)
         selected = await invoke<CaskView>("get_cask", {
           request: { version: CONTRACT_VERSION, id: selected.id },
         });
       error = "";
     } catch (cause) {
-      error = message(cause);
+      await reconcileCleanupFailure(cause);
     } finally {
       removalBusy = false;
     }
@@ -809,6 +919,7 @@
     try {
       await refreshRecovery();
       await refreshOperations();
+      await refreshCleanupHistory();
       error = "";
     } catch (cause) {
       error = message(cause);
@@ -922,6 +1033,7 @@
       resetInstallerReview();
       pendingPath = "";
       pendingMode = "";
+      ownershipConfirmed = false;
       selectedResource = null;
       removalPlan = null;
       error = "";
@@ -935,9 +1047,31 @@
       error = message(cause);
     }
   }
+  async function loadCleanupPlan(plan: RemovalPlanView) {
+    await navigateCleanup(
+      plan.scope === "RESOURCES"
+        ? plan.items.map((item) => item.resourceId)
+        : [],
+    );
+    removalPlan = plan;
+    permanentPlan = plan.permanent;
+    removalCategory = plan.categoryKey ?? "";
+    reviewedPlanHash = "";
+    executionConfirmed = false;
+    permanentConfirmation = false;
+    preserveConfirmed = false;
+  }
+  async function refreshCleanupHistory() {
+    cleanupHistory = await invoke<RemovalPlanView[]>("list_removal_plans", {
+      request: { version: CONTRACT_VERSION, caskId: selected?.id ?? null },
+    });
+  }
   async function refreshResources() {
     if (!selected) return;
     const caskId = selected.id;
+    caskRemovalStatus = await invoke<CaskRemovalStatus>("cask_removal_status", {
+      request: { version: CONTRACT_VERSION, id: caskId },
+    });
     selected = await invoke<CaskView>("get_cask", {
       request: { version: CONTRACT_VERSION, id: caskId },
     });
@@ -964,6 +1098,20 @@
     summary = await invoke<StorageSummary>("storage_summary", {
       request: { version: CONTRACT_VERSION, caskId },
     });
+    await refreshCleanupHistory();
+    if (!removalPlan) {
+      const recoverable = cleanupHistory.find((plan) =>
+        ["PARTIAL", "EXECUTING"].includes(plan.state),
+      );
+      if (recoverable) {
+        removalPlan = recoverable;
+        permanentPlan = recoverable.permanent;
+        reviewedPlanHash = "";
+        executionConfirmed = false;
+        permanentConfirmation = false;
+        preserveConfirmed = false;
+      }
+    }
   }
   async function pick(directory: boolean, reference = false) {
     try {
@@ -978,22 +1126,36 @@
     }
   }
   async function addResource() {
-    if (!selected || !pendingPath || !pendingMode) return;
+    if (
+      !selected ||
+      !pendingPath ||
+      !pendingMode ||
+      (pendingMode === "adopt" && !ownershipConfirmed)
+    )
+      return;
     busy = true;
     error = "";
     try {
-      selectedResource = await invoke<ResourceView>("add_resource", {
-        request: {
-          version: CONTRACT_VERSION,
-          caskId: selected.id,
-          sourcePath: pendingPath,
-          mode: pendingMode,
-          categoryKey: pendingCategory,
+      await invoke<ResourceView>(
+        pendingMode === "adopt" ? "adopt_resource" : "add_resource",
+        {
+          request: {
+            version: CONTRACT_VERSION,
+            caskId: selected.id,
+            sourcePath: pendingPath,
+            ...(pendingMode === "adopt"
+              ? { confirmOwnership: ownershipConfirmed }
+              : { mode: pendingMode }),
+            categoryKey: pendingCategory,
+          },
         },
-      });
+      );
       pendingPath = "";
       pendingMode = "";
+      ownershipConfirmed = false;
       adding = false;
+      ownershipConfirmed = false;
+      selectedResource = null;
       progress = "Resource added.";
       await refreshResources();
     } catch (cause) {
@@ -1079,6 +1241,7 @@
           adding = true;
           pendingPath = event.payload.paths[0];
           pendingMode = "";
+          ownershipConfirmed = false;
         }
       })
       .then((unlisten) => {
@@ -1256,6 +1419,10 @@
     </nav>
   {/if}
   <div class="workspace-content">
+    {#if removed}<p role="status">Cask removed permanently.</p>
+      <button type="button" onclick={() => void getCurrentWindow().close()}
+        >Return to Casks</button
+      >{/if}
     {#if loading}<p class="loading" role="status">Loading workspace…</p>{/if}
     {#if selected && detailTab === "overview"}
       <section class="storage-panel" aria-label="Storage summary">
@@ -1436,6 +1603,24 @@
             {/each}
           </ul>{/if}
       </section>
+      {#if cleanupHistory.some( (plan) => ["PARTIAL", "EXECUTING"].includes(plan.state), )}
+        <section aria-label="Cleanup recovery">
+          <h2>Cleanup needs attention</h2>
+          <p>Inspect interrupted cleanup before starting more work.</p>
+          {#each cleanupHistory.filter( (plan) => ["PARTIAL", "EXECUTING"].includes(plan.state), ) as plan (plan.id)}
+            <button
+              type="button"
+              onclick={() => {
+                if (selected) void loadCleanupPlan(plan);
+                else
+                  void invoke("open_cask_window", {
+                    request: { version: CONTRACT_VERSION, id: plan.caskId },
+                  });
+              }}>Inspect cleanup</button
+            >
+          {/each}
+        </section>
+      {/if}
       {#if recovery && (recovery.operations.length || recovery.pendingManifestCasks.length)}
         <section id="recovery" aria-label="Recovery status">
           <h2>Recovery needed</h2>
@@ -2056,6 +2241,7 @@
                 adding = false;
                 pendingPath = "";
                 pendingMode = "";
+                ownershipConfirmed = false;
                 referencePicker = false;
               }}><Icon name="close" size={16} /></button
             >
@@ -2107,34 +2293,23 @@
                 onclick={() => {
                   pendingPath = "";
                   pendingMode = "";
+                  ownershipConfirmed = false;
                 }}>Change</button
               >
             </div>
             <fieldset class="intake-modes" disabled={busy}>
               <legend>How should Casklet add it?</legend>
-              <label class:chosen={pendingMode === "copy"}
+              <!-- ADR 0020: Copy/Move are temporarily hidden; shared user intake rejects them. Legacy/provider intake remains intact. -->
+              <label class:chosen={pendingMode === "adopt"}
                 ><input
                   type="radio"
                   name="intake-mode"
-                  value="copy"
-                  aria-label="Copy into managed storage"
+                  value="adopt"
+                  aria-label="Manage at current location"
                   bind:group={pendingMode}
                 /><span
-                  ><strong>Copy into managed storage</strong><small
-                    >Keep the original and create a managed copy.</small
-                  ></span
-                ></label
-              >
-              <label class:chosen={pendingMode === "move"}
-                ><input
-                  type="radio"
-                  name="intake-mode"
-                  value="move"
-                  aria-label="Move into managed storage"
-                  bind:group={pendingMode}
-                /><span
-                  ><strong>Move into managed storage</strong><small
-                    >Verify the destination, then remove the source.</small
+                  ><strong>Manage at current location</strong><small
+                    >Leave data here and explicitly grant cleanup authority.</small
                   ></span
                 ></label
               >
@@ -2162,23 +2337,23 @@
                   >{/each}</select
               >
             </div>
-            {#if pendingMode}<p
-                class="intake-explanation"
-                class:warning={pendingMode === "move"}
-              >
-                {pendingMode === "copy"
-                  ? "A verified copy will be stored in this Cask. The original stays where it is."
-                  : pendingMode === "move"
-                    ? "Move changes the source location. The original is removed only after the managed destination verifies."
-                    : "The item stays at its current location. Reference does not give Casklet deletion ownership."}
-              </p>{:else}<p class="intake-explanation">
-                Choose Copy, Move or Reference to continue.
+            {#if pendingMode}<p class="intake-explanation">
+                {pendingMode === "adopt"
+                  ? "The item stays here. Cleanup requires your ownership confirmation and an approved plan."
+                  : "The item stays here. Referencing never grants permission to delete it."}
               </p>{/if}
+            {#if pendingMode === "adopt"}<label class="checkbox-label"
+                ><input type="checkbox" bind:checked={ownershipConfirmed} /> This
+                data is dedicated to this Cask, is not needed elsewhere, and may
+                be moved to the Recycle Bin after I approve a cleanup plan.</label
+              >{/if}
             <div class="intake-actions">
               <button
                 class="primary-button"
                 type="button"
-                disabled={busy || !pendingMode}
+                disabled={busy ||
+                  !pendingMode ||
+                  (pendingMode === "adopt" && !ownershipConfirmed)}
                 onclick={() => void addResource()}
                 >{busy
                   ? "Adding…"
@@ -2202,8 +2377,7 @@
           <span class="count">{fileResources.length}</span>
         </div>
         <p class="intro">
-          Managed items are stored by Casklet. References stay at their original
-          location.
+          Expand an item to see its location and management details.
         </p>
         {#if fileResources.length === 0}<div class="empty-state compact">
             <Icon name="folder" size={28} />
@@ -2211,200 +2385,281 @@
             <p>Use Add Items below, or drop an item into this window.</p>
           </div>{/if}
         <ul class="resource-list">
-          {#each fileResources as resource (resource.id)}<li>
-              <Icon
-                name={resource.management === "REFERENCED"
-                  ? "link"
-                  : resource.kind === "DIRECTORY"
-                    ? "folder"
-                    : "file"}
-              /><button
-                class="resource-open"
+          {#each fileResources as resource (resource.id)}<li
+              class="resource-entry"
+            >
+              <button
+                class="resource-toggle"
                 type="button"
+                aria-label={`Details for ${resource.name}`}
+                aria-expanded={selectedResource?.id === resource.id}
+                aria-controls={`resource-details-${resource.id}`}
                 onclick={() => {
-                  selectedResource = resource;
+                  selectedResource =
+                    selectedResource?.id === resource.id ? null : resource;
                 }}
-                ><strong title={resource.name}>{resource.name}</strong><span
-                  class="truncate path"
-                  title={resource.path}>{resource.path}</span
-                ><span class="resource-meta"
-                  >{resource.kind === "DIRECTORY" ? "Folder" : "File"} · {label(
-                    resource.management,
-                  )}{resource.shared ? " · Shared" : ""} · {bytes(
-                    resource.sizeBytes,
-                  )}</span
-                ></button
-              ><span
-                class:warning={resource.availability !== "PRESENT"}
-                class="resource-availability"
-                >{label(resource.availability)}</span
               >
+                <Icon
+                  name={resource.kind === "DIRECTORY" ? "folder" : "file"}
+                />
+                <strong title={resource.name}>{resource.name}</strong>
+                {#if resource.availability !== "PRESENT"}<span
+                    class="resource-state warning"
+                    >{label(resource.availability)}</span
+                  >{/if}
+                <span class="resource-size">{bytes(resource.sizeBytes)}</span>
+                <span
+                  class:expanded={selectedResource?.id === resource.id}
+                  class="resource-chevron"><Icon name="down" size={16} /></span
+                >
+              </button>
+              {#if selectedResource?.id === resource.id}<div
+                  class="resource-inspector resource-details"
+                  id={`resource-details-${resource.id}`}
+                  role="region"
+                  aria-label={`Details for ${resource.name}`}
+                >
+                  <div class="section-heading">
+                    <h3 title={selectedResource.name}>
+                      {selectedResource.name}
+                    </h3>
+                    <button
+                      class="icon-button"
+                      type="button"
+                      aria-label="Close resource details"
+                      onclick={() => {
+                        selectedResource = null;
+                      }}><Icon name="close" /></button
+                    >
+                  </div>
+                  <dl>
+                    <dt>Location</dt>
+                    <dd>{selectedResource.path}</dd>
+                    <dt>Management</dt>
+                    <dd>
+                      {selectedResource.management === "MANAGED" &&
+                      selectedResource.containment === "EXTERNAL"
+                        ? "Managed in place"
+                        : label(selectedResource.management)}
+                    </dd>
+                    <dt>Cleanup authority</dt>
+                    <dd>
+                      {selectedResource.ownership === "OWNED"
+                        ? "Owned; requires a current reviewed plan"
+                        : "Reference only; underlying data is preserved"}
+                    </dd>
+                    <dt>Availability</dt>
+                    <dd>{label(selectedResource.availability)}</dd>
+                    <dt>Size</dt>
+                    <dd>
+                      {bytes(selectedResource.sizeBytes)} · {label(
+                        selectedResource.sizeMeasurement,
+                      )}
+                    </dd>
+                  </dl>
+                  <div class="resource-category-row">
+                    <label for="resource-category">Category</label><select
+                      id="resource-category"
+                      value={selectedResource.categoryKey}
+                      onchange={(event) => {
+                        if (selectedResource)
+                          void recategorize(
+                            selectedResource,
+                            event.currentTarget.value,
+                          );
+                      }}
+                      >{#each categories as category (category.key)}<option
+                          value={category.key}>{category.name}</option
+                        >{/each}</select
+                    >
+                  </div>
+                  <div class="resource-inspector-actions">
+                    <button
+                      class="secondary-button"
+                      type="button"
+                      onclick={previewSelectedResource}
+                      >Cleanup this item</button
+                    >
+                  </div>
+                </div>{/if}
             </li>{/each}
         </ul>
-        {#if selectedResource}<div class="review resource-inspector">
-            <div class="section-heading">
-              <h3 title={selectedResource.name}>{selectedResource.name}</h3>
-              <button
-                class="icon-button"
-                type="button"
-                aria-label="Close resource details"
-                onclick={() => {
-                  selectedResource = null;
-                }}><Icon name="close" /></button
-              >
-            </div>
-            <dl>
-              <dt>Location</dt>
-              <dd>{selectedResource.path}</dd>
-              <dt>Management</dt>
-              <dd>{label(selectedResource.management)}</dd>
-              <dt>Availability</dt>
-              <dd>{label(selectedResource.availability)}</dd>
-              <dt>Size</dt>
-              <dd>
-                {bytes(selectedResource.sizeBytes)} · {label(
-                  selectedResource.sizeMeasurement,
-                )}
-              </dd>
-            </dl>
-            <div class="resource-category-row">
-              <label for="resource-category">Category</label><select
-                id="resource-category"
-                value={selectedResource.categoryKey}
-                onchange={(event) => {
-                  if (selectedResource)
-                    void recategorize(
-                      selectedResource,
-                      event.currentTarget.value,
-                    );
-                }}
-                >{#each categories as category (category.key)}<option
-                    value={category.key}>{category.name}</option
-                  >{/each}</select
-              >
-            </div>
-            <div class="resource-inspector-actions">
-              <button
-                class="text-button"
-                type="button"
-                onclick={previewSelectedResource}>Preview cleanup</button
-              >
-            </div>
-          </div>{/if}
       </section>
     {/if}
     {#if selected && detailTab === "cleanup"}
-      <section aria-label="Removal preview">
+      <section aria-label="Cleanup Cask">
         <div class="section-heading">
-          <h2>Cleanup plan</h2>
+          <h2 id="cleanup-heading" tabindex="-1">Cleanup Cask</h2>
           <button
-            class="text-button"
+            class="secondary-button cleanup-back"
             type="button"
             onclick={() => {
               detailTab = "overview";
-            }}>Back to overview</button
+            }}><Icon name="back" size={16} /> Back to Overview</button
           >
         </div>
-        <p>
-          Review what Casklet could detach, preserve, move to the Recycle Bin,
-          or permanently delete. This preview does not change files or
-          associations.
-        </p>
-        <label for="removal-category">Scope</label>
-        <select id="removal-category" bind:value={removalCategory}>
-          <option value="">Whole Cask</option>
-          {#each categories as category (category.key)}<option
-              value={category.key}>{category.name}</option
-            >{/each}
-        </select>
-        <label
-          ><input type="checkbox" bind:checked={permanentPlan} /> Permanently delete
-          eligible managed files in this plan</label
-        >
-        <p>
-          Permanent deletion cannot be undone. Managed directories remain
-          preserved in a permanent plan; use a Recycle Bin plan for them.
-        </p>
-        <button type="button" onclick={() => void previewRemoval()}
-          >Create cleanup preview</button
-        >
-        {#if selectedResource}<button
-            type="button"
-            onclick={previewSelectedResource}>Preview selected resource</button
-          >{/if}
-        {#if removalPlan}
+        {#if caskRemovalStatus?.canRemove}
           <p>
-            Plan {removalPlan.id} is {removalPlan.state.toLowerCase()} and expires
-            {new Date(removalPlan.expiresAtMs).toLocaleString()}. Disposal: {removalPlan.permanent
-              ? "permanent files"
-              : "Recycle Bin"}.
+            This Cask has no remaining items or unfinished work. You can remove
+            it permanently.
           </p>
-          <ul>
-            {#each removalPlan.items as item (item.id)}<li>
-                {item.name}: {item.action.toLowerCase()} ({item.reasonCode.toLowerCase()});
-                {item.state.toLowerCase()}{item.resultCode
-                  ? ` (${item.resultCode.toLowerCase()})`
-                  : ""}{#if item.recoveryPath}<br />Possible recovery location:
-                  <code>{item.recoveryPath}</code>{/if}
-              </li>{/each}
-          </ul>
-          {#if removalEnabled && removalPlan.state === "DRAFT"}
+          <button
+            type="button"
+            onclick={() => {
+              removeConfirmation = true;
+            }}>Remove Cask</button
+          >
+        {:else}
+          {#if !removalPlan}<p class="cleanup-intro">
+              Clean up items, then remove the empty Cask.
+            </p>{/if}
+          {#if !removalEnabled && resources.length > 0}<p
+              class="cleanup-notice"
+              id="cleanup-limit"
+            >
+              <Icon name="info" size={16} /><span
+                ><strong>Review only</strong> · Execution is unavailable in this
+                build.</span
+              >
+            </p>{/if}
+          {#if (caskRemovalStatus?.applicationCount ?? 0) > 0}<p>
+              Application dependencies remain. Review their associations or
+              uninstall options before removing the Cask.
+            </p>
             <button
               type="button"
-              disabled={removalBusy}
-              onclick={() => void approveRemoval()}>Approve this plan</button
+              onclick={() => {
+                detailTab = "apps";
+              }}>Review applications</button
+            >{/if}
+          {#if (caskRemovalStatus?.unfinishedOperations ?? 0) > 0}<p>
+              Finish or resolve outstanding work in Activity before removing
+              this Cask.
+            </p>{/if}
+          {#if resources.length > 0}
+            {#if selected.state === "ARCHIVED"}<p>
+                Restore this Cask in Settings before creating a cleanup plan.
+              </p>{/if}
+            <label for="removal-category">Cleanup scope</label>
+            <select
+              id="removal-category"
+              bind:value={removalCategory}
+              disabled={removalBusy || cleanupPending}
+              onchange={() => {
+                cleanupResourceIds = [];
+                invalidateCleanupReview();
+              }}
             >
-          {/if}
-          {#if removalEnabled && removalPlan.state === "APPROVED"}
-            <p role="alert">
-              Executing may {removalPlan.permanent
-                ? "permanently delete eligible managed files"
-                : "move eligible managed files and directories to the Recycle Bin"}
-              and detach associations. Changed or uncertain items are preserved for
-              review.
-            </p>
-            {#if removalPlan.permanent}<label
-                ><input type="checkbox" bind:checked={permanentConfirmation} /> I
-                understand that permanent deletion cannot be undone</label
+              <option value="">Whole Cask</option>
+              {#each categories as category (category.key)}<option
+                  value={category.key}>{category.name}</option
+                >{/each}
+            </select>
+            {#if cleanupResourceIds.length}<p>
+                Considering the selected item only.
+              </p>
+              <button
+                type="button"
+                onclick={() => {
+                  cleanupResourceIds = [];
+                  invalidateCleanupReview();
+                }}
+                disabled={removalBusy}>Consider Whole Cask</button
               >{/if}
-            <label for="removal-confirmation">Type the plan ID to execute</label
-            >
-            <input
-              id="removal-confirmation"
-              bind:value={removalConfirmation}
-              autocomplete="off"
-            />
+            <fieldset class="cleanup-method">
+              <legend>Deletion method</legend>
+              <label
+                ><input
+                  type="radio"
+                  name="deletion-method"
+                  disabled={removalBusy || cleanupPending}
+                  value={false}
+                  bind:group={permanentPlan}
+                  onchange={invalidateCleanupReview}
+                /> Move to Recycle Bin</label
+              >
+              <label
+                ><input
+                  type="radio"
+                  name="deletion-method"
+                  disabled={removalBusy || cleanupPending}
+                  value={true}
+                  bind:group={permanentPlan}
+                  onchange={invalidateCleanupReview}
+                /> Permanently delete eligible files</label
+              >
+              {#if permanentPlan}<p class="method-warning">
+                  Cannot be undone. Folders and files managed at their current
+                  location will be kept. Execution requires an extra
+                  confirmation.
+                </p>{/if}
+            </fieldset>
             <button
               type="button"
+              onclick={() => void previewRemoval()}
               disabled={removalBusy ||
-                removalConfirmation !== removalPlan.id ||
-                (removalPlan.permanent && !permanentConfirmation)}
-              onclick={() => void executeRemoval()}>Execute cleanup</button
+                cleanupPending ||
+                selected.state !== "ACTIVE" ||
+                ["PARTIAL", "EXECUTING"].includes(removalPlan?.state ?? "")}
+              >Create cleanup plan</button
             >
-          {/if}
-          {#if removalEnabled && removalPlan.state === "PARTIAL" && removalPlan.runId}
-            <p role="alert">
-              The cleanup outcome is uncertain. Inspect the original path,
-              Recycle Bin, and any recovery location before closing. Closing
-              releases the lock and keeps unresolved outcomes marked unknown.
-            </p>
-            <label for="removal-confirmation"
-              >Type the run ID to close with preservation</label
-            >
-            <input
-              id="removal-confirmation"
-              bind:value={removalConfirmation}
-              autocomplete="off"
-            />
-            <button
-              type="button"
-              disabled={removalBusy ||
-                removalConfirmation !== removalPlan.runId}
-              onclick={() => void closeUncertainRemoval()}
-              >Close uncertain run</button
-            >
-          {/if}
+          {:else}<p>
+              No file resources to clean up. Resolve the remaining dependencies
+              before removing the Cask.
+            </p>{/if}
         {/if}
+        {#if removalPlan}
+          <CleanupReview
+            plan={removalPlan}
+            {removalEnabled}
+            {removalBusy}
+            {reviewedPlanHash}
+            bind:executionConfirmed
+            bind:permanentConfirmation
+            bind:preserveConfirmed
+            onReview={() => {
+              reviewedPlanHash = removalPlan!.planHash;
+              executionConfirmed = false;
+              permanentConfirmation = false;
+            }}
+            onApprove={() => void approveRemoval()}
+            onExecute={() => void executeRemoval()}
+            onClose={() => void closeUncertainRemoval()}
+          />
+        {/if}
+        {#if cleanupHistory.length}
+          <details class="cleanup-details">
+            <summary>Recent cleanups</summary>
+            {#each cleanupHistory as plan (plan.id)}
+              <button
+                type="button"
+                disabled={removalBusy}
+                onclick={() => void loadCleanupPlan(plan)}
+                >{new Date(plan.createdAtMs).toLocaleDateString()} · {label(
+                  plan.state,
+                )} · {plan.items.length} items</button
+              >
+            {/each}
+          </details>
+        {/if}
+        {#if removeConfirmation}<div role="alert">
+            <h3>Permanently remove {selected.name}?</h3>
+            <p>
+              This removes the Cask itself and cannot be undone. No resource
+              files or applications will be deleted. Removal will be blocked if
+              any dependencies or unfinished work remain.
+            </p>
+            <button
+              type="button"
+              disabled={metadataBusy}
+              onclick={() => void removeCask()}>Confirm Remove Cask</button
+            ><button
+              type="button"
+              onclick={() => {
+                removeConfirmation = false;
+              }}>Cancel</button
+            >
+          </div>{/if}
       </section>
     {/if}
     {#if selected && detailTab === "settings"}
@@ -2426,15 +2681,7 @@
             bind:value={editDescription}
             maxlength="500"
             placeholder="What is this activity for?"
-          /><label for="storage-location">Storage location</label><input
-            id="storage-location"
-            value={selected.managedStorageRoot}
-            readonly
-            title={selected.managedStorageRoot}
           />
-          <p class="footnote">
-            Resources may also be referenced from locations outside this folder.
-          </p>
           <label class="checkbox-label"
             ><input type="checkbox" bind:checked={editArchived} /> Archive this Cask</label
           >
@@ -2506,7 +2753,7 @@
         </p>
         <p>
           Destructive cleanup is {removalEnabled
-            ? "available after plan review"
+            ? "available after plan review, approval, and confirmation"
             : "disabled pending independent security review"}.
         </p>
       </section>
@@ -2520,14 +2767,13 @@
           detailTab = "files";
           adding = !adding;
         }}><Icon name="plus" /> Add Items</button
-      ><button
-        class="danger-button"
+      >
+      <button
         type="button"
         disabled={!selected || removalBusy}
-        onclick={() => {
-          detailTab = "cleanup";
-          void previewRemoval();
-        }}><Icon name="trash" size={17} /> Create Cleanup Plan</button
+        class="danger-button"
+        onclick={() => navigateCleanup()}
+        ><Icon name="trash" size={17} /> Cleanup</button
       >
     </footer>{/if}
 </div>

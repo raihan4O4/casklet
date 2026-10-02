@@ -11,6 +11,106 @@ use std::{
     sync::Arc,
 };
 
+pub(super) fn validate_owned_path(managed_root: &Path, target: &Path) -> Result<(), String> {
+    if target.components().any(|part| {
+        part.as_os_str()
+            .to_string_lossy()
+            .to_lowercase()
+            .starts_with(".casklet")
+    }) {
+        return Err("Casklet metadata and recovery quarantine cannot be adopted".into());
+    }
+    if !target.is_absolute()
+        || target.parent().is_none()
+        || target.to_string_lossy().starts_with(r"\\?\UNC\")
+    {
+        return Err(
+            "Choose one local file or dedicated directory, not a volume or network root".into(),
+        );
+    }
+    check_components(target)?;
+    let target = fs::canonicalize(target).map_err(|e| e.to_string())?;
+    if let Ok(root) = fs::canonicalize(managed_root)
+        && (target.starts_with(&root) || root.starts_with(&target))
+    {
+        return Err("Casklet storage cannot be adopted as external owned data".into());
+    }
+    for key in [
+        "USERPROFILE",
+        "HOME",
+        "LOCALAPPDATA",
+        "APPDATA",
+        "SystemRoot",
+        "ProgramFiles",
+        "ProgramFiles(x86)",
+    ] {
+        if let Some(value) = std::env::var_os(key)
+            && let Ok(protected) = fs::canonicalize(value)
+        {
+            let profile = matches!(key, "USERPROFILE" | "HOME");
+            if protected.starts_with(&target) || (!profile && target.starts_with(&protected)) {
+                return Err(
+                    "Profile, system, application, and application-state paths cannot be owned"
+                        .into(),
+                );
+            }
+            if profile {
+                for child in [
+                    "Desktop",
+                    "Documents",
+                    "Downloads",
+                    "Pictures",
+                    "Music",
+                    "Videos",
+                    "AppData",
+                ] {
+                    if let Ok(broad) = fs::canonicalize(protected.join(child))
+                        && (target == broad || (child == "AppData" && target.starts_with(broad)))
+                    {
+                        return Err("Choose a dedicated item inside this user folder".into());
+                    }
+                }
+            }
+        }
+    }
+    if target.ancestors().count() <= 2 {
+        return Err("Volume roots and broad top-level directories cannot be owned".into());
+    }
+    let mut pending = vec![(target, 0_usize)];
+    let mut visited = 0_usize;
+    while let Some((path, depth)) = pending.pop() {
+        visited += 1;
+        if visited > 100_000 || depth > 64 {
+            return Err("Ownership scan exceeds safe limits".into());
+        }
+        check_components(&path)?;
+        let metadata = fs::symlink_metadata(&path).map_err(|e| e.to_string())?;
+        if metadata.is_dir() {
+            for child in fs::read_dir(&path).map_err(|e| e.to_string())? {
+                pending.push((child.map_err(|e| e.to_string())?.path(), depth + 1));
+            }
+        } else if metadata.is_file() {
+            #[cfg(windows)]
+            {
+                let handle =
+                    winapi_util::Handle::from_path_any(&path).map_err(|e| e.to_string())?;
+                if winapi_util::file::information(&handle)
+                    .map_err(|e| e.to_string())?
+                    .number_of_links()
+                    != 1
+                {
+                    return Err(
+                        "Hard-linked data may be needed elsewhere; retain it as a reference".into(),
+                    );
+                }
+            }
+        } else {
+            return Err("Only ordinary files and directories can be owned".into());
+        }
+    }
+    Ok(())
+}
+
 #[cfg(windows)]
 fn recordable_file_identity(path: &Path) -> Option<(String, same_file::Handle)> {
     let handle = winapi_util::Handle::from_path_any(path).ok()?;
@@ -403,6 +503,13 @@ fn copy_tree(
 }
 
 impl ResourceStorage for LocalStorage {
+    fn validate_owned_location(&self, observed: &Observation) -> Result<(), String> {
+        validate_owned_path(&self.root, Path::new(&observed.source_path))?;
+        if observed.unknown_entries != 0 || observed.recordable_identity.is_none() {
+            return Err("Ownership requires a complete scan and stable filesystem identity".into());
+        }
+        Ok(())
+    }
     fn inspect(&self, source: &str, progress: &dyn Fn(u64, u64)) -> Result<Observation, String> {
         inspect_path(source, progress)
     }
@@ -483,7 +590,9 @@ impl ResourceStorage for LocalStorage {
             return Err("Source changed or contains unverified entries; source preserved".into());
         }
         match mode {
-            IntakeMode::Reference => return Err("Reference has no managed materialization".into()),
+            IntakeMode::Reference | IntakeMode::Adopt => {
+                return Err("Reference has no managed materialization".into());
+            }
             IntakeMode::Move => {
                 if cancel() {
                     return Err("Cancellation requested before move".into());

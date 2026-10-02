@@ -2,7 +2,7 @@
 use crate::{CaskRepository, CaskService};
 use casklet_contracts::{
     ApiError, ApproveRemovalPlan, CONTRACT_VERSION, CloseRemovalRun, CreateRemovalPlan,
-    ExecuteRemovalPlan, GetRemovalPlan, RemovalPlanItemView, RemovalPlanView,
+    ExecuteRemovalPlan, GetRemovalPlan, ListRemovalPlans, RemovalPlanItemView, RemovalPlanView,
 };
 use casklet_domain::removal::{RemovalEvidence, propose};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -27,6 +27,7 @@ pub struct RemovalCandidate {
     pub association_revision: i64,
     pub other_associations: u64,
     pub recorded_identity: Option<String>,
+    pub explicitly_adopted: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -51,10 +52,14 @@ pub trait RemovalRepository {
         plan: &RemovalPlanView,
         items: &[PlannedItem],
         cask_revision: i64,
-    ) -> Result<(), String>;
+    ) -> Result<String, String>;
     /// # Errors
     /// Returns a database error.
     fn get_plan(&self, id: &str) -> Result<Option<RemovalPlanView>, String>;
+    /// Lists recent plans, prioritizing interrupted work.
+    /// # Errors
+    /// Returns a persistence error.
+    fn list_plans(&self, cask_id: Option<&str>) -> Result<Vec<RemovalPlanView>, String>;
     /// # Errors
     /// Returns private snapshot preconditions for verification.
     fn plan_items(&self, id: &str) -> Result<Vec<PlannedItem>, String>;
@@ -207,7 +212,7 @@ impl<R: CaskRepository + RemovalRepository, S: RemovalInspection> CaskService<R,
         if selected.is_empty() {
             return Err(error(
                 "EMPTY_PLAN",
-                "No resources in this scope",
+                "No file resources to clean up. Remove the Cask if no application dependencies or unfinished work remain; Archive remains available in Settings",
                 correlation_id,
             ));
         }
@@ -227,6 +232,7 @@ impl<R: CaskRepository + RemovalRepository, S: RemovalInspection> CaskService<R,
                 let (action, reason) = propose(RemovalEvidence {
                     managed: candidate.management == "MANAGED",
                     internal: candidate.containment == "INTERNAL",
+                    explicitly_adopted: candidate.explicitly_adopted,
                     created_by_casklet: candidate.provenance == "ADDED_BY_CASKLET",
                     owned: candidate.relationship == "OWNED",
                     delete_policy: candidate.removal_policy == "DELETE_WHEN_UNREFERENCED",
@@ -237,10 +243,12 @@ impl<R: CaskRepository + RemovalRepository, S: RemovalInspection> CaskService<R,
                     unknown_entries: candidate.unknown_entries > 0,
                 });
                 let (action, reason) = if request.permanent && action.code() == "TRASH" {
-                    if candidate.kind == "FILE" {
+                    if candidate.kind == "FILE" && candidate.containment == "INTERNAL" {
                         ("DELETE_PERMANENTLY", "EXPLICIT_PERMANENT_FILE")
-                    } else {
+                    } else if candidate.containment == "INTERNAL" {
                         ("PRESERVE", "PERMANENT_DIRECTORY_UNSUPPORTED")
+                    } else {
+                        ("PRESERVE", "PERMANENT_RESOURCE_UNSUPPORTED")
                     }
                 } else {
                     (action.code(), reason)
@@ -250,6 +258,7 @@ impl<R: CaskRepository + RemovalRepository, S: RemovalInspection> CaskService<R,
                         id: Uuid::new_v4().to_string(),
                         resource_id: candidate.id,
                         name: candidate.name,
+                        path: candidate.path.clone(),
                         action: action.into(),
                         reason_code: reason.into(),
                         expected_size_bytes: candidate.size_bytes,
@@ -273,6 +282,7 @@ impl<R: CaskRepository + RemovalRepository, S: RemovalInspection> CaskService<R,
             scope: scope.into(),
             category_key: request.category_key.clone(),
             permanent: request.permanent,
+            cleanup_only: true,
             state: "DRAFT".into(),
             plan_hash: String::new(),
             run_id: None,
@@ -280,12 +290,13 @@ impl<R: CaskRepository + RemovalRepository, S: RemovalInspection> CaskService<R,
             expires_at_ms: now.saturating_add(15 * 60 * 1000),
             items: items.iter().map(|item| item.view.clone()).collect(),
         };
-        self.repository
+        let saved_id = self
+            .repository
             .save_plan(&plan, &items, cask.revision)
             .map_err(|_| error("PERSISTENCE", "Could not save removal plan", correlation_id))?;
         plan = self
             .repository
-            .get_plan(&plan.id)
+            .get_plan(&saved_id)
             .map_err(|_| error("PERSISTENCE", "Could not load removal plan", correlation_id))?
             .ok_or_else(|| error("PERSISTENCE", "Saved plan not found", correlation_id))?;
         Ok(plan)
@@ -309,6 +320,32 @@ impl<R: CaskRepository + RemovalRepository, S: RemovalInspection> CaskService<R,
             .get_plan(&request.id)
             .map_err(|_| error("PERSISTENCE", "Could not load removal plan", correlation_id))?
             .ok_or_else(|| error("NOT_FOUND", "Removal plan not found", correlation_id))
+    }
+
+    /// Returns durable recent cleanup history shared by GUI and CLI.
+    /// # Errors
+    /// Returns contract validation or persistence errors.
+    pub fn list_removal_plans(
+        &self,
+        request: &ListRemovalPlans,
+        correlation_id: &str,
+    ) -> Result<Vec<RemovalPlanView>, ApiError> {
+        if request.version != CONTRACT_VERSION {
+            return Err(error(
+                "UNSUPPORTED_VERSION",
+                "Contract version mismatch",
+                correlation_id,
+            ));
+        }
+        self.repository
+            .list_plans(request.cask_id.as_deref())
+            .map_err(|_| {
+                error(
+                    "PERSISTENCE",
+                    "Could not load cleanup history",
+                    correlation_id,
+                )
+            })
     }
 
     /// Approves the exact immutable snapshot for later revalidated execution.
@@ -525,7 +562,14 @@ impl<R: CaskRepository + RemovalRepository, S: RemovalInspection> CaskService<R,
                                     },
                                 )
                             } else {
-                                ("UNKNOWN", "TRASH_OUTCOME_UNCERTAIN")
+                                (
+                                    "UNKNOWN",
+                                    if item.view.action == "TRASH" {
+                                        "TRASH_OUTCOME_UNCERTAIN"
+                                    } else {
+                                        "DELETE_OUTCOME_UNCERTAIN"
+                                    },
+                                )
                             }
                         }
                         _ => ("UNKNOWN", "INVALID_ACTION"),

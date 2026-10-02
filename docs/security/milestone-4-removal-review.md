@@ -28,4 +28,10 @@ Status: review requested; `reviewed-removal` is disabled in default builds.
 
 ## Remaining gate
 
+The October follow-up adds external in-place ownership under ADR 0019. Extend independent review to grant creation, protected paths and hard links, overlapping registered dependencies, cross-Cask mutation locking, and sibling quarantine on the resource volume. Registration and preview do not delete data. External permanent deletion is prohibited, recovered manifests cannot restore grants, and public builds retain the existing destructive-feature gate. A deterministic test covers external-directory quarantine interruption and its reported recovery path; it does not resolve the final path-based Recycle Bin handoff race.
+
 Review the remaining path-based handoff race and Recycle Bin failure behavior on supported filesystems; deterministic hard-link, junction, replacement, quarantine replacement, and hard-exit checks are automated. Record the independent review findings and disposition here or in a linked review. Keep `reviewed-removal` off in public builds until the reviewer accepts the destructive path. The user explicitly included managed-directory Recycle Bin cleanup and file-only permanent deletion in Milestone 4.
+
+## Authorized Alpha validation profile (2026-10-02)
+
+At the user's explicit request for functional Alpha cleanup, ADR 0021 adds a separate alpha-cleanup build profile using the existing planner/approval/executor without relaxing ownership, identity, journal, or confirmation checks. Default builds remain gated; provider uninstall remains independent. This is authorization for local/limited validation, not evidence of independent review. The real fixture smoke test covers external owned file/directory cleanup, reference preservation, refusal without execution confirmation, external permanent preservation, empty-Cask removal, and metadata backup. The path-based handoff/recovery and broad-distribution review questions above remain unresolved.

@@ -14,6 +14,8 @@ mod installer;
 mod installer_source;
 pub mod inventory;
 mod operations;
+#[cfg(all(test, windows))]
+mod ownership_tests;
 mod portable;
 pub mod portable_zip;
 mod projection;
@@ -21,6 +23,7 @@ mod removal;
 mod resource_storage;
 mod resources;
 mod windows_inventory;
+mod windows_process;
 mod winget;
 mod winget_cli;
 
@@ -31,157 +34,63 @@ pub struct SqliteCasks {
     db_path: PathBuf,
 }
 
+const MIGRATIONS: &[&str] = &[
+    include_str!("../../../migrations/0001_casks.sql"),
+    include_str!("../../../migrations/0002_resources.sql"),
+    include_str!("../../../migrations/0003_operations.sql"),
+    include_str!("../../../migrations/0004_removal_plans.sql"),
+    include_str!("../../../migrations/0005_removal_execution.sql"),
+    include_str!("../../../migrations/0006_permanent_disposal.sql"),
+    include_str!("../../../migrations/0007_portable_installations.sql"),
+    include_str!("../../../migrations/0008_windows_inventory.sql"),
+    include_str!("../../../migrations/0009_winget_lifecycle.sql"),
+    include_str!("../../../migrations/0010_installer_artifacts.sql"),
+    include_str!("../../../migrations/0011_cask_metadata.sql"),
+    include_str!("../../../migrations/0012_ownership_and_cleanup.sql"),
+    include_str!("../../../migrations/0013_cask_removal.sql"),
+];
+
 impl SqliteCasks {
     /// # Errors
     /// Returns an I/O or migration error.
-    #[expect(
-        clippy::too_many_lines,
-        reason = "Each migration is kept explicit and transactional"
-    )]
     pub fn open(db_path: PathBuf) -> Result<Self, String> {
         if let Some(parent) = db_path.parent() {
             fs::create_dir_all(parent).map_err(|e| e.to_string())?;
         }
         let this = Self { db_path };
         let mut connection = this.connection()?;
-        let version: i64 = connection
+        let stored_version: i64 = connection
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .map_err(|e| e.to_string())?;
+        let version = usize::try_from(stored_version)
+            .map_err(|_| format!("unsupported database schema version: {stored_version}"))?;
         let integrity: String = connection
             .query_row("PRAGMA quick_check", [], |row| row.get(0))
             .map_err(|e| format!("database integrity check failed: {e}"))?;
         if integrity != "ok" {
             return Err(format!("database integrity check failed: {integrity}"));
         }
-        if !(0..=11).contains(&version) {
+        if version > MIGRATIONS.len() {
             return Err(format!("unsupported database schema version: {version}"));
         }
-        if version > 0 && version < 11 {
-            backup_before_migration(&connection, &this.db_path, version)?;
+        if version > 0 && version < MIGRATIONS.len() {
+            backup_before_migration(
+                &connection,
+                &this.db_path,
+                i64::try_from(version).map_err(|e| e.to_string())?,
+            )?;
         }
-        match version {
-            0 => {
-                let transaction = connection.transaction().map_err(|e| e.to_string())?;
-                transaction
-                    .execute_batch(include_str!("../../../migrations/0001_casks.sql"))
-                    .map_err(|e| e.to_string())?;
-                transaction
-                    .execute_batch("PRAGMA user_version=1")
-                    .map_err(|e| e.to_string())?;
-                transaction.commit().map_err(|e| e.to_string())?;
-            }
-            1..=11 => {}
-            _ => unreachable!("schema version checked above"),
-        }
-        if version == 1 || version == 0 {
+        for (index, sql) in MIGRATIONS.iter().enumerate().skip(version) {
             let transaction = connection.transaction().map_err(|e| e.to_string())?;
             transaction
-                .execute_batch(include_str!("../../../migrations/0002_resources.sql"))
-                .map_err(|e| e.to_string())?;
+                .execute_batch(sql)
+                .map_err(|e| format!("migration {} failed: {e}", index + 1))?;
             transaction
-                .execute_batch("PRAGMA user_version=2")
-                .map_err(|e| e.to_string())?;
-            transaction.commit().map_err(|e| e.to_string())?;
-        }
-        if version <= 2 {
-            let transaction = connection.transaction().map_err(|e| e.to_string())?;
-            transaction
-                .execute_batch(include_str!("../../../migrations/0003_operations.sql"))
-                .map_err(|e| e.to_string())?;
-            transaction
-                .execute_batch("PRAGMA user_version=3")
-                .map_err(|e| e.to_string())?;
-            transaction.commit().map_err(|e| e.to_string())?;
-        }
-        if version <= 3 {
-            let transaction = connection.transaction().map_err(|e| e.to_string())?;
-            transaction
-                .execute_batch(include_str!("../../../migrations/0004_removal_plans.sql"))
-                .map_err(|e| e.to_string())?;
-            transaction
-                .execute_batch("PRAGMA user_version=4")
-                .map_err(|e| e.to_string())?;
-            transaction.commit().map_err(|e| e.to_string())?;
-        }
-        if version <= 4 {
-            let transaction = connection.transaction().map_err(|e| e.to_string())?;
-            transaction
-                .execute_batch(include_str!(
-                    "../../../migrations/0005_removal_execution.sql"
-                ))
-                .map_err(|e| e.to_string())?;
-            transaction
-                .execute_batch("PRAGMA user_version=5")
-                .map_err(|e| e.to_string())?;
-            transaction.commit().map_err(|e| e.to_string())?;
-        }
-        if version <= 5 {
-            let transaction = connection.transaction().map_err(|e| e.to_string())?;
-            transaction
-                .execute_batch(include_str!(
-                    "../../../migrations/0006_permanent_disposal.sql"
-                ))
-                .map_err(|e| e.to_string())?;
-            transaction
-                .execute_batch("PRAGMA user_version=6")
-                .map_err(|e| e.to_string())?;
-            transaction.commit().map_err(|e| e.to_string())?;
-        }
-        if version <= 6 {
-            let transaction = connection.transaction().map_err(|e| e.to_string())?;
-            transaction
-                .execute_batch(include_str!(
-                    "../../../migrations/0007_portable_installations.sql"
-                ))
-                .map_err(|e| e.to_string())?;
-            transaction
-                .execute_batch("PRAGMA user_version=7")
-                .map_err(|e| e.to_string())?;
-            transaction.commit().map_err(|e| e.to_string())?;
-        }
-        if version <= 7 {
-            let transaction = connection.transaction().map_err(|e| e.to_string())?;
-            transaction
-                .execute_batch(include_str!(
-                    "../../../migrations/0008_windows_inventory.sql"
-                ))
-                .map_err(|e| e.to_string())?;
-            transaction
-                .execute_batch("PRAGMA user_version=8")
-                .map_err(|e| e.to_string())?;
-            transaction.commit().map_err(|e| e.to_string())?;
-        }
-        if version <= 8 {
-            let transaction = connection.transaction().map_err(|e| e.to_string())?;
-            transaction
-                .execute_batch(include_str!(
-                    "../../../migrations/0009_winget_lifecycle.sql"
-                ))
-                .map_err(|e| e.to_string())?;
-            transaction
-                .execute_batch("PRAGMA user_version=9")
-                .map_err(|e| e.to_string())?;
-            transaction.commit().map_err(|e| e.to_string())?;
-        }
-        if version <= 9 {
-            let transaction = connection.transaction().map_err(|e| e.to_string())?;
-            transaction
-                .execute_batch(include_str!(
-                    "../../../migrations/0010_installer_artifacts.sql"
-                ))
-                .map_err(|e| e.to_string())?;
-            transaction
-                .execute_batch("PRAGMA user_version=10")
-                .map_err(|e| e.to_string())?;
-            transaction.commit().map_err(|e| e.to_string())?;
-        }
-        if version <= 10 {
-            let transaction = connection.transaction().map_err(|e| e.to_string())?;
-            transaction
-                .execute_batch(include_str!("../../../migrations/0011_cask_metadata.sql"))
-                .map_err(|e| e.to_string())?;
-            transaction
-                .execute_batch("PRAGMA user_version=11")
+                .pragma_update(
+                    None,
+                    "user_version",
+                    i64::try_from(index + 1).map_err(|e| e.to_string())?,
+                )
                 .map_err(|e| e.to_string())?;
             transaction.commit().map_err(|e| e.to_string())?;
         }
@@ -272,11 +181,53 @@ fn row(row: &rusqlite::Row<'_>) -> rusqlite::Result<Cask> {
 }
 const SELECT: &str = "SELECT id,name,storage_key,managed_storage_root,created_at_ms,updated_at_ms,revision,state,description FROM casks";
 
+fn cask_removal_status(
+    connection: &Connection,
+    id: &str,
+) -> Result<casklet_contracts::CaskRemovalStatus, String> {
+    let (eligible,resources,applications,unfinished): (bool,i64,i64,i64) = connection.query_row(
+        "SELECT EXISTS(SELECT 1 FROM casks WHERE id=?1 AND state IN ('ACTIVE','ARCHIVED','PARTIALLY_DESTROYED','DESTROYED') AND NOT EXISTS(SELECT 1 FROM cask_removals WHERE cask_id=?1)),
+        (SELECT COUNT(*) FROM resource_associations WHERE cask_id=?1 AND removed_at_ms IS NULL),
+        (SELECT COUNT(*) FROM cask_installations WHERE cask_id=?1 AND removed_at_ms IS NULL) + (SELECT COUNT(*) FROM windows_cask_associations WHERE cask_id=?1 AND removed_at_ms IS NULL) + (SELECT COUNT(*) FROM winget_installations WHERE cask_id=?1 AND state!='REMOVED'),
+        (SELECT COUNT(*) FROM operation_locks WHERE lock_key='cask:'||?1||':mutation') + (SELECT COUNT(*) FROM removal_locks WHERE cask_id=?1) + (SELECT COUNT(*) FROM installer_locks WHERE cask_id=?1) + (SELECT COUNT(*) FROM winget_locks WHERE cask_id=?1) + (SELECT COUNT(*) FROM operations WHERE cask_id=?1 AND state IN ('RUNNING','RECOVERY_REQUIRED')) + (SELECT COUNT(*) FROM installer_operations WHERE cask_id=?1 AND state IN ('RUNNING','REVIEW_REQUIRED','RECOVERY_REQUIRED')) + (SELECT COUNT(*) FROM winget_operations WHERE cask_id=?1 AND state IN ('RUNNING','RECOVERY_REQUIRED')) + (SELECT COUNT(*) FROM removal_runs WHERE cask_id=?1 AND state IN ('RUNNING','RECOVERY_REQUIRED'))", [id], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?))).map_err(|e|e.to_string())?;
+    Ok(casklet_contracts::CaskRemovalStatus {
+        version: casklet_contracts::CONTRACT_VERSION,
+        can_remove: eligible && resources == 0 && applications == 0 && unfinished == 0,
+        resource_count: u64::try_from(resources).map_err(|e| e.to_string())?,
+        application_count: u64::try_from(applications).map_err(|e| e.to_string())?,
+        unfinished_operations: u64::try_from(unfinished).map_err(|e| e.to_string())?,
+    })
+}
+
 impl CaskRepository for SqliteCasks {
+    fn removal_status(&self, id: &str) -> Result<casklet_contracts::CaskRemovalStatus, String> {
+        cask_removal_status(&self.connection()?, id)
+    }
+    fn remove_empty(&self, id: &str, expected_revision: i64, now_ms: i64) -> Result<bool, String> {
+        let mut connection = self.connection()?;
+        let transaction = connection
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(|e| e.to_string())?;
+        if !cask_removal_status(&transaction, id)?.can_remove {
+            return Ok(false);
+        }
+        let changed = transaction.execute("UPDATE casks SET state='DESTROYED',revision=revision+1,updated_at_ms=?3 WHERE id=?1 AND revision=?2 AND NOT EXISTS(SELECT 1 FROM cask_removals WHERE cask_id=?1)", params![id,expected_revision,now_ms]).map_err(|e| e.to_string())?;
+        if changed != 1 {
+            return Ok(false);
+        }
+        transaction.execute("INSERT INTO cask_removals(cask_id,removed_at_ms,expected_revision) VALUES (?1,?2,?3)",params![id,now_ms,expected_revision]).map_err(|e| e.to_string())?;
+        transaction.execute("UPDATE removal_plans SET state='INVALIDATED',revision=revision+1 WHERE cask_id=?1 AND state IN ('DRAFT','APPROVED')",[id]).map_err(|e|e.to_string())?;
+        transaction
+            .execute("DELETE FROM projection_jobs WHERE cask_id=?1", [id])
+            .map_err(|e| e.to_string())?;
+        transaction.commit().map_err(|e| e.to_string())?;
+        Ok(true)
+    }
+
     fn update(&self, cask: &Cask, expected_revision: i64) -> Result<bool, String> {
         let mut connection = self.connection()?;
         let transaction = connection.transaction().map_err(|e| e.to_string())?;
-        let changed = transaction.execute("UPDATE casks SET name=?1,description=?2,state=?3,updated_at_ms=?4,revision=?5 WHERE id=?6 AND revision=?7 AND NOT EXISTS (SELECT 1 FROM operation_locks WHERE lock_key=?8)", params![cask.name,cask.description,cask.state.code(),cask.updated_at_ms,cask.revision,cask.id,expected_revision,format!("cask:{}:mutation",cask.id)]).map_err(|e|e.to_string())?;
+        let changed = transaction.execute("UPDATE casks SET name=?1,description=?2,state=?3,updated_at_ms=?4,revision=?5 WHERE id=?6 AND revision=?7 AND NOT EXISTS (SELECT 1 FROM cask_removals WHERE cask_id=?6) AND NOT EXISTS (SELECT 1 FROM operation_locks WHERE lock_key=?8) AND NOT EXISTS (SELECT 1 FROM removal_locks WHERE cask_id=?6) AND NOT EXISTS (SELECT 1 FROM installer_locks WHERE cask_id=?6)", params![cask.name,cask.description,cask.state.code(),cask.updated_at_ms,cask.revision,cask.id,expected_revision,format!("cask:{}:mutation",cask.id)]).map_err(|e|e.to_string())?;
         if changed == 1 {
             transaction.execute("INSERT INTO projection_jobs(cask_id,target_revision,state,updated_at_ms) VALUES (?1,?2,'PENDING',?3) ON CONFLICT(cask_id) DO UPDATE SET target_revision=excluded.target_revision,state='PENDING',updated_at_ms=excluded.updated_at_ms", params![cask.id,cask.revision,cask.updated_at_ms]).map_err(|e|e.to_string())?;
         }
@@ -296,14 +247,14 @@ impl CaskRepository for SqliteCasks {
     fn get(&self, id: &str) -> Result<Option<Cask>, String> {
         use rusqlite::OptionalExtension;
         self.connection()?
-            .query_row(&format!("{SELECT} WHERE id=?1"), [id], row)
+            .query_row(&format!("{SELECT} WHERE id=?1 AND NOT EXISTS (SELECT 1 FROM cask_removals WHERE cask_id=casks.id)"), [id], row)
             .optional()
             .map_err(|e| e.to_string())
     }
     fn list(&self) -> Result<Vec<Cask>, String> {
         let connection = self.connection()?;
         let mut statement = connection
-            .prepare(&format!("{SELECT} ORDER BY created_at_ms,id"))
+            .prepare(&format!("{SELECT} WHERE NOT EXISTS (SELECT 1 FROM cask_removals WHERE cask_id=casks.id) ORDER BY created_at_ms,id"))
             .map_err(|e| e.to_string())?;
         statement
             .query_map([], row)
@@ -681,8 +632,10 @@ mod tests {
             include_str!("../../../migrations/0009_winget_lifecycle.sql"),
             include_str!("../../../migrations/0010_installer_artifacts.sql"),
             include_str!("../../../migrations/0011_cask_metadata.sql"),
+            include_str!("../../../migrations/0012_ownership_and_cleanup.sql"),
+            include_str!("../../../migrations/0013_cask_removal.sql"),
         ];
-        for version in 1..=11 {
+        for version in 1..=12 {
             let root = std::env::temp_dir().join(format!(
                 "casklet-upgrade-{version}-{}",
                 uuid::Uuid::new_v4()
@@ -702,7 +655,7 @@ mod tests {
             let reopened = SqliteCasks::open(db).unwrap();
             assert_eq!(reopened.list().unwrap()[0].name, "Existing");
             assert!(reopened.list().unwrap()[0].description.is_empty());
-            if version < 11 {
+            if version < 13 {
                 let backups = fs::read_dir(root.join("backups"))
                     .unwrap()
                     .collect::<Result<Vec<_>, _>>()
@@ -1111,7 +1064,7 @@ mod tests {
             .unwrap()
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(schema_version, 11);
+        assert_eq!(schema_version, 13);
         assert_eq!(
             reopened
                 .list(
@@ -1608,7 +1561,7 @@ mod tests {
         assert!(source.exists());
         assert_eq!(
             repository.get(&cask.id).unwrap().unwrap().state,
-            CaskState::Destroyed
+            CaskState::Active
         );
         drop(executor);
         drop(service);
@@ -1728,7 +1681,7 @@ mod tests {
             assert!(std::path::Path::new(&managed.path).exists());
             assert_eq!(
                 repository.get(&cask.id).unwrap().unwrap().state,
-                CaskState::PartiallyDestroyed
+                CaskState::Active
             );
             drop(executor);
             drop(service);
@@ -1974,7 +1927,7 @@ mod tests {
         assert_eq!(result.items[0].state, "UNKNOWN");
         assert_eq!(
             repository.get(&cask.id).unwrap().unwrap().state,
-            CaskState::RecoveryRequired
+            CaskState::Active
         );
         let connection = repository.connection().unwrap();
         let locks: i64 = connection
@@ -2005,7 +1958,7 @@ mod tests {
         );
         assert_eq!(
             repository.get(&cask.id).unwrap().unwrap().state,
-            CaskState::PartiallyDestroyed
+            CaskState::Active
         );
         let connection = repository.connection().unwrap();
         let remaining_locks: i64 = connection

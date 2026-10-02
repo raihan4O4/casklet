@@ -1,5 +1,6 @@
 //! Windows installer inspection and typed process launch. No installer is run during inspection.
 use super::LocalStorage;
+use super::windows_process::system_binary;
 use casklet_application::installer::{InstallerOutcome, InstallerSource};
 use casklet_contracts::{CONTRACT_VERSION, InstallerInspection};
 use sha2::{Digest, Sha256};
@@ -48,22 +49,6 @@ $r | ConvertTo-Json -Compress -Depth 3
 "#;
 const ELEVATE_SCRIPT: &str = r"$ErrorActionPreference='Stop'; try { $p=Start-Process -FilePath $env:CASKLET_INSTALLER_PATH -WorkingDirectory $env:CASKLET_INSTALLER_DIR -Verb RunAs -PassThru -Wait; exit $p.ExitCode } catch { exit 1223 }";
 
-fn system_binary(name: &str) -> Result<PathBuf, String> {
-    let root = std::env::var_os("SystemRoot").ok_or("Windows system directory unavailable")?;
-    let root = PathBuf::from(root)
-        .canonicalize()
-        .map_err(|e| e.to_string())?;
-    let path = root
-        .join("System32")
-        .join(name)
-        .canonicalize()
-        .map_err(|e| e.to_string())?;
-    if !path.starts_with(root.join("System32")) {
-        return Err("Windows system binary escaped System32".into());
-    }
-    let text = path.to_string_lossy();
-    Ok(PathBuf::from(text.strip_prefix(r"\\?\").unwrap_or(&text)))
-}
 fn process_path(path: &str) -> PathBuf {
     if let Some(rest) = path.strip_prefix(r"\\?\UNC\") {
         PathBuf::from(format!(r"\\{rest}"))

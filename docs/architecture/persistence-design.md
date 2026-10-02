@@ -25,6 +25,8 @@ The most important limitation is that SQLite and the filesystem cannot participa
 
 ## 3. Storage layout
 
+Schema 12 supplements resource/association records with explicit in-place ownership grants (resource ID, Cask ID, exact canonical path, identity, consent timestamp). New cleanup plans carry a cleanup-only flag; unexecuted legacy plans are invalidated. External resource bytes remain at their user-selected location. Manifests describe ownership but never recreate these grants on recovery. See ADR 0019 and `docs/engineering/ownership-cleanup-ux.md` for the implemented policy.
+
 Application-owned state:
 
 ```text
@@ -901,3 +903,5 @@ Not part of v0.1 persistence:
 ## Completion gate
 
 After approval, Phase 6 will create Casklet’s security threat model. It will identify assets, trust boundaries, attacker capabilities, destructive-operation threats, installer and provider risks, Tauri/WebView risks, supply-chain risks, mitigations, and release security requirements.
+
+Schema 13 retains permanent Cask-removal records in `cask_removals`. Removal atomically checks resources, application dependencies, operations, and revision; retains history, cancels projection work, invalidates pending plans, and excludes the tombstoned Cask from queries/restore. Recovery refuses an existing removed ID. No resource directory is recursively deleted.

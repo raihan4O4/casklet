@@ -102,6 +102,7 @@ impl ManifestProjection for LocalStorage {
             "resources":resources.iter().map(|item| serde_json::json!({
                 "id":item.id,"name":item.name,"kind":item.kind,"management":item.management,
                 "path":item.path,"containment":item.containment,"categoryKey":item.category_key,
+                "ownership":item.ownership,"provenance":item.provenance,
                 "sizeBytes":item.size_bytes,"sizeMeasurement":item.size_measurement
             })).collect::<Vec<_>>(),
             "categories":categories.iter().map(|item| serde_json::json!({

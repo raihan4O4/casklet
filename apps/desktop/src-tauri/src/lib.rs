@@ -1,4 +1,5 @@
 use tauri::{Emitter, Manager};
+use tauri_plugin_dialog::DialogExt;
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 /// Starts the desktop shell and shared Cask service.
 ///
@@ -10,11 +11,21 @@ pub fn run() {
         casklet_infrastructure::development_service()
     } else {
         casklet_infrastructure::production_service()
-    }
-    .expect("failed to open Casklet state");
+    };
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
-        .manage(service)
+        .setup(move |app| {
+            match service {
+                Ok(service) => { app.manage(service); }
+                Err(problem) => {
+                    app.dialog().message(format!("Casklet could not open its local data. Reopen newer data with the matching Casklet version, or restore a verified database backup. Resource files have not been removed.\n\nDetails: {problem}"))
+                        .title("Casklet cannot open your data")
+                        .kind(tauri_plugin_dialog::MessageDialogKind::Error).blocking_show();
+                    app.handle().exit(1);
+                }
+            }
+            Ok(())
+        })
         .manage(std::sync::Mutex::new(()))
         .invoke_handler(tauri::generate_handler![
             create_cask,
@@ -32,6 +43,10 @@ pub fn run() {
             list_casks,
             get_cask,
             add_resource,
+            adopt_resource,
+            set_cask_archived,
+            remove_cask,
+            cask_removal_status,
             inspect_portable_zip,
             install_portable_zip,
             list_portable_installations,
@@ -80,6 +95,7 @@ pub fn run() {
             backup_database,
             create_removal_plan,
             get_removal_plan,
+            list_removal_plans,
             removal_capability,
             approve_removal_plan,
             execute_removal_plan,
@@ -198,6 +214,61 @@ async fn cask_library(
     tauri::async_runtime::spawn_blocking(move || service.cask_library(&request, "desktop"))
         .await
         .map_err(|e| window_error(e.to_string()))?
+}
+
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+fn set_cask_archived(
+    app: tauri::AppHandle,
+    service: tauri::State<'_, Service>,
+    request: casklet_contracts::SetCaskArchived,
+) -> Result<casklet_contracts::CaskView, casklet_contracts::ApiError> {
+    let result = service.set_cask_archived(&request, "desktop")?;
+    let _ = app.emit("casks.changed", &result.id);
+    Ok(result)
+}
+
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+fn cask_removal_status(
+    service: tauri::State<'_, Service>,
+    request: casklet_contracts::GetCask,
+) -> Result<casklet_contracts::CaskRemovalStatus, casklet_contracts::ApiError> {
+    service.cask_removal_status(&request, "desktop")
+}
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+fn remove_cask(
+    app: tauri::AppHandle,
+    service: tauri::State<'_, Service>,
+    request: casklet_contracts::RemoveCask,
+) -> Result<(), casklet_contracts::ApiError> {
+    use tauri::Emitter;
+    service.remove_cask(&request, "desktop")?;
+    let _ = app.emit("casks.changed", ());
+    Ok(())
+}
+
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+async fn adopt_resource(
+    app: tauri::AppHandle,
+    service: tauri::State<'_, Service>,
+    request: casklet_contracts::AdoptResource,
+) -> Result<casklet_contracts::ResourceView, casklet_contracts::ApiError> {
+    let service = service.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let result = service.adopt_resource(&request, "desktop", &|done, total| {
+            let _ = app.emit(
+                "resource.progress",
+                serde_json::json!({"completed":done,"total":total}),
+            );
+        })?;
+        let _ = app.emit("casks.changed", &result.cask_id);
+        Ok(result)
+    })
+    .await
+    .map_err(|e| worker_error(&e))?
 }
 
 #[tauri::command]
@@ -716,7 +787,7 @@ async fn add_resource(
 ) -> Result<casklet_contracts::ResourceView, casklet_contracts::ApiError> {
     let service = service.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
-        service.add_resource_with_events(
+        service.add_user_resource_with_events(
             &request,
             "desktop",
             &|done, total| {
@@ -877,11 +948,17 @@ async fn backup_database(
 
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
-fn create_removal_plan(
+async fn create_removal_plan(
     service: tauri::State<'_, Service>,
     request: casklet_contracts::CreateRemovalPlan,
 ) -> Result<casklet_contracts::RemovalPlanView, casklet_contracts::ApiError> {
-    service.create_removal_plan(&request, "desktop")
+    let worker = Service {
+        repository: service.repository.clone(),
+        storage: service.storage.clone(),
+    };
+    tauri::async_runtime::spawn_blocking(move || worker.create_removal_plan(&request, "desktop"))
+        .await
+        .map_err(|_| cleanup_worker_error())?
 }
 
 #[tauri::command]
@@ -894,8 +971,26 @@ fn get_removal_plan(
 }
 
 #[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+fn list_removal_plans(
+    service: tauri::State<'_, Service>,
+    request: casklet_contracts::ListRemovalPlans,
+) -> Result<Vec<casklet_contracts::RemovalPlanView>, casklet_contracts::ApiError> {
+    service.list_removal_plans(&request, "desktop")
+}
+
+fn cleanup_worker_error() -> casklet_contracts::ApiError {
+    casklet_contracts::ApiError {
+        version: casklet_contracts::CONTRACT_VERSION,
+        code: "WORKER_INTERRUPTED".into(),
+        message: "Cleanup worker stopped; inspect recovery before retrying".into(),
+        correlation_id: "desktop".into(),
+    }
+}
+
+#[tauri::command]
 fn removal_capability() -> bool {
-    cfg!(feature = "reviewed-removal")
+    cfg!(any(feature = "reviewed-removal", feature = "alpha-cleanup"))
 }
 
 #[cfg(not(feature = "reviewed-removal"))]
@@ -903,22 +998,30 @@ fn removal_review_pending() -> casklet_contracts::ApiError {
     casklet_contracts::ApiError {
         version: casklet_contracts::CONTRACT_VERSION,
         code: "REMOVAL_REVIEW_PENDING".into(),
-        message: "Cleanup is disabled until its security review is complete".into(),
+        message: "This destructive action is disabled until its security review is complete".into(),
         correlation_id: "desktop".into(),
     }
 }
 
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
-fn approve_removal_plan(
+async fn approve_removal_plan(
     service: tauri::State<'_, Service>,
     request: casklet_contracts::ApproveRemovalPlan,
 ) -> Result<casklet_contracts::RemovalPlanView, casklet_contracts::ApiError> {
-    #[cfg(feature = "reviewed-removal")]
+    #[cfg(any(feature = "reviewed-removal", feature = "alpha-cleanup"))]
     {
-        service.approve_removal_plan(&request, "desktop")
+        let worker = Service {
+            repository: service.repository.clone(),
+            storage: service.storage.clone(),
+        };
+        tauri::async_runtime::spawn_blocking(move || {
+            worker.approve_removal_plan(&request, "desktop")
+        })
+        .await
+        .map_err(|_| cleanup_worker_error())?
     }
-    #[cfg(not(feature = "reviewed-removal"))]
+    #[cfg(not(any(feature = "reviewed-removal", feature = "alpha-cleanup")))]
     {
         let _ = (service, request);
         Err(removal_review_pending())
@@ -931,7 +1034,7 @@ async fn execute_removal_plan(
     service: tauri::State<'_, Service>,
     request: casklet_contracts::ExecuteRemovalPlan,
 ) -> Result<casklet_contracts::RemovalPlanView, casklet_contracts::ApiError> {
-    #[cfg(feature = "reviewed-removal")]
+    #[cfg(any(feature = "reviewed-removal", feature = "alpha-cleanup"))]
     {
         let worker = Service {
             repository: service.repository.clone(),
@@ -941,14 +1044,9 @@ async fn execute_removal_plan(
             worker.execute_removal_plan(&request, "desktop")
         })
         .await
-        .map_err(|_| casklet_contracts::ApiError {
-            version: casklet_contracts::CONTRACT_VERSION,
-            code: "WORKER_INTERRUPTED".into(),
-            message: "Cleanup worker stopped; inspect recovery before retrying".into(),
-            correlation_id: "desktop".into(),
-        })?
+        .map_err(|_| cleanup_worker_error())?
     }
-    #[cfg(not(feature = "reviewed-removal"))]
+    #[cfg(not(any(feature = "reviewed-removal", feature = "alpha-cleanup")))]
     {
         let _ = (service, request);
         Err(removal_review_pending())
@@ -961,13 +1059,24 @@ fn close_uncertain_removal(
     service: tauri::State<'_, Service>,
     request: casklet_contracts::CloseRemovalRun,
 ) -> Result<casklet_contracts::RemovalPlanView, casklet_contracts::ApiError> {
-    #[cfg(feature = "reviewed-removal")]
+    #[cfg(any(feature = "reviewed-removal", feature = "alpha-cleanup"))]
     {
         service.close_uncertain_removal(&request, "desktop")
     }
-    #[cfg(not(feature = "reviewed-removal"))]
+    #[cfg(not(any(feature = "reviewed-removal", feature = "alpha-cleanup")))]
     {
         let _ = (service, request);
         Err(removal_review_pending())
+    }
+}
+
+#[cfg(test)]
+mod alpha_tests {
+    #[test]
+    fn file_cleanup_capability_matches_build_profile() {
+        assert_eq!(
+            super::removal_capability(),
+            cfg!(any(feature = "alpha-cleanup", feature = "reviewed-removal"))
+        );
     }
 }

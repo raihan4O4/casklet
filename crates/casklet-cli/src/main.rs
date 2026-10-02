@@ -7,12 +7,12 @@ use casklet_contracts::{
     DisassociateInstalledApplication, GetCask, GetOperation, GetPortableInstallation,
     GetRemovalPlan, GetResource, GetStorageSummary, InspectPortableZip, InstallPortableZip,
     LaunchPortableInstallation, ListAssociatedApplications, ListCasks, ListCategories,
-    ListOperations, ListPortableInstallations, ListResources, OperationView,
+    ListOperations, ListPortableInstallations, ListRemovalPlans, ListResources, OperationView,
     PortableInstallationView, PreserveOperation, RecoverOperation, RecoveryInspection,
     RecoveryStatus, RefreshInstalledApplications, RemovalPlanView, ResourceView,
     SearchInstalledApplications, StorageSummary,
 };
-#[cfg(feature = "reviewed-removal")]
+#[cfg(any(feature = "reviewed-removal", feature = "alpha-cleanup"))]
 use casklet_contracts::{ApproveRemovalPlan, CloseRemovalRun, ExecuteRemovalPlan};
 use casklet_contracts::{
     ApproveWingetUninstallPlan, CancelWingetOperation, CloseWingetOperation,
@@ -33,11 +33,11 @@ use std::path::Path;
 use std::process::ExitCode;
 
 #[derive(Debug, Parser)]
-#[command(name = "casklet", about = "Manage your Casks")]
+#[command(name = "casklet", version, about = "Manage your Casks")]
 struct Cli {
     #[arg(long, value_enum, default_value_t = Output::Table, global = true)]
     output: Output,
-    #[cfg(feature = "reviewed-removal")]
+    #[cfg(any(feature = "reviewed-removal", feature = "alpha-cleanup"))]
     #[arg(long, global = true)]
     no_input: bool,
     #[command(subcommand)]
@@ -108,6 +108,11 @@ enum Command {
         #[command(subcommand)]
         action: DiagnosticsAction,
     },
+    #[command(
+        name = "cleanup",
+        visible_alias = "plan",
+        about = "Create, review, approve, and execute resource cleanup plans"
+    )]
     Plan {
         #[command(subcommand)]
         action: PlanAction,
@@ -265,6 +270,21 @@ enum InstallerAction {
 
 #[derive(Debug, Subcommand)]
 enum CaskAction {
+    /// Permanently remove a Cask that has no remaining dependencies.
+    Remove {
+        id: String,
+        #[arg(long)]
+        yes: bool,
+    },
+    RemovalStatus {
+        id: String,
+    },
+    Archive {
+        id: String,
+    },
+    Restore {
+        id: String,
+    },
     Create {
         name: String,
     },
@@ -287,7 +307,18 @@ enum CaskAction {
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
 enum Mode {
+    // ADR 0020: retained for legacy rendering; not accepted by the user-facing parser.
+    #[expect(
+        dead_code,
+        reason = "Copy is temporarily disabled but retained for legacy rendering"
+    )]
+    #[value(skip)]
     Copy,
+    #[expect(
+        dead_code,
+        reason = "Move is temporarily disabled but retained for legacy rendering"
+    )]
+    #[value(skip)]
     Move,
     Reference,
 }
@@ -303,6 +334,17 @@ impl From<Mode> for AddMode {
 
 #[derive(Debug, Subcommand)]
 enum ResourceAction {
+    Adopt {
+        cask_id: String,
+        source_path: String,
+        #[arg(long, default_value = "other")]
+        category: String,
+        #[arg(
+            long,
+            help = "Confirm this data is dedicated to the Cask and may be cleaned up after plan approval"
+        )]
+        confirm_ownership: bool,
+    },
     Add {
         cask_id: String,
         source_path: String,
@@ -377,16 +419,20 @@ enum PlanAction {
         #[arg(long)]
         permanent: bool,
     },
+    List {
+        #[arg(long)]
+        cask_id: Option<String>,
+    },
     Get {
         id: String,
     },
-    #[cfg(feature = "reviewed-removal")]
+    #[cfg(any(feature = "reviewed-removal", feature = "alpha-cleanup"))]
     Approve {
         id: String,
         #[arg(long)]
         hash: String,
     },
-    #[cfg(feature = "reviewed-removal")]
+    #[cfg(any(feature = "reviewed-removal", feature = "alpha-cleanup"))]
     Execute {
         id: String,
         #[arg(long)]
@@ -396,7 +442,7 @@ enum PlanAction {
         #[arg(long)]
         confirm_permanent: bool,
     },
-    #[cfg(feature = "reviewed-removal")]
+    #[cfg(any(feature = "reviewed-removal", feature = "alpha-cleanup"))]
     #[command(alias = "close-preserved")]
     CloseUncertain {
         run_id: String,
@@ -992,6 +1038,19 @@ fn main() -> ExitCode {
                 &correlation_id,
             )
             .map(|cask| render_cask_detail(&cask, cli.output)),
+        Command::Cask { action: CaskAction::Remove { id, yes } } => {
+            service.get(&GetCask { version: CONTRACT_VERSION, id: id.clone() }, &correlation_id).and_then(|cask| {
+                service.remove_cask(&casklet_contracts::RemoveCask { version: CONTRACT_VERSION, id, expected_revision: cask.revision, confirm: yes }, &correlation_id)
+            }).map(|()| if matches!(cli.output, Output::Json) { "{\"removed\":true}\n".into() } else { "Cask permanently removed. No resource files were deleted.\n".into() })
+        }
+        Command::Cask { action: CaskAction::RemovalStatus { id } } => service.cask_removal_status(&GetCask { version: CONTRACT_VERSION, id }, &correlation_id).map(|status| if matches!(cli.output, Output::Json) { format!("{}\n",serde_json::to_string(&status).unwrap()) } else { format!("{} file resources; {} application dependencies; {} unfinished operation checks. Can remove: {}\n",status.resource_count,status.application_count,status.unfinished_operations,status.can_remove) }),
+        Command::Cask { action: CaskAction::Archive { ref id } | CaskAction::Restore { ref id } } => {
+            let archived = matches!(cli.command, Command::Cask { action: CaskAction::Archive { .. } });
+            service.get(&GetCask { version: CONTRACT_VERSION, id: id.clone() }, &correlation_id).and_then(|cask|
+                service.set_cask_archived(&casklet_contracts::SetCaskArchived { version: CONTRACT_VERSION, id: cask.id, archived, expected_revision: cask.revision }, &correlation_id)
+            ).map(|cask| render_cask_detail(&cask, cli.output))
+        }
+        Command::Resource { action: ResourceAction::Adopt { cask_id, source_path, category, confirm_ownership } } => service.adopt_resource(&casklet_contracts::AdoptResource { version: CONTRACT_VERSION, cask_id, source_path, category_key: category, confirm_ownership }, &correlation_id, &|done,_| { eprint!("\rInspected: {done} entries"); }).map(|resource| match cli.output { Output::Json => format!("{}\n",serde_json::to_string(&resource).unwrap()), Output::Table => format!("Managed in place: {}\nLocation unchanged: {}\nNo files deleted. Cleanup requires a reviewed plan.\n",resource.name,resource.path) }),
         Command::Resource {
             action:
                 ResourceAction::Add {
@@ -1009,7 +1068,7 @@ fn main() -> ExitCode {
                 }
             };
             let result = service
-                .add_resource(
+                .add_user_resource_with_events(
                     &AddResource {
                         version: CONTRACT_VERSION,
                         cask_id,
@@ -1019,6 +1078,7 @@ fn main() -> ExitCode {
                     },
                     &correlation_id,
                     &progress,
+                    &|_| {},
                 )
                 .map(|resource| render_resource_added(&resource, mode, cli.output));
             eprintln!();
@@ -1221,6 +1281,8 @@ fn main() -> ExitCode {
                 &correlation_id,
             )
             .map(|plan| render_plan(&plan, cli.output)),
+        Command::Plan { action: PlanAction::List { cask_id } } => service.list_removal_plans(&ListRemovalPlans { version: CONTRACT_VERSION, cask_id }, &correlation_id)
+            .map(|plans| if matches!(cli.output, Output::Json) { format!("{}\n",serde_json::to_string(&plans).expect("serializable plans")) } else { plans.iter().fold(String::new(), |mut result, plan| { writeln!(result, "{}: {}", plan.id, plan.state).expect("String write"); result }) }),
         Command::Plan {
             action: PlanAction::Get { id },
         } => service
@@ -1232,7 +1294,7 @@ fn main() -> ExitCode {
                 &correlation_id,
             )
             .map(|plan| render_plan(&plan, cli.output)),
-        #[cfg(feature = "reviewed-removal")]
+        #[cfg(any(feature = "reviewed-removal", feature = "alpha-cleanup"))]
         Command::Plan {
             action: PlanAction::Approve { id, hash },
         } => service
@@ -1245,7 +1307,7 @@ fn main() -> ExitCode {
                 &correlation_id,
             )
             .map(|plan| render_plan(&plan, cli.output)),
-        #[cfg(feature = "reviewed-removal")]
+        #[cfg(any(feature = "reviewed-removal", feature = "alpha-cleanup"))]
         Command::Plan {
             action:
                 PlanAction::Execute {
@@ -1267,7 +1329,7 @@ fn main() -> ExitCode {
                 )
             })
             .map(|plan| render_plan(&plan, cli.output)),
-        #[cfg(feature = "reviewed-removal")]
+        #[cfg(any(feature = "reviewed-removal", feature = "alpha-cleanup"))]
         Command::Plan {
             action: PlanAction::CloseUncertain { run_id, yes },
         } => confirm_removal(&run_id, yes, cli.no_input)
@@ -1294,7 +1356,7 @@ fn main() -> ExitCode {
     }
 }
 
-#[cfg(feature = "reviewed-removal")]
+#[cfg(any(feature = "reviewed-removal", feature = "alpha-cleanup"))]
 fn confirm_removal(id: &str, yes: bool, no_input: bool) -> Result<(), ApiError> {
     if yes {
         return Ok(());
@@ -1336,7 +1398,7 @@ fn render_plan(plan: &RemovalPlanView, output: Output) -> String {
         ),
         Output::Table => {
             let mut result = format!(
-                "Plan {} ({}; {}; expires {})\nHash: {}\n",
+                "Cleanup plan {} ({}; {}; expires {})\nCreating a plan does not delete files or detach associations. The Cask remains available.\nHash: {}\n",
                 plan.id,
                 plan.state.to_ascii_lowercase(),
                 if plan.permanent {
@@ -1355,17 +1417,28 @@ fn render_plan(plan: &RemovalPlanView, output: Output) -> String {
                     result,
                     "{}: {} ({}) [{}{}]",
                     item.name,
-                    item.action.to_ascii_lowercase(),
-                    item.reason_code.to_ascii_lowercase(),
+                    match item.action.as_str() { "TRASH" => "move to Recycle Bin", "DETACH" => "detach association; keep data", "PRESERVE" => "preserve data and association", "DELETE_PERMANENTLY" => "permanently delete file", _ => &item.action },
+                    match item.reason_code.as_str() { "NO_DELETE_AUTHORITY" => "no deletion authority", "SHARED" => "another registered association depends on or overlaps this data", "UNVERIFIED" => "identity or complete contents could not be verified", "ELIGIBLE_MANAGED" => "recorded ownership and current identity verified; no registered dependents", "PERMANENT_DIRECTORY_UNSUPPORTED" => "permanent deletion is unsupported for directories", "PERMANENT_RESOURCE_UNSUPPORTED" => "permanent deletion is unsupported for this resource", _ => &item.reason_code },
                     item.state.to_ascii_lowercase(),
                     item.result_code
                         .as_ref()
                         .map_or_else(String::new, |code| format!("; {code}")),
                 )
                 .expect("String write");
+                writeln!(result, "  Location: {}", item.path).expect("String write");
                 if let Some(path) = &item.recovery_path {
                     writeln!(result, "  Possible recovery location: {path}").expect("String write");
                 }
+            }
+            if plan.state == "DRAFT" {
+                writeln!(result, "Next: review the actions, then casklet cleanup approve {} --hash {} (requires Alpha cleanup or reviewed-removal build)", plan.id, plan.plan_hash).expect("String write");
+            } else if plan.state == "APPROVED" {
+                writeln!(
+                    result,
+                    "Next: casklet cleanup execute {} --hash {} --yes (revalidates every action)",
+                    plan.id, plan.plan_hash
+                )
+                .expect("String write");
             }
             result
         }
