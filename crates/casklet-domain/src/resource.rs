@@ -6,6 +6,7 @@ pub enum IntakeMode {
     Copy,
     Move,
     Reference,
+    Adopt,
 }
 impl IntakeMode {
     #[must_use]
@@ -14,6 +15,7 @@ impl IntakeMode {
             Self::Copy => "COPY",
             Self::Move => "MOVE",
             Self::Reference => "REFERENCE",
+            Self::Adopt => "ADOPT",
         }
     }
 }
@@ -44,13 +46,14 @@ impl ResourceKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Management {
     Managed,
+    ManagedInPlace,
     Referenced,
 }
 impl Management {
     #[must_use]
     pub const fn code(self) -> &'static str {
         match self {
-            Self::Managed => "MANAGED",
+            Self::Managed | Self::ManagedInPlace => "MANAGED",
             Self::Referenced => "REFERENCED",
         }
     }
@@ -104,6 +107,8 @@ impl Resource {
         }
         let management = if mode == IntakeMode::Reference {
             Management::Referenced
+        } else if mode == IntakeMode::Adopt {
+            Management::ManagedInPlace
         } else {
             Management::Managed
         };
@@ -135,13 +140,13 @@ impl Resource {
     pub const fn containment(&self) -> &'static str {
         match self.management {
             Management::Managed => "INTERNAL",
-            Management::Referenced => "EXTERNAL",
+            Management::Referenced | Management::ManagedInPlace => "EXTERNAL",
         }
     }
     #[must_use]
     pub const fn relationship(&self) -> &'static str {
         match self.management {
-            Management::Managed => "OWNED",
+            Management::Managed | Management::ManagedInPlace => "OWNED",
             Management::Referenced => "REFERENCED",
         }
     }

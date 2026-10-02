@@ -75,6 +75,31 @@ fn check() -> Result<(), String> {
         ],
     )?;
     run("cargo", &["test", "--workspace", "--all-features"])?;
+    // Feature profiles are separate invocations so Cargo feature unification cannot hide a gate bug.
+    run(
+        "cargo",
+        &[
+            "test",
+            "-p",
+            "casklet-cli",
+            "-p",
+            "casklet-desktop",
+            "--locked",
+        ],
+    )?;
+    run(
+        "cargo",
+        &[
+            "test",
+            "-p",
+            "casklet-cli",
+            "-p",
+            "casklet-desktop",
+            "--features",
+            "alpha-cleanup",
+            "--locked",
+        ],
+    )?;
     // Windows cannot replace the running xtask.exe during its own quality gate.
     run(
         "cargo",
@@ -95,27 +120,37 @@ fn check() -> Result<(), String> {
 }
 
 #[cfg(windows)]
-fn package() -> Result<(), String> {
+fn package(alpha: bool, allow_dirty: bool) -> Result<(), String> {
     let syft =
         env::var("SYFT_PATH").map_err(|_| "set SYFT_PATH to a verified syft.exe".to_string())?;
+    let mut args = vec![
+        "-NoProfile",
+        "-File",
+        "scripts/package-release.ps1",
+        "-SyftPath",
+        &syft,
+    ];
+    if alpha {
+        args.extend(["-Alpha", "-OutputDirectory", "release/alpha"]);
+    }
+    if allow_dirty {
+        args.push("-AllowDirty");
+    }
+    run("pwsh", &args)?;
     run(
         "pwsh",
         &[
             "-NoProfile",
             "-File",
-            "scripts/package-release.ps1",
-            "-SyftPath",
-            &syft,
+            "scripts/verify-release.ps1",
+            "-OutputDirectory",
+            if alpha { "release/alpha" } else { "release" },
         ],
-    )?;
-    run(
-        "pwsh",
-        &["-NoProfile", "-File", "scripts/verify-release.ps1"],
     )
 }
 
 #[cfg(not(windows))]
-fn package() -> Result<(), String> {
+fn package(_alpha: bool, _allow_dirty: bool) -> Result<(), String> {
     Err("Release packaging requires Windows.".into())
 }
 
@@ -137,10 +172,11 @@ fn main() -> ExitCode {
         Some("bootstrap-check") => bootstrap_check(),
         Some("generate-contracts") => generate_contracts(),
         Some("check" | "test") => check(),
-        Some("test-integration") => { println!("Integration suites begin with their owning milestones."); Ok(()) },
-        Some("package") => package(),
+        Some("test-integration") => run("cargo", &["test", "-p", "casklet-infrastructure", "-p", "casklet-cli", "--all-features", "--locked"]),
+        Some("package") => package(false, false),
+        Some("package-alpha") => package(true, env::args().any(|arg| arg == "--allow-dirty")),
         Some("verify-release") => verify_release(),
-        _ => Err("usage: cargo xtask <bootstrap-check|generate-contracts|check|test|test-integration|package|verify-release>".into()),
+        _ => Err("usage: cargo xtask <bootstrap-check|generate-contracts|check|test|test-integration|package|package-alpha [--allow-dirty]|verify-release>".into()),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,

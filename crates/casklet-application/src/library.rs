@@ -25,6 +25,83 @@ impl<
 > CaskService<R, S>
 {
     /// # Errors
+    /// Returns current dependency and operation checks for permanent removal.
+    pub fn cask_removal_status(
+        &self,
+        request: &GetCask,
+        correlation_id: &str,
+    ) -> Result<casklet_contracts::CaskRemovalStatus, ApiError> {
+        self.get(request, correlation_id)?;
+        self.repository
+            .removal_status(&request.id)
+            .map_err(|e| api_error("PERSISTENCE", e, correlation_id))
+    }
+    /// # Errors
+    /// Requires explicit confirmation and an unchanged, dependency-free Cask.
+    pub fn remove_cask(
+        &self,
+        request: &casklet_contracts::RemoveCask,
+        correlation_id: &str,
+    ) -> Result<(), ApiError> {
+        check_version(request.version, correlation_id)?;
+        if !request.confirm {
+            return Err(api_error(
+                "CONFIRMATION_REQUIRED",
+                "Confirm permanent removal of this Cask.".into(),
+                correlation_id,
+            ));
+        }
+        self.get(
+            &GetCask {
+                version: request.version,
+                id: request.id.clone(),
+            },
+            correlation_id,
+        )?;
+        let now = i64::try_from(
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map_err(|e| api_error("CLOCK", e.to_string(), correlation_id))?
+                .as_millis(),
+        )
+        .map_err(|e| api_error("CLOCK", e.to_string(), correlation_id))?;
+        if !self
+            .repository
+            .remove_empty(&request.id, request.expected_revision, now)
+            .map_err(|e| api_error("PERSISTENCE", e, correlation_id))?
+        {
+            return Err(api_error("CASK_NOT_REMOVABLE", "This Cask changed, still has dependencies, or has unfinished work. Refresh and review before removing it.".into(), correlation_id));
+        }
+        Ok(())
+    }
+    /// Archives or restores metadata while preserving all associated data.
+    /// # Errors
+    /// Rejects stale revisions and active or uncertain operations.
+    pub fn set_cask_archived(
+        &self,
+        request: &casklet_contracts::SetCaskArchived,
+        correlation_id: &str,
+    ) -> Result<CaskView, ApiError> {
+        let cask = self.get(
+            &GetCask {
+                version: request.version,
+                id: request.id.clone(),
+            },
+            correlation_id,
+        )?;
+        self.update_cask(
+            &UpdateCask {
+                version: request.version,
+                id: request.id.clone(),
+                name: cask.name,
+                description: cask.description,
+                archived: request.archived,
+                expected_revision: request.expected_revision,
+            },
+            correlation_id,
+        )
+    }
+    /// # Errors
     /// Rejects stale revisions, invalid metadata, and locked Casks.
     pub fn update_cask(
         &self,

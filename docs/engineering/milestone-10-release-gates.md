@@ -1,6 +1,6 @@
 # Milestone 10 release gates
 
-Status: implementation in review; public alpha gate remains closed.
+Status: local Alpha candidate validation; broad public-distribution gate remains open. Current evidence: [Alpha readiness](alpha-readiness.md).
 
 The packaging spike produced `Casklet_0.0.0_x64-setup.exe` with Tauri's NSIS bundler on this Windows host. The supported installer choice is per-user NSIS. A local-host install exposed a collision between its `%LOCALAPPDATA%\Casklet` program directory and the former database path. The empty test install was removed; release state now uses `%LOCALAPPDATA%\CaskletData`. The corrected package passed the local preservation test below. A clean Windows 11 x64 machine has not been tested.
 
@@ -11,7 +11,7 @@ Run `cargo xtask check` and, from a clean Windows 11 x64 checkout with a checksu
 ## Automated evidence
 
 - Workspace Rust tests, lint, formatting, CLI and desktop builds: `cargo xtask check`.
-- Every milestone schema 1–11 upgrades to current schema with Cask data intact; versions 1–10 produce a readable pre-migration SQLite backup.
+- Every milestone schema 1–13 upgrades to current schema with Cask data intact; versions 1–12 produce a readable pre-migration SQLite backup.
 - Corrupt database startup rejects the file without overwriting it.
 - Frontend smoke tests cover typed commands and explicit resource intake.
 
@@ -23,7 +23,7 @@ Record OS build, filesystem, volume layout, Git revision, tester, date, screensh
 | --------------- | ---------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------- |
 | Fresh install   | Per-user NSIS installs without elevation; CLI ZIP runs; development data is not opened                                       | Pending                                                                          |
 | Upgrade         | Install candidate over a prior published build; existing Casks and managed content remain available                          | Pending                                                                          |
-| Cask workflow   | Create, reopen, categorize, copy, move, reference, export, recover manifest                                                  | Pending                                                                          |
+| Cask workflow   | Create, reopen, categorize, reference/adopt, export, recover manifest (Copy/Move user intake temporarily disabled)           | Pending                                                                          |
 | App workflow    | Inspect and install portable ZIP, search and associate Windows apps, review WinGet/installer outcome                         | Pending                                                                          |
 | Recovery        | Interrupt resource, WinGet, and installer operations; inspect and preserve uncertain outcomes                                | Pending                                                                          |
 | File edge cases | Low disk, long path, non-ASCII names, multi-volume move, inaccessible path, reparse point                                    | Pending                                                                          |
@@ -32,7 +32,7 @@ Record OS build, filesystem, volume layout, Git revision, tester, date, screensh
 | Uninstall       | Remove Casklet through Windows Settings; confirm `%USERPROFILE%\\Casklets` and `%LOCALAPPDATA%\\CaskletData` remain intact   | Partial: silent local uninstall passed; Settings and clean-machine paths pending |
 | Security        | Independent review of removal, elevation, CSP, path identity, providers, dependency policy                                   | Pending                                                                          |
 
-Destructive cleanup and WinGet uninstall stay disabled in distributable builds until the independent security review approves them. No public release should be labeled ready while any required manual row remains pending or a critical/high defect is open.
+Default packages remain review-only. The explicitly authorized local/limited Alpha profile enables journaled file cleanup under ADR 0021; WinGet uninstall remains disabled. This does not close independent review or certify public distribution. No public release should be labeled ready while any required manual row remains pending or a critical/high defect is open.
 
 ## Local host evidence (2026-09-28)
 
@@ -51,3 +51,9 @@ Native visual inspection used isolated development state under `target/gui-qa`, 
 ## Performance budget proposal
 
 Cold startup to usable dashboard: 3 seconds on baseline hardware with warm filesystem cache; 1,000-resource inventory and storage summary: 5 seconds; progress reporting for scans: first update within 2 seconds. Measure on a Windows 11 x64 reference machine and revise budgets from profiles before public alpha.
+
+## Alpha candidate follow-up (2026-10-02)
+
+`cargo xtask package-alpha` explicitly selects file cleanup for CLI and desktop. Clean source is required normally. Local validation may use `--allow-dirty`; provenance identifies it as dirty and includes a complete source-file checksum snapshot. The verifier checks that snapshot, lock hashes, artifact inventory, and checksums including provenance. Source changes during packaging invalidate the candidate. The public signing/notice/source and manual matrix gates above remain open; a local package is not a published release.
+
+The 0.1.0-alpha.1 NSIS candidate passed local silent install/reinstall/uninstall in a verified workspace program directory with isolated release data: all exit codes zero, program executable removed, database/Cask reopened, managed sentinel bytes unchanged. The prior per-user install-location setting was restored. The desktop executable reached a visible Casklet window at 989 ms with isolated data. These observations do not close clean-machine, prior-version upgrade, Windows Settings uninstall, visual/accessibility, or signing gates. Candidate packaging verified nine checksum-bound artifacts, with file cleanup enabled and provider uninstall disabled in provenance.

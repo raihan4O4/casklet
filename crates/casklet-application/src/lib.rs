@@ -26,6 +26,12 @@ pub const fn linked_boundaries() -> (&'static str, &'static str) {
 pub trait CaskRepository {
     /// # Errors
     /// Returns a persistence error.
+    fn removal_status(&self, id: &str) -> Result<casklet_contracts::CaskRemovalStatus, String>;
+    /// # Errors
+    /// Permanently retires an empty Cask after atomic dependency and revision checks.
+    fn remove_empty(&self, id: &str, expected_revision: i64, now_ms: i64) -> Result<bool, String>;
+    /// # Errors
+    /// Returns a persistence error.
     fn create(&self, cask: &Cask) -> Result<(), String>;
     /// # Errors
     /// Returns a persistence error.

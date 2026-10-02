@@ -26,6 +26,7 @@ impl ProposedAction {
 pub struct RemovalEvidence {
     pub managed: bool,
     pub internal: bool,
+    pub explicitly_adopted: bool,
     pub created_by_casklet: bool,
     pub owned: bool,
     pub delete_policy: bool,
@@ -38,7 +39,11 @@ pub struct RemovalEvidence {
 
 #[must_use]
 pub const fn propose(e: RemovalEvidence) -> (ProposedAction, &'static str) {
-    if !e.owned || !e.managed || !e.internal || !e.created_by_casklet || !e.delete_policy {
+    if !e.owned
+        || !e.managed
+        || !e.delete_policy
+        || !(e.internal && e.created_by_casklet || !e.internal && e.explicitly_adopted)
+    {
         return (ProposedAction::Detach, "NO_DELETE_AUTHORITY");
     }
     if e.has_other_association {
@@ -56,10 +61,11 @@ mod tests {
 
     #[test]
     fn generated_evidence_combinations_never_delete_without_every_required_fact() {
-        for bits in 0_u16..1024 {
+        for bits in 0_u16..2048 {
             let e = RemovalEvidence {
                 managed: bits & 1 != 0,
                 internal: bits & 2 != 0,
+                explicitly_adopted: bits & 1024 != 0,
                 created_by_casklet: bits & 4 != 0,
                 owned: bits & 8 != 0,
                 delete_policy: bits & 16 != 0,
@@ -70,8 +76,7 @@ mod tests {
                 unknown_entries: bits & 512 != 0,
             };
             let can_trash = e.managed
-                && e.internal
-                && e.created_by_casklet
+                && ((e.internal && e.created_by_casklet) || (!e.internal && e.explicitly_adopted))
                 && e.owned
                 && e.delete_policy
                 && !e.has_other_association

@@ -1,6 +1,6 @@
 # Casklet Project Context
 
-Last updated: 2026-09-30
+Last updated: 2026-10-02
 
 This is the canonical handoff for humans and new Codex tasks. Keep it concise and current. Detailed specifications belong in linked documents.
 
@@ -14,7 +14,7 @@ Core principle:
 
 ## Current phase
 
-The initial design program is approved. Milestones 0–10 are integrated into `develop`. The desktop GUI redesign was merged in PR #14. A follow-up UI polish pass adds consistent menus, focus states, floating notifications, resource/application picker hierarchy, and hidden-window readiness. Manual Windows release gates remain open. Milestone 4 removal and Milestone 8 uninstall remain behind the disabled `reviewed-removal` feature and require independent security review before destructive functionality is enabled in public builds.
+The initial design program is approved. Milestones 0–10 are integrated into `develop`. The desktop GUI redesign was merged in PR #14. A follow-up UI polish pass adds consistent menus, focus states, floating notifications, resource/application picker hierarchy, and hidden-window readiness. Manual Windows release gates remain open. Default builds remain review-only. The user-authorized Alpha profile explicitly enables file cleanup through `alpha-cleanup`; WinGet uninstall remains behind `reviewed-removal`. Independent review and clean-machine/publication gates remain open. See ADR 0021.
 
 - Phase 1 — Requirements: approved.
 - Phase 2 — Cross-platform and installation workflow: approved.
@@ -145,6 +145,8 @@ Exact dependencies will be approved during repository/tooling design; do not add
 - `docs/security/milestone-10-review.md` — internal boundary audit and outstanding independent security review.
 - `docs/adr/0016-apache-2-project-license.md` — Apache-2.0 project-license decision and release consequences.
 - `docs/adr/0017-windows-install-and-data-paths.md` — separation of per-user NSIS program files and persistent data.
+- `docs/adr/0019-resource-ownership-and-cleanup.md` — explicit ownership at external locations and separation of Cask lifecycle from cleanup.
+- `docs/engineering/ownership-cleanup-ux.md` — shared commands, interface behavior, schema 12 migration, and acceptance evidence.
 - `domain model.txt` — original detailed Phase 3 source; preserve through normalization review.
 
 ## Current implementation milestone
@@ -152,3 +154,12 @@ Exact dependencies will be approved during repository/tooling design; do not add
 Milestones 0–10 are integrated into `develop`. Milestone 10 adds release-profile storage separation, database integrity checks and pre-migration backup, initial accessibility improvements, packaging tooling, and product/release documentation. Its release gate remains open for Windows manual testing, installer uninstall evidence, performance profiling, and independent security review. Real installer/UAC behavior still needs isolated manual validation. Keep `main` unchanged until planned milestone integration.
 The project license is Apache-2.0 (selected during Milestone 10). CLI and GUI expose metadata-only SQLite backup through the shared application core. The GUI now uses fixed native main and owned Cask windows, monochrome styling, the supplied logo, bundled Inter, and Lucide icons. Cask workspaces retain all resource/provider/recovery/removal workflows across Overview, Files & Folders, Applications, Activity, and Settings. Schema 11 adds descriptions and revision-checked metadata/archive commands shared by CLI and GUI. See `docs/adr/0018-desktop-cask-workspaces.md` and `docs/engineering/desktop-gui-design.md`. The Windows host has no isolated test machine or independent reviewer, so release gates remain open.
 The per-user NSIS installer uses `%LOCALAPPDATA%\Casklet` for program files. A local install test exposed that the original release database path collided with this directory; the empty test install was uninstalled and operational state moved to `%LOCALAPPDATA%\CaskletData`. The corrected package passed a local silent install/create/uninstall preservation test; Windows Settings, upgrade, and clean-machine tests remain pending.
+The October ownership/cleanup follow-up adds direct reversible archive/restore, explicit in-place resource ownership grants, stable reuse of equivalent current cleanup plans, and resource-only cleanup that preserves the Cask. Reference and explicit in-place ownership remain available; generic user Copy/Move intake is temporarily disabled under ADR 0020 while legacy/provider code and recovery remain supported. Schema 12 preserves existing resource data and invalidates unexecuted legacy plans. External owned resources require exact grant and identity verification, block on overlapping dependencies, and support journaled Recycle Bin disposal only behind `reviewed-removal`. Recovered manifests never recreate deletion authority.
+
+The second October cleanup review introduces schema 13 permanent Cask removal with retained audit tombstones after atomic dependency/operation checks, a simple visible review/approval/execution workflow, and advanced-only cleanup diagnostics. Archive stays in Settings; bottom Cleanup only navigates. Generic user Copy/Move intake is temporarily disabled while legacy/provider implementation and recovery remain intact. See `docs/adr/0020-permanent-cask-removal-and-simple-cleanup.md`.
+
+The latest cleanup refinement uses only Add Items / red Cleanup footer actions, with confirmed empty-Cask removal inside Cleanup. Resources stay collapsed after intake and expand inline for paths/technical details. Cleanup has visible deletion-method choices, compact Reviewed state, and an upfront review-only capability notice. Method/scope changes invalidate the displayed preview; security gating and shared-core approval/execution semantics remain unchanged.
+
+The Alpha readiness pass versions the candidate as 0.1.0-alpha.1, separates file-cleanup capability from provider uninstall, adds shared cleanup history/restart recovery, reconciles worker failures with durable plan state, and extracts cleanup presentation. Migration sequencing is centralized; cleanup scans use blocking workers; GUI startup reports data errors; recovery process checks use system executable resolution. The integration xtask now runs real suites. Patched Vitest/devalue dependencies pass the full frontend audit. The complete local CI gate passed across default/Alpha/reviewed profiles; real Windows fixture cleanup and the release 1,000-resource benchmark passed. Packaging records build capabilities and exact source checksums, including explicitly dirty local candidates. See docs/engineering/alpha-readiness.md for evidence and outstanding release limitations. No public release or independent review is claimed.
+
+The 0.1.0-alpha.1 local package has been built and verified (nine artifacts, SPDX SBOM, checksums, explicit dirty-source snapshot). The optimized CLI passed real fixture cleanup; desktop startup and local silent install/reinstall/uninstall preservation passed. Expired saved plans require a new preview. The candidate remains unsigned and is not cleared for broad public distribution.

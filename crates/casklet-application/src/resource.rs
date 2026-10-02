@@ -45,6 +45,9 @@ pub struct IntakePaths {
 
 pub trait ResourceRepository {
     /// # Errors
+    /// Atomically records explicit in-place authority, rejecting locks and overlapping resources.
+    fn commit_adoption(&self, resource: &Resource) -> Result<(), String>;
+    /// # Errors
     /// Returns a persistence error.
     fn category_exists(&self, cask_id: &str, key: &str) -> Result<bool, String>;
     /// # Errors
@@ -95,6 +98,11 @@ pub trait ResourceRepository {
 
 pub trait ResourceStorage {
     /// # Errors
+    /// Rejects broad, linked, protected, or insufficiently verified external locations.
+    fn validate_owned_location(&self, _observed: &Observation) -> Result<(), String> {
+        Err("In-place ownership is not supported by this storage adapter".into())
+    }
+    /// # Errors
     /// Returns a filesystem validation or inspection error.
     fn inspect(&self, source: &str, progress: &dyn Fn(u64, u64)) -> Result<Observation, String>;
     fn availability(&self, path: &str, kind: ResourceKind) -> &'static str;
@@ -125,6 +133,92 @@ impl<
     S: ResourceStorage + ManifestProjection,
 > CaskService<R, S>
 {
+    /// Registers explicit cleanup authority without moving or copying user data.
+    /// # Errors
+    /// Rejects missing consent, inactive Casks, unsafe locations, and overlapping associations.
+    pub fn adopt_resource(
+        &self,
+        request: &casklet_contracts::AdoptResource,
+        correlation_id: &str,
+        progress: &dyn Fn(u64, u64),
+    ) -> Result<ResourceView, ApiError> {
+        check(request.version, correlation_id)?;
+        if !request.confirm_ownership {
+            return Err(err("OWNERSHIP_CONSENT", "Confirm this data is dedicated to this activity and may be cleaned up after plan approval".into(), correlation_id));
+        }
+        let cask = self
+            .repository
+            .get(&request.cask_id)
+            .map_err(|e| err("PERSISTENCE", e, correlation_id))?
+            .ok_or_else(|| err("NOT_FOUND", "Cask not found".into(), correlation_id))?;
+        if cask.state != CaskState::Active {
+            return Err(err(
+                "CASK_READ_ONLY",
+                "Cask is not active".into(),
+                correlation_id,
+            ));
+        }
+        if !self
+            .repository
+            .category_exists(&cask.id, &request.category_key)
+            .map_err(|e| err("PERSISTENCE", e, correlation_id))?
+        {
+            return Err(err(
+                "INVALID_CATEGORY",
+                "Category is unavailable".into(),
+                correlation_id,
+            ));
+        }
+        let observed = self
+            .storage
+            .inspect(&request.source_path, progress)
+            .map_err(|e| err("SOURCE", e, correlation_id))?;
+        self.storage
+            .validate_owned_location(&observed)
+            .map_err(|e| err("UNSAFE_OWNERSHIP", e, correlation_id))?;
+        let now = i64::try_from(
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map_err(|e| err("CLOCK", e.to_string(), correlation_id))?
+                .as_millis(),
+        )
+        .map_err(|e| err("CLOCK", e.to_string(), correlation_id))?;
+        let mut resource = Resource::new(
+            cask.id,
+            observed.name,
+            observed.source_path.clone(),
+            observed.kind,
+            IntakeMode::Adopt,
+            request.category_key.clone(),
+            observed.size_bytes,
+            observed.unknown_entries,
+            now,
+        )
+        .map_err(|e| err("INVALID_RESOURCE", format!("{e:?}"), correlation_id))?;
+        resource.identity_key = observed.recordable_identity;
+        if !observed
+            .file_identity
+            .matches_path(&resource.path)
+            .unwrap_or(false)
+        {
+            return Err(err(
+                "SOURCE_CHANGED",
+                "Source changed during ownership review".into(),
+                correlation_id,
+            ));
+        }
+        self.repository
+            .commit_adoption(&resource)
+            .map_err(|e| err("OWNERSHIP_CONFLICT", e, correlation_id))?;
+        let _ = self.retry_manifest_projections(correlation_id);
+        self.get_resource(
+            &GetResource {
+                version: CONTRACT_VERSION,
+                id: resource.id,
+            },
+            correlation_id,
+        )
+    }
     /// # Errors
     /// Returns validation, persistence, or filesystem errors with a correlation ID.
     pub fn add_resource(
@@ -134,6 +228,22 @@ impl<
         progress: &dyn Fn(u64, u64),
     ) -> Result<ResourceView, ApiError> {
         self.add_resource_with_events(request, correlation_id, progress, &|_| {})
+    }
+
+    /// User-facing intake policy; legacy/provider copy and move implementation stays available below.
+    /// # Errors
+    /// Copy and Move are temporarily disabled by ADR 0020.
+    pub fn add_user_resource_with_events(
+        &self,
+        request: &AddResource,
+        correlation_id: &str,
+        progress: &dyn Fn(u64, u64),
+        started: &dyn Fn(&str),
+    ) -> Result<ResourceView, ApiError> {
+        if !matches!(request.mode, AddMode::Reference) {
+            return Err(err("INTAKE_MODE_DISABLED", "Copy and Move are temporarily disabled. Use Reference or Manage at current location.".into(), correlation_id));
+        }
+        self.add_resource_with_events(request, correlation_id, progress, started)
     }
 
     /// Reports the durable operation ID after intent and lock are committed.

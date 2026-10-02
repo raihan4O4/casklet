@@ -6,3 +6,7 @@ allowBuilds:
 
 onlyBuiltDependencies:
   - "@tauri-apps/cli"
+
+# Security patch for Svelte serialization until its direct dependency floor catches up.
+overrides:
+  devalue: "5.9.3"

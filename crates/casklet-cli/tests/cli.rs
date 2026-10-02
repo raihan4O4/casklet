@@ -1,6 +1,54 @@
 use std::{fs, process::Command};
 
 #[test]
+fn archive_and_explicit_in_place_ownership_share_cleanup_semantics_across_processes() {
+    let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../target")
+        .join(format!("cli-ownership-{}", std::process::id()));
+    fs::create_dir_all(&root).unwrap();
+    let run = |args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_casklet"))
+            .args(args)
+            .env("CASKLET_DEV_ROOT", &root)
+            .output()
+            .unwrap()
+    };
+    let created = run(&["--output", "json", "cask", "create", "In place"]);
+    assert!(
+        created.status.success(),
+        "{}",
+        String::from_utf8_lossy(&created.stderr)
+    );
+    let cask: serde_json::Value = serde_json::from_slice(&created.stdout).unwrap();
+    let id = cask["id"].as_str().unwrap();
+    assert!(run(&["cask", "archive", id]).status.success());
+    assert!(run(&["cask", "restore", id]).status.success());
+    let source = root.join("external.txt");
+    fs::write(&source, b"leave here").unwrap();
+    let path = source.to_string_lossy();
+    let refused = run(&["resource", "adopt", id, &path]);
+    assert!(!refused.status.success());
+    assert!(String::from_utf8_lossy(&refused.stderr).contains("OWNERSHIP_CONSENT"));
+    assert!(
+        run(&["resource", "adopt", id, &path, "--confirm-ownership"])
+            .status
+            .success()
+    );
+    let first = run(&["--output", "json", "cleanup", "create", id]);
+    let second = run(&["--output", "json", "plan", "create", id]);
+    assert!(first.status.success());
+    assert!(second.status.success());
+    let first: serde_json::Value = serde_json::from_slice(&first.stdout).unwrap();
+    let second: serde_json::Value = serde_json::from_slice(&second.stdout).unwrap();
+    assert_eq!(first["id"], second["id"]);
+    assert_eq!(first["cleanupOnly"], true);
+    assert_eq!(first["items"][0]["action"], "TRASH");
+    assert!(run(&["cask", "archive", id]).status.success());
+    assert_eq!(fs::read(&source).unwrap(), b"leave here");
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
 fn create_list_get_across_processes() {
     let root = std::env::temp_dir().join(format!("casklet-cli-{}", std::process::id()));
     let binary = env!("CARGO_BIN_EXE_casklet");
@@ -49,6 +97,10 @@ fn create_list_get_across_processes() {
     let backup_path = backup["path"].as_str().unwrap();
     assert!(std::path::Path::new(backup_path).starts_with(root.join("backups")));
     assert!(std::path::Path::new(backup_path).is_file());
+    assert!(!run(&["cask", "remove", id]).status.success());
+    assert!(run(&["cask", "remove", id, "--yes"]).status.success());
+    assert!(!run(&["cask", "restore", id]).status.success());
+    assert!(!run(&["cask", "get", id]).status.success());
     fs::remove_dir_all(root).unwrap();
 }
 
@@ -74,6 +126,14 @@ fn resource_commands_keep_human_output_brief_and_require_mode() {
     let missing_mode = run(&["resource", "add", id, &source_text]);
     assert!(!missing_mode.status.success());
     assert!(source.exists());
+    for mode in ["copy", "move"] {
+        assert!(
+            !run(&["resource", "add", id, &source_text, "--mode", mode])
+                .status
+                .success()
+        );
+        assert!(source.exists());
+    }
     let added = run(&["resource", "add", id, &source_text, "--mode", "reference"]);
     assert!(
         added.status.success(),
@@ -93,7 +153,7 @@ fn resource_commands_keep_human_output_brief_and_require_mode() {
     fs::remove_dir_all(root).unwrap();
 }
 
-#[cfg(feature = "reviewed-removal")]
+#[cfg(any(feature = "reviewed-removal", feature = "alpha-cleanup"))]
 #[test]
 fn cleanup_requires_explicit_noninteractive_confirmation() {
     let root = std::env::temp_dir().join(format!("casklet-cli-cleanup-{}", uuid::Uuid::new_v4()));
@@ -143,6 +203,7 @@ fn cleanup_requires_explicit_noninteractive_confirmation() {
     assert!(!refused.status.success());
     assert!(String::from_utf8_lossy(&refused.stderr).contains("CONFIRMATION_REQUIRED"));
     assert!(source.exists());
+    assert!(!run(&["cask", "remove", cask_id, "--yes"]).status.success());
     let executed = run(&[
         "plan",
         "execute",
@@ -163,5 +224,29 @@ fn cleanup_requires_explicit_noninteractive_confirmation() {
             .unwrap()
             .is_empty()
     );
+    assert!(run(&["cask", "remove", cask_id, "--yes"]).status.success());
+    assert!(source.exists());
     fs::remove_dir_all(root).unwrap();
+}
+
+#[cfg(all(feature = "alpha-cleanup", not(feature = "reviewed-removal")))]
+#[test]
+fn alpha_cleanup_does_not_enable_provider_uninstall() {
+    let binary = env!("CARGO_BIN_EXE_casklet");
+    assert!(
+        Command::new(binary)
+            .args(["cleanup", "execute", "--help"])
+            .output()
+            .unwrap()
+            .status
+            .success()
+    );
+    assert!(
+        !Command::new(binary)
+            .args(["winget", "execute", "--help"])
+            .output()
+            .unwrap()
+            .status
+            .success()
+    );
 }

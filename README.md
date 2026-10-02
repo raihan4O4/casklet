@@ -29,6 +29,17 @@ The user-facing command is `casklet`. Build the development CLI with `cargo buil
 .\target\debug\casklet.exe cask get <id>
 ```
 
-The default list output contains only Cask names. JSON output explicitly includes IDs and metadata for scripting or disambiguating duplicate names. The current binary uses development data paths and is not yet an installable release.
+The default list output contains only Cask names. JSON output explicitly includes IDs and metadata for scripting or disambiguating duplicate names. Debug binaries use development data paths; Alpha release binaries use the per-user production paths above.
 
 See [CONTRIBUTING.md](CONTRIBUTING.md), [project context](docs/PROJECT_CONTEXT.md), and the [delivery roadmap](docs/engineering/delivery-roadmap-v0.1.md).
+
+## Alpha candidate
+
+Version: 0.1.0-alpha.1. See [Alpha notes](docs/product/alpha-release-notes.md) and [readiness evidence](docs/engineering/alpha-readiness.md). Default builds support previews only. To test actual file cleanup locally:
+
+```powershell
+cargo build -p casklet-cli --features alpha-cleanup
+corepack pnpm --filter @casklet/desktop tauri dev --features alpha-cleanup
+```
+
+To package the Windows x64 candidate, set `SYFT_PATH` to a checksum-verified official Syft executable, then run `cargo xtask package-alpha`. Local validation of uncommitted work can explicitly use `cargo xtask package-alpha --allow-dirty`; provenance records exact source checksums and dirty status. Verify with `pwsh -NoProfile -File scripts/verify-release.ps1 -OutputDirectory release/alpha`. `scripts/alpha-smoke.ps1` tests real cleanup only on newly created isolated workspace fixtures. Independent review, signing, and clean-machine gates remain outstanding; no public release is claimed.

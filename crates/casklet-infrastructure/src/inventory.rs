@@ -304,6 +304,7 @@ impl SqliteCasks {
         let entries: Vec<Value> = resources.iter().map(|r| {
             let mut item = json!({"name":r.name,"kind":r.kind,"management":r.management,
                 "containment":r.containment,"availability":r.availability,"categoryKey":r.category_key,
+                "ownership":r.ownership,"provenance":r.provenance,
                 "sizeBytes":r.size_bytes,"sizeMeasurement":r.size_measurement});
             if profile == ExportProfile::Machine {
                 item["id"] = json!(r.id);

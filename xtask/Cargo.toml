@@ -7,7 +7,7 @@ publish.workspace = true
 license.workspace = true
 
 [dependencies]
-casklet-contracts = { path = "../crates/casklet-contracts", version = "=0.0.0" }
+casklet-contracts = { path = "../crates/casklet-contracts", version = "=0.1.0-alpha.1" }
 
 [lints]
 workspace = true

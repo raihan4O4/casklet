@@ -6,7 +6,57 @@ use casklet_domain::resource::{IntakeMode, Resource};
 use rusqlite::{OptionalExtension, params};
 use uuid::Uuid;
 
-const SELECT_RESOURCE: &str = "SELECT r.id,a.cask_id,r.display_name,l.path_display,r.kind,r.management,l.containment,r.availability,a.category_key,r.size_bytes,r.size_measurement,r.unknown_entries,(SELECT COUNT(*) > 1 FROM resource_associations shared WHERE shared.resource_id=r.id AND shared.removed_at_ms IS NULL) FROM resources r JOIN resource_associations a ON a.resource_id=r.id AND a.removed_at_ms IS NULL JOIN resource_locations l ON l.resource_id=r.id AND l.is_primary=1 AND l.retired_at_ms IS NULL";
+pub(super) fn reject_pending_intake_overlap(
+    connection: &rusqlite::Connection,
+    path: &str,
+) -> Result<(), String> {
+    let mut statement = connection.prepare("SELECT i.source_path,i.staging_path,i.final_path FROM intake_operations i JOIN operation_locks lock ON lock.operation_id=i.id").map_err(|e| e.to_string())?;
+    for row in statement
+        .query_map([], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, String>(2)?,
+            ))
+        })
+        .map_err(|e| e.to_string())?
+    {
+        let (source, staging, destination) = row.map_err(|e| e.to_string())?;
+        if [source, staging, destination]
+            .iter()
+            .any(|other| super::removal::paths_overlap(path, other))
+        {
+            return Err("This location overlaps an active or unrecovered intake".into());
+        }
+    }
+    Ok(())
+}
+
+fn reject_locked_overlap(connection: &rusqlite::Connection, path: &str) -> Result<(), String> {
+    if std::path::Path::new(path).components().any(|part| {
+        part.as_os_str()
+            .to_string_lossy()
+            .to_lowercase()
+            .starts_with(".casklet-removal-")
+    }) {
+        return Err(
+            "Recovery quarantine must be inspected and restored through recovery, not intake"
+                .into(),
+        );
+    }
+    let mut statement = connection.prepare("SELECT l.path_display FROM resource_locations l JOIN resource_associations a ON a.resource_id=l.resource_id AND a.removed_at_ms IS NULL JOIN removal_locks lock ON lock.cask_id=a.cask_id WHERE l.is_primary=1 AND l.retired_at_ms IS NULL").map_err(|e| e.to_string())?;
+    for row in statement
+        .query_map([], |row| row.get::<_, String>(0))
+        .map_err(|e| e.to_string())?
+    {
+        if super::removal::paths_overlap(path, &row.map_err(|e| e.to_string())?) {
+            return Err("This location is locked by an active or uncertain cleanup".into());
+        }
+    }
+    Ok(())
+}
+
+const SELECT_RESOURCE: &str = "SELECT r.id,a.cask_id,r.display_name,l.path_display,r.kind,r.management,l.containment,r.availability,a.category_key,r.size_bytes,r.size_measurement,r.unknown_entries,(SELECT COUNT(*) > 1 FROM resource_associations shared WHERE shared.resource_id=r.id AND shared.removed_at_ms IS NULL),a.relationship,r.provenance FROM resources r JOIN resource_associations a ON a.resource_id=r.id AND a.removed_at_ms IS NULL JOIN resource_locations l ON l.resource_id=r.id AND l.is_primary=1 AND l.retired_at_ms IS NULL";
 
 fn resource_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ResourceView> {
     let size: Option<i64> = row.get(9)?;
@@ -20,6 +70,8 @@ fn resource_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ResourceView> {
         kind: row.get(4)?,
         management: row.get(5)?,
         shared: row.get(12)?,
+        ownership: row.get(13)?,
+        provenance: row.get(14)?,
         containment: row.get(6)?,
         availability: row.get(7)?,
         category_key: row.get(8)?,
@@ -30,6 +82,42 @@ fn resource_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ResourceView> {
 }
 
 impl ResourceRepository for SqliteCasks {
+    fn commit_adoption(&self, resource: &Resource) -> Result<(), String> {
+        let mut connection = self.connection()?;
+        let transaction = connection.transaction().map_err(|e| e.to_string())?;
+        reject_locked_overlap(&transaction, &resource.path)?;
+        reject_pending_intake_overlap(&transaction, &resource.path)?;
+        if let Some(parent) = self.db_path.parent()
+            && let Ok(state_path) = std::fs::canonicalize(parent)
+            && super::removal::paths_overlap(&resource.path, &state_path.to_string_lossy())
+        {
+            return Err("The database directory cannot be owned as resource data".into());
+        }
+        let available: i64 = transaction.query_row("SELECT COUNT(*) FROM casks WHERE id=?1 AND state='ACTIVE' AND NOT EXISTS (SELECT 1 FROM operation_locks WHERE lock_key='cask:'||?1||':mutation') AND NOT EXISTS (SELECT 1 FROM removal_locks WHERE cask_id=?1) AND NOT EXISTS (SELECT 1 FROM installer_locks WHERE cask_id=?1)", [&resource.cask_id], |row| row.get(0)).map_err(|e| e.to_string())?;
+        if available != 1 {
+            return Err("Cask changed or has unfinished work".into());
+        }
+        if super::removal::overlap_count(
+            &transaction,
+            &resource.id,
+            &resource.cask_id,
+            &resource.path,
+        )? != 0
+        {
+            return Err("This path overlaps a registered resource; keep it referenced or resolve its associations first".into());
+        }
+        let identity = resource
+            .identity_key
+            .as_ref()
+            .ok_or("Ownership identity missing")?;
+        transaction.execute("INSERT INTO resources(id,kind,display_name,management,provenance,availability,size_bytes,size_measurement,unknown_entries,created_at_ms) VALUES (?1,?2,?3,'MANAGED','USER_ADOPTED','PRESENT',?4,?5,0,?6)", params![resource.id,resource.kind.code(),resource.name,resource.size_bytes.map(i64::try_from).transpose().map_err(|e| e.to_string())?,resource.size_measurement,resource.created_at_ms]).map_err(|e| e.to_string())?;
+        transaction.execute("INSERT INTO resource_locations(id,resource_id,path_display,path_key,containment,is_primary,first_seen_at_ms,identity_key) VALUES (?1,?2,?3,?4,'EXTERNAL',1,?5,?6)", params![Uuid::new_v4().to_string(),resource.id,resource.path,resource.path.to_lowercase(),resource.created_at_ms,identity]).map_err(|e| e.to_string())?;
+        transaction.execute("INSERT INTO resource_associations(id,cask_id,resource_id,category_key,relationship,removal_policy,added_at_ms) VALUES (?1,?2,?3,?4,'OWNED','DELETE_WHEN_UNREFERENCED',?5)", params![Uuid::new_v4().to_string(),resource.cask_id,resource.id,resource.category_key,resource.created_at_ms]).map_err(|e| e.to_string())?;
+        transaction.execute("INSERT INTO resource_ownership_grants(resource_id,cask_id,exact_path,identity_key,consent_at_ms) VALUES (?1,?2,?3,?4,?5)", params![resource.id,resource.cask_id,resource.path,identity,resource.created_at_ms]).map_err(|e| e.to_string())?;
+        transaction.execute("INSERT INTO operations(id,cask_id,type,state,current_step_code,started_at_ms,updated_at_ms,finished_at_ms) VALUES (?1,?2,'RESOURCE_INTAKE','SUCCEEDED','ADOPT_IN_PLACE',?3,?3,?3)", params![Uuid::new_v4().to_string(),resource.cask_id,resource.created_at_ms]).map_err(|e| e.to_string())?;
+        transaction.execute("INSERT INTO projection_jobs(cask_id,target_revision,state,updated_at_ms) VALUES (?1,1,'PENDING',?2) ON CONFLICT(cask_id) DO UPDATE SET target_revision=target_revision+1,state='PENDING',updated_at_ms=excluded.updated_at_ms",params![resource.cask_id,resource.created_at_ms]).map_err(|e| e.to_string())?;
+        transaction.commit().map_err(|e| e.to_string())
+    }
     fn category_exists(&self, cask_id: &str, key: &str) -> Result<bool, String> {
         let count: i64 = self
             .connection()?
@@ -77,6 +165,18 @@ impl ResourceRepository for SqliteCasks {
     ) -> Result<(), String> {
         let mut connection = self.connection()?;
         let transaction = connection.transaction().map_err(|e| e.to_string())?;
+        // Revalidate inside the transaction: removal/archive may win after the application's initial lookup.
+        let active: bool = transaction
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM casks WHERE id=?1 AND state='ACTIVE')",
+                [&resource.cask_id],
+                |row| row.get(0),
+            )
+            .map_err(|e| e.to_string())?;
+        if !active {
+            return Err("Cask is no longer active".into());
+        }
+        reject_locked_overlap(&transaction, source)?;
         let removal_lock: i64 = transaction
             .query_row(
                 "SELECT COUNT(*) FROM removal_locks WHERE cask_id=?1",
@@ -112,6 +212,29 @@ impl ResourceRepository for SqliteCasks {
     fn commit_resource(&self, resource: &Resource, op_id: Option<&str>) -> Result<(), String> {
         let mut connection = self.connection()?;
         let transaction = connection.transaction().map_err(|e| e.to_string())?;
+        reject_locked_overlap(&transaction, &resource.path)?;
+        let active: bool = transaction
+            .query_row(
+                "SELECT state='ACTIVE' FROM casks WHERE id=?1",
+                [&resource.cask_id],
+                |row| row.get(0),
+            )
+            .map_err(|e| e.to_string())?;
+        if !active {
+            return Err("Cask is no longer active".into());
+        }
+        if op_id.is_none() {
+            let locked: i64 = transaction
+                .query_row(
+                    "SELECT COUNT(*) FROM operation_locks WHERE lock_key=?1",
+                    [format!("cask:{}:mutation", resource.cask_id)],
+                    |row| row.get(0),
+                )
+                .map_err(|e| e.to_string())?;
+            if locked != 0 {
+                return Err("Cask has unfinished intake work".into());
+            }
+        }
         let locked: i64 = transaction
             .query_row(
                 "SELECT COUNT(*) FROM removal_locks WHERE cask_id=?1",
@@ -255,20 +378,42 @@ impl ResourceRepository for SqliteCasks {
                 "{SELECT_RESOURCE} WHERE a.cask_id=?1 ORDER BY a.added_at_ms,r.id"
             ))
             .map_err(|e| e.to_string())?;
-        stmt.query_map([cask_id], resource_row)
+        let mut resources: Vec<ResourceView> = stmt
+            .query_map([cask_id], resource_row)
             .map_err(|e| e.to_string())?
             .collect::<Result<Vec<_>, _>>()
-            .map_err(|e| e.to_string())
+            .map_err(|e| e.to_string())?;
+        for resource in &mut resources {
+            if resource.management == "MANAGED" {
+                resource.shared |= super::removal::overlap_count(
+                    &connection,
+                    &resource.id,
+                    &resource.cask_id,
+                    &resource.path,
+                )? > 0;
+            }
+        }
+        Ok(resources)
     }
     fn get_resource(&self, id: &str) -> Result<Option<ResourceView>, String> {
-        self.connection()?
+        let connection = self.connection()?;
+        let mut resource = connection
             .query_row(
                 &format!("{SELECT_RESOURCE} WHERE r.id=?1"),
                 [id],
                 resource_row,
             )
             .optional()
-            .map_err(|e| e.to_string())
+            .map_err(|e| e.to_string())?;
+        if let Some(resource) = &mut resource {
+            resource.shared |= super::removal::overlap_count(
+                &connection,
+                &resource.id,
+                &resource.cask_id,
+                &resource.path,
+            )? > 0;
+        }
+        Ok(resource)
     }
     fn categorize(&self, id: &str, key: &str) -> Result<(), String> {
         let mut connection = self.connection()?;
