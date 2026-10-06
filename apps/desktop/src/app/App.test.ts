@@ -274,7 +274,7 @@ test("installer diagnostics and history are absent while EXE limits remain clear
   );
   await screen.findByText("Example setup");
   expect(
-    screen.getByText(/automatic uninstall is not supported/i),
+    screen.getByText(/Cleanup uses the verified Windows uninstaller/i),
   ).toBeTruthy();
   expect(screen.queryByText(path)).toBeNull();
   expect(screen.queryByText(/secret-hash/)).toBeNull();
@@ -1608,11 +1608,33 @@ test("installer artifacts stay out of Files and Cask-installed EXE provenance st
   const exe = {
     ...appFixture("Installed EXE", "exe-app"),
     provenance: "INSTALLED_BY_CASKLET",
+    removalPolicy: "CASKLET_OWNED",
   };
   ownershipWorkspace([artifact], (command) => {
     if (command === "list_installer_artifacts")
       return [{ id: "artifact", resourceId: artifact.id }];
     if (command === "list_associated_applications") return [exe];
+    if (command === "create_application_removal")
+      return {
+        version: 1,
+        id: "exe-plan",
+        caskId: "ownership-cask",
+        state: "DRAFT",
+        planHash: "hash",
+        expiresAtMs: Date.now() + 600000,
+        items: [
+          {
+            installationId: "exe-app",
+            name: "Installed EXE",
+            productCode: "registry",
+            evidenceSha256: "evidence",
+            uninstallerSha256: "exe-hash",
+            result: null,
+            action: "UNINSTALL",
+            state: "PENDING",
+          },
+        ],
+      };
     return undefined;
   });
   await screen.findByRole("heading", { name: "Ownership" });
@@ -1628,12 +1650,32 @@ test("installer artifacts stay out of Files and Cask-installed EXE provenance st
   expect(screen.queryByText("setup.exe")).toBeNull();
   await fireEvent.click(screen.getByRole("button", { name: "Applications" }));
   await screen.findByText("Installed EXE");
-  expect(screen.getByText("Installed for Cask")).toBeTruthy();
+  expect(screen.getByText("Casklet-owned")).toBeTruthy();
   expect(
     screen.getByRole("button", {
-      name: "Keep app and remove link to Installed EXE",
+      name: "Remove Installed EXE",
     }),
   ).toBeTruthy();
   expect(applicationRows([], [exe], [])[0].management).toBe("managed");
-  expect(exe.removalPolicy).toBe("DETACH_ONLY");
+  expect(exe.removalPolicy).toBe("CASKLET_OWNED");
+  await fireEvent.click(
+    screen.getByRole("button", { name: "Remove Installed EXE" }),
+  );
+  await fireEvent.click(
+    await screen.findByRole("button", {
+      name: "Preview selected application removal",
+    }),
+  );
+  expect(calls.invoke).toHaveBeenCalledWith("create_application_removal", {
+    request: {
+      version: 1,
+      caskId: "ownership-cask",
+      installationId: "exe-app",
+    },
+  });
+  expect(
+    calls.invoke.mock.calls.some(
+      ([command]) => command === "disassociate_installed_application",
+    ),
+  ).toBe(false);
 });

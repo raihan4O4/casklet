@@ -76,6 +76,7 @@ enum Command {
         #[command(subcommand)]
         action: WingetAction,
     },
+    #[command(alias = "applications")]
     Msi {
         #[command(subcommand)]
         action: MsiAction,
@@ -390,6 +391,8 @@ enum MsiAction {
     },
     Preview {
         cask_id: String,
+        #[arg(long)]
+        installation_id: Option<String>,
     },
     Latest {
         cask_id: String,
@@ -1101,7 +1104,7 @@ fn main() -> ExitCode {
         Command::Msi { action } => {
             let result: Result<serde_json::Value, ApiError> = match action {
                 MsiAction::Manage { operation_id, installation_id, yes } => if yes { service.claim_managed_msi(&ConfirmInstallerCandidate { version:CONTRACT_VERSION,operation_id,installation_id }, &correlation_id).map(|()|serde_json::json!({"managed":true})) } else { Err(confirm_error("Confirm MSI ownership with --yes", &correlation_id)) },
-                MsiAction::Preview { cask_id } => service.create_msi_cleanup(&GetCask { version:CONTRACT_VERSION,id:cask_id }, &correlation_id).map(|value|serde_json::to_value(value).unwrap()),
+                MsiAction::Preview { cask_id, installation_id } => if let Some(installation_id) = installation_id { service.create_application_removal(&DisassociateInstalledApplication { version: CONTRACT_VERSION, cask_id, installation_id }, &correlation_id) } else { service.create_msi_cleanup(&GetCask { version:CONTRACT_VERSION,id:cask_id }, &correlation_id) }.map(|value|serde_json::to_value(value).unwrap()),
                 MsiAction::Latest { cask_id } => service.latest_msi_cleanup(&GetCask { version:CONTRACT_VERSION,id:cask_id }, &correlation_id).map(|value|serde_json::to_value(value).unwrap()),
                 #[cfg(any(feature="alpha-cleanup",feature="reviewed-removal"))]
                 MsiAction::Approve { id, hash } => service.approve_msi_cleanup(&casklet_contracts::ApproveRemovalPlan { version:CONTRACT_VERSION,id,plan_hash:hash }, &correlation_id).map(|value|serde_json::to_value(value).unwrap()),

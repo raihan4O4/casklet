@@ -121,3 +121,17 @@ pub(super) fn release_managed_msi(
 ) -> Result<(), casklet_contracts::ApiError> {
     service.release_managed_msi(&request, "desktop")
 }
+
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+pub(super) async fn create_application_removal(
+    service: tauri::State<'_, Service>,
+    request: casklet_contracts::DisassociateInstalledApplication,
+) -> Result<casklet_contracts::MsiCleanupPlan, casklet_contracts::ApiError> {
+    let service = service.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        service.create_application_removal(&request, "desktop")
+    })
+    .await
+    .map_err(|e| worker_error(&e))?
+}

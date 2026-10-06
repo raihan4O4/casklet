@@ -9,10 +9,12 @@
     enabled,
     onChanged,
     hasManaged,
+    installationId = "",
   }: {
     caskId: string;
     enabled: boolean;
     hasManaged: boolean;
+    installationId?: string;
     onChanged: () => Promise<void>;
   } = $props();
   let plan: MsiCleanupPlan | null = $state(null);
@@ -30,30 +32,40 @@
     const current = plan as MsiCleanupPlan | null;
     return current && current.expiresAtMs <= clock;
   });
+  let loadRevision = 0;
   async function load() {
+    const token = ++loadRevision;
     const result =
       (await invoke<MsiCleanupPlan | null>("latest_msi_cleanup", {
         request: { version: CONTRACT_VERSION, id: caskId },
       })) ?? null;
-    plan = result?.id ? result : null;
+    if (token === loadRevision) plan = result?.id ? result : null;
   }
   async function action(command: string) {
     if (busy) return;
     busy = true;
     error = "";
     try {
-      plan = await invoke<MsiCleanupPlan>(command, {
-        request:
-          command === "create_msi_cleanup"
-            ? { version: CONTRACT_VERSION, id: caskId }
-            : {
-                version: CONTRACT_VERSION,
-                id: plan!.id,
-                planHash: plan!.planHash,
-              },
-      });
+      plan = await invoke<MsiCleanupPlan>(
+        command === "create_msi_cleanup" && installationId
+          ? "create_application_removal"
+          : command,
+        {
+          request:
+            command === "create_msi_cleanup"
+              ? installationId
+                ? { version: CONTRACT_VERSION, caskId, installationId }
+                : { version: CONTRACT_VERSION, id: caskId }
+              : {
+                  version: CONTRACT_VERSION,
+                  id: plan!.id,
+                  planHash: plan!.planHash,
+                },
+        },
+      );
       if (command === "create_msi_cleanup" || command === "close_msi_cleanup")
         reviewedHash = "";
+      loadRevision++;
       confirmed = false;
       keepConfirmed = false;
       await onChanged();
@@ -66,6 +78,10 @@
     } finally {
       busy = false;
     }
+  }
+  async function retry() {
+    await action("close_msi_cleanup");
+    if (plan?.state === "CLOSED_PRESERVED") await action("create_msi_cleanup");
   }
   async function keep(installationId: string) {
     if (!keepConfirmed || busy) return;
@@ -94,6 +110,7 @@
     });
     const interval = window.setInterval(() => {
       clock = Date.now();
+      if (busy) void load().catch(() => {});
     }, 1000);
     return () => window.clearInterval(interval);
   });
@@ -102,7 +119,7 @@
 {#if hasManaged || plan}
   <section class="msi-cleanup" aria-label="Managed application cleanup">
     <div class="section-heading">
-      <h3>Managed applications</h3>
+      <h3>Application cleanup</h3>
       {#if plan}<span class="state-badge"
           >{expired &&
           !interrupted &&
@@ -111,12 +128,17 @@
             : label(plan.state)}</span
         >{/if}
     </div>
-    <p>Uninstall managed applications first, then clean up remaining files.</p>
+    <p>
+      References are detached. Casklet-owned applications uninstall one at a
+      time.
+    </p>
     <button
       type="button"
       disabled={!hasManaged || busy || !!interrupted}
       onclick={() => void action("create_msi_cleanup")}
-      >Preview application cleanup</button
+      >{installationId
+        ? "Preview selected application removal"
+        : "Preview application cleanup"}</button
     >
     {#if plan}
       {#if plan.items.some((item) => item.action === "PRESERVE") && !interrupted}<label
@@ -131,11 +153,19 @@
       <ul class="cleanup-items">
         {#each plan.items as item (item.installationId)}<li>
             <strong>{item.name}</strong><span
-              >{item.state === "SUCCEEDED"
-                ? "Uninstalled"
-                : item.action === "UNINSTALL"
-                  ? "Uninstall application"
-                  : "Keep — shared or no longer verified"}</span
+              >{["UNKNOWN", "FAILED"].includes(item.state)
+                ? `Failed - ${item.result ?? "Result needs inspection"}`
+                : item.state === "RUNNING"
+                  ? "Uninstalling..."
+                  : item.state === "DETACHED"
+                    ? "Reference / Detached"
+                    : item.action === "DETACH"
+                      ? "Reference / Remove from Cask"
+                      : item.state === "SUCCEEDED"
+                        ? "Uninstalled"
+                        : item.action === "UNINSTALL"
+                          ? "Waiting - Uninstall application"
+                          : `Keep - ${item.result ?? "shared or no longer verified"}`}</span
             >{#if item.action === "PRESERVE" && !interrupted}<button
                 type="button"
                 disabled={busy || !keepConfirmed}
@@ -197,6 +227,12 @@
             : "I confirm keeping these applications installed and removing their Cask associations."}</label
         >
       {/if}
+      {#if plan.state === "PARTIAL"}<p role="alert">
+          Cleanup finished with {plan.items.filter((item) =>
+            ["UNKNOWN", "FAILED"].includes(item.state),
+          ).length} failed application(s). Ownership is retained. Inspect the result,
+          close this queue, then create a fresh preview to retry.
+        </p>{/if}
       {#if interrupted}<p>
           Cleanup needs inspection. Check Windows before closing it; uncertain
           results are never repeated automatically.
@@ -208,7 +244,12 @@
           type="button"
           disabled={busy || !confirmed}
           onclick={() => void action("close_msi_cleanup")}
-          >Close application cleanup without retrying</button
+          >Close results and allow a new retry preview</button
+        ><button
+          type="button"
+          disabled={busy || !confirmed}
+          onclick={() => void retry()}
+          >Retry failed applications - preview</button
         >{/if}
       {#if plan.state === "COMPLETE"}<p>
           Application cleanup finished. Continue with file cleanup below.

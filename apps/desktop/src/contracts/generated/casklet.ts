@@ -2,7 +2,7 @@
 export const CONTRACT_VERSION = 1;
 export type RemoveCask = { version: number; id: string; expectedRevision: number; confirm: boolean };
 export type CaskRemovalStatus = { version: number; canRemove: boolean; resourceCount: number; applicationCount: number; unfinishedOperations: number };
-export type MsiCleanupItem = { installationId: string; name: string; productCode: string; evidenceSha256: string; action: string; state: string };
+export type MsiCleanupItem = { installationId: string; name: string; productCode: string; evidenceSha256: string; action: string; state: string; uninstallerSha256: string | null; result: string | null };
 export type MsiCleanupPlan = { version: number; id: string; caskId: string; state: string; planHash: string; expiresAtMs: number; items: MsiCleanupItem[] };
 export type CreateCask = { version: number; name: string };
 export type GetCask = { version: number; id: string };

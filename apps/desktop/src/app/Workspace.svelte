@@ -211,14 +211,17 @@
       installerOperation?.state ?? "",
     ),
   );
+  let applicationRemovalId = $state("");
   async function applicationAction(row: ApplicationRow) {
     if (row.kind === "portable") {
       await previewPortableRemoval(row.item);
     } else if (row.kind === "winget") {
       applicationWorkflow = "winget";
       await planWingetUninstall(row.item);
-    } else if (row.item.removalPolicy === "MANAGED_MSI") {
-      await navigateCleanup();
+    } else if (
+      ["MANAGED_MSI", "CASKLET_OWNED"].includes(row.item.removalPolicy)
+    ) {
+      await navigateCleanup([], row.item.installationId);
     } else {
       await disassociateDetected(row.item);
     }
@@ -863,7 +866,11 @@
       metadataBusy = false;
     }
   }
-  async function navigateCleanup(resourceIds: string[] = []) {
+  async function navigateCleanup(
+    resourceIds: string[] = [],
+    installationId = "",
+  ) {
+    applicationRemovalId = installationId;
     if (cleanupResourceIds.join() !== resourceIds.join()) {
       removalPlan = null;
       reviewedPlanHash = "";
@@ -2027,10 +2034,9 @@
                     software you trust.
                   </p>
                   <p>
-                    {installerPreview.format === "MSI" &&
-                    installerPreview.productCode
-                      ? "Verified new applications can be removed through Cask cleanup."
-                      : "Automatic uninstall is not supported. Remove installed software through Windows."}
+                    New installations belong to this Cask. Cleanup uses the
+                    verified Windows uninstaller; unsupported or ambiguous
+                    results remain visible for review.
                   </p>
                 </div>
                 <button
@@ -2068,7 +2074,9 @@
                         (item) =>
                           item.installationId ===
                             installerOperation?.confirmedInstallationId &&
-                          item.removalPolicy === "MANAGED_MSI",
+                          ["MANAGED_MSI", "CASKLET_OWNED"].includes(
+                            item.removalPolicy,
+                          ),
                       )
                         ? "Included in approved Cask cleanup."
                         : "Remove this software through Windows when you no longer need it."}
@@ -2474,9 +2482,8 @@
         <MsiCleanup
           caskId={selected.id}
           enabled={removalEnabled}
-          hasManaged={associatedApps.some(
-            (item) => item.removalPolicy === "MANAGED_MSI",
-          )}
+          installationId={applicationRemovalId}
+          hasManaged={associatedApps.length > 0}
           onChanged={refreshResources}
         />
         {#if caskRemovalStatus?.canRemove}
@@ -2500,7 +2507,7 @@
                 build.</span
               >
             </p>{/if}
-          {#if (caskRemovalStatus?.applicationCount ?? 0) > associatedApps.filter((item) => item.removalPolicy === "MANAGED_MSI").length}<p
+          {#if (caskRemovalStatus?.applicationCount ?? 0) > associatedApps.filter( (item) => ["MANAGED_MSI", "CASKLET_OWNED"].includes(item.removalPolicy), ).length}<p
             >
               Associated or unsupported applications remain. Keep and detach
               their references, or use their provider/Windows uninstall options
@@ -2577,8 +2584,8 @@
             <button
               type="button"
               onclick={() => void previewRemoval()}
-              disabled={associatedApps.some(
-                (item) => item.removalPolicy === "MANAGED_MSI",
+              disabled={associatedApps.some((item) =>
+                ["MANAGED_MSI", "CASKLET_OWNED"].includes(item.removalPolicy),
               ) ||
                 removalBusy ||
                 cleanupPending ||

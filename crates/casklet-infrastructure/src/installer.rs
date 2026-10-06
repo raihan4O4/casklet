@@ -360,6 +360,24 @@ mod tests {
         }
     }
     impl casklet_application::managed_msi::MsiUninstaller for FakeStorage {
+        fn inspect_registered_uninstaller(
+            &self,
+            _item: &ObservedInstallation,
+        ) -> Result<String, String> {
+            Ok("uninstaller-hash".into())
+        }
+        fn uninstall_registered(
+            &self,
+            item: &ObservedInstallation,
+            hash: &str,
+        ) -> Result<i32, String> {
+            assert_eq!(hash, "uninstaller-hash");
+            self.registry
+                .lock()
+                .unwrap()
+                .retain(|entry| entry.installation_id != item.installation_id);
+            Ok(0)
+        }
         fn uninstall_msi(&self, _code: &str) -> Result<i32, String> {
             self.registry.lock().unwrap().clear();
             Ok(0)
@@ -548,7 +566,7 @@ mod tests {
         assert_eq!(service.storage.runs.load(Ordering::SeqCst), 1);
     }
     #[test]
-    fn process_tree_complete_exe_is_automatically_linked_without_uninstall_authority() {
+    fn process_tree_complete_exe_is_owned_and_cannot_be_detached_as_reference() {
         let (service, cask_id, path) = setup(Mode::ExeTreeSuccess);
         let operation = install(&service, &cask_id, &path);
         assert_eq!(operation.state, "CONFIRMED_ASSOCIATION");
@@ -558,7 +576,7 @@ mod tests {
                 .list_associated_installed(&cask_id)
                 .unwrap()[0]
                 .removal_policy,
-            "DETACH_ONLY"
+            "CASKLET_OWNED"
         );
         let owned: i64 = service
             .repository
@@ -568,7 +586,7 @@ mod tests {
                 r.get(0)
             })
             .unwrap();
-        assert_eq!(owned, 0);
+        assert_eq!(owned, 1);
         assert_eq!(
             service
                 .repository
@@ -580,7 +598,7 @@ mod tests {
         service
             .repository
             .disassociate_installed(&cask_id, &operation.confirmed_installation_id.unwrap(), 1)
-            .unwrap();
+            .unwrap_err();
         let claimed: bool = service
             .repository
             .connection()
@@ -591,7 +609,43 @@ mod tests {
                 |r| r.get(0),
             )
             .unwrap();
-        assert!(!claimed);
+        assert!(claimed);
+    }
+    #[test]
+    fn exe_install_registers_persistent_owner_and_uninstalls_through_reviewed_queue() {
+        let (service, cask_id, path) = setup(Mode::ExeTreeSuccess);
+        let operation = install(&service, &cask_id, &path);
+        let reopened = SqliteCasks::open(service.repository.db_path.clone()).unwrap();
+        assert_eq!(
+            reopened.list_associated_installed(&cask_id).unwrap()[0].removal_policy,
+            "CASKLET_OWNED"
+        );
+        let plan = service
+            .create_application_removal(
+                &casklet_contracts::DisassociateInstalledApplication {
+                    version: CONTRACT_VERSION,
+                    cask_id: cask_id.clone(),
+                    installation_id: operation.confirmed_installation_id.unwrap(),
+                },
+                "test",
+            )
+            .unwrap();
+        assert_eq!(plan.items[0].action, "UNINSTALL");
+        let request = casklet_contracts::ApproveRemovalPlan {
+            version: CONTRACT_VERSION,
+            id: plan.id,
+            plan_hash: plan.plan_hash,
+        };
+        service.approve_msi_cleanup(&request, "test").unwrap();
+        let result = service.execute_msi_cleanup(&request, "test").unwrap();
+        assert_eq!(result.items[0].state, "SUCCEEDED");
+        assert!(service.storage.registry.lock().unwrap().is_empty());
+        assert!(
+            reopened
+                .list_associated_installed(&cask_id)
+                .unwrap()
+                .is_empty()
+        );
     }
     #[test]
     fn ambiguous_completed_install_remains_unresolved_without_claiming_a_candidate() {
