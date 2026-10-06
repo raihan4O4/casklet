@@ -522,9 +522,22 @@ where
                 items
                     .iter()
                     .filter(|item| {
-                        !before
-                            .iter()
-                            .any(|old| old.installation_id == item.installation_id)
+                        !before.iter().any(|old| {
+                            old.installation_id == item.installation_id
+                                || old.source_key.eq_ignore_ascii_case(&item.source_key)
+                                || crate::windows_inventory::user_registration_alias(
+                                    &old.source_key,
+                                )
+                                .is_some_and(|key| key.eq_ignore_ascii_case(&item.source_key))
+                        })
+                    })
+                    // HKCU uninstall keys are shared between views. Keep their stable
+                    // inventory IDs, but do not mistake one physical key for two installs.
+                    .filter(|item| {
+                        !item.source_key.starts_with("HKCU32\\")
+                            || !items
+                                .iter()
+                                .any(|other| item.is_user_registration_alias_of(other))
                     })
                     .map(|item| candidate(item, &current))
                     .collect()

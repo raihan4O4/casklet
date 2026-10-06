@@ -25,6 +25,56 @@ pub struct ObservedInstallation {
     pub evidence_sha256: String,
 }
 
+/// Alternate view of the same shared Windows per-user uninstall key.
+/// Machine keys are redirected and must never be treated as aliases.
+#[must_use]
+pub fn user_registration_alias(key: &str) -> Option<String> {
+    let (view, path) = key.split_once('\\')?;
+    if !path
+        .to_ascii_lowercase()
+        .starts_with("software\\microsoft\\windows\\currentversion\\uninstall\\")
+    {
+        return None;
+    }
+    let alternate = if view.eq_ignore_ascii_case("HKCU64") {
+        "HKCU32"
+    } else if view.eq_ignore_ascii_case("HKCU32") {
+        "HKCU64"
+    } else {
+        return None;
+    };
+    Some(format!("{alternate}\\{path}"))
+}
+
+impl ObservedInstallation {
+    /// Correlation collapses only an exact shared key with identical evidence.
+    #[must_use]
+    pub fn is_user_registration_alias_of(&self, other: &Self) -> bool {
+        if self.scope != "USER"
+            || other.scope != "USER"
+            || self.name != other.name
+            || self.publisher != other.publisher
+            || self.display_version != other.display_version
+            || self.install_location != other.install_location
+            || !user_registration_alias(&self.source_key)
+                .is_some_and(|key| key.eq_ignore_ascii_case(&other.source_key))
+        {
+            return false;
+        }
+        let comparable = |item: &Self| {
+            let mut value: serde_json::Value = serde_json::from_str(&item.evidence_json).ok()?;
+            if value.get("sourceKey")?.as_str()? != item.source_key {
+                return None;
+            }
+            value.as_object_mut()?.remove("sourceKey");
+            Some(value)
+        };
+        comparable(self)
+            .zip(comparable(other))
+            .is_some_and(|(left, right)| left == right)
+    }
+}
+
 pub trait InstalledInventorySource {
     /// # Errors
     /// A partial scan fails rather than implying that unreadable registrations are missing.

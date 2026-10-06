@@ -142,13 +142,25 @@ where
         correlation: &str,
     ) -> Result<(), ApiError> {
         check_version(request.version, correlation)?;
-        let observed = self
+        let inventory = self
             .storage
             .scan_installed()
-            .map_err(|e| Self::msi_error(e, correlation))?
-            .into_iter()
+            .map_err(|e| Self::msi_error(e, correlation))?;
+        let observed = inventory
+            .iter()
             .find(|item| item.installation_id == request.installation_id)
+            .cloned()
             .ok_or_else(|| Self::msi_error("Installation no longer exists".into(), correlation))?;
+        if inventory.iter().any(|entry| {
+            crate::windows_inventory::user_registration_alias(&observed.source_key)
+                .is_some_and(|key| key.eq_ignore_ascii_case(&entry.source_key))
+                && !entry.is_user_registration_alias_of(&observed)
+        }) {
+            return Err(Self::msi_error(
+                "Shared registry views changed during verification".into(),
+                correlation,
+            ));
+        }
         self.repository
             .claim_msi(
                 request,
@@ -174,21 +186,29 @@ where
                         .next()
                         .is_some_and(|key| key.eq_ignore_ascii_case(&item.product_code))
                         || entry.source_key == item.product_code
+                        || crate::windows_inventory::user_registration_alias(&item.product_code)
+                            .is_some_and(|key| key.eq_ignore_ascii_case(&entry.source_key))
                 })
                 .collect();
             if item.action == "DETACH" {
                 continue;
             }
-            let verified = matches.len() == 1
-                && matches[0].installation_id == item.installation_id
-                && matches[0].evidence_sha256 == item.evidence_sha256
-                && (product_code(&item.product_code).is_some()
-                    || item.uninstaller_sha256.as_ref().is_some_and(|hash| {
-                        self.storage
-                            .inspect_registered_uninstaller(matches[0])
-                            .as_ref()
-                            == Ok(hash)
-                    }));
+            let selected = matches
+                .iter()
+                .find(|entry| entry.installation_id == item.installation_id);
+            let verified = selected.is_some_and(|selected| {
+                matches.iter().all(|entry| {
+                    entry.installation_id == selected.installation_id
+                        || entry.is_user_registration_alias_of(selected)
+                }) && selected.evidence_sha256 == item.evidence_sha256
+                    && (product_code(&item.product_code).is_some()
+                        || item.uninstaller_sha256.as_ref().is_some_and(|hash| {
+                            self.storage
+                                .inspect_registered_uninstaller(selected)
+                                .as_ref()
+                                == Ok(hash)
+                        }))
+            });
             let shared = self.repository.msi_dependents(
                 cask_id,
                 &item.installation_id,
@@ -445,6 +465,8 @@ where
                         .next()
                         .is_some_and(|key| key.eq_ignore_ascii_case(&item.product_code))
                         || entry.source_key == item.product_code
+                        || crate::windows_inventory::user_registration_alias(&item.product_code)
+                            .is_some_and(|key| key.eq_ignore_ascii_case(&entry.source_key))
                 }) {
                     return Err("UNINSTALL_NOT_VERIFIED".into());
                 }

@@ -431,15 +431,12 @@ fn main() {
             product_code: None,
             warnings: vec![],
         };
+        // Cold PowerShell/process startup on shared Windows runners can exceed
+        // 15 seconds. This is a completion check, not a startup performance gate.
+        // The explicit 250 ms timeout and immediate cancellation checks stay short.
+        let completion_budget = Duration::from_secs(60);
         assert_eq!(
-            run_with_timeout(
-                &inspection,
-                false,
-                &|| false,
-                &|| {},
-                Duration::from_secs(15)
-            )
-            .unwrap(),
+            run_with_timeout(&inspection, false, &|| false, &|| {}, completion_budget).unwrap(),
             InstallerOutcome::ProcessTreeExited(0)
         );
         assert!(root.join("launched.marker").exists());
@@ -448,14 +445,7 @@ fn main() {
         let mut bootstrapper = inspection.clone();
         bootstrapper.path = tree.to_string_lossy().into_owned();
         assert_eq!(
-            run_with_timeout(
-                &bootstrapper,
-                false,
-                &|| false,
-                &|| {},
-                Duration::from_secs(15)
-            )
-            .unwrap(),
+            run_with_timeout(&bootstrapper, false, &|| false, &|| {}, completion_budget).unwrap(),
             InstallerOutcome::ProcessTreeExited(0)
         );
         assert!(

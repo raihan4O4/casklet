@@ -275,6 +275,72 @@ mod tests {
     use super::*;
     use casklet_application::CaskService;
     use casklet_contracts::CreateCask;
+    #[test]
+    fn registry_aliases_require_shared_user_keys_and_equal_evidence() {
+        let path = r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\Example";
+        let left = normalize(raw(&format!("HKCU64\\{path}"), Some("Example"))).unwrap();
+        let right = normalize(raw(&format!("HKCU32\\{path}"), Some("Example"))).unwrap();
+        assert!(left.is_user_registration_alias_of(&right));
+        let mut changed = right.clone();
+        changed.evidence_json = "{}".into();
+        assert!(!left.is_user_registration_alias_of(&changed));
+        let mut changed = right.clone();
+        changed.source_key.push_str("Other");
+        assert!(!left.is_user_registration_alias_of(&changed));
+        let machine_left = normalize(raw(&format!("HKLM64\\{path}"), Some("Example"))).unwrap();
+        let machine_right = normalize(raw(&format!("HKLM32\\{path}"), Some("Example"))).unwrap();
+        assert!(!machine_left.is_user_registration_alias_of(&machine_right));
+    }
+    #[cfg(windows)]
+    #[test]
+    fn native_shared_user_views_identify_the_same_fixture_registration() {
+        use winreg::{
+            RegKey,
+            enums::{HKEY_CURRENT_USER, KEY_READ, KEY_WRITE},
+        };
+        struct FixtureKey {
+            root: RegKey,
+            name: String,
+        }
+        impl Drop for FixtureKey {
+            fn drop(&mut self) {
+                let _ = self.root.delete_subkey(&self.name);
+            }
+        }
+        let path = r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall";
+        let root = RegKey::predef(HKEY_CURRENT_USER)
+            .create_subkey_with_flags(path, KEY_READ | KEY_WRITE)
+            .unwrap()
+            .0;
+        let name = format!("Casklet.RegistryAlias.Test.{}", Uuid::new_v4());
+        assert!(root.open_subkey(&name).is_err());
+        let (key, _) = root.create_subkey(&name).unwrap();
+        let fixture = FixtureKey {
+            root,
+            name: name.clone(),
+        };
+        key.set_value("DisplayName", &"Casklet registry-alias fixture")
+            .unwrap();
+        key.set_value("Publisher", &"Casklet test").unwrap();
+        drop(key);
+        let inventory = registry_scan().unwrap();
+        let entries: Vec<_> = inventory
+            .iter()
+            .filter(|item| item.source_key.ends_with(&format!("\\{name}")))
+            .collect();
+        assert_eq!(entries.len(), 2);
+        assert_ne!(entries[0].installation_id, entries[1].installation_id);
+        assert!(entries[0].is_user_registration_alias_of(entries[1]));
+        assert!(entries[1].is_user_registration_alias_of(entries[0]));
+        drop(fixture);
+        assert_eq!(
+            RegKey::predef(HKEY_CURRENT_USER)
+                .open_subkey(format!("{path}\\{name}"))
+                .unwrap_err()
+                .kind(),
+            std::io::ErrorKind::NotFound
+        );
+    }
     fn raw(key: &str, name: Option<&str>) -> RawRegistration {
         RawRegistration {
             source_key: key.into(),

@@ -1,7 +1,7 @@
 //! SQLite evidence, ownership, plan state, and Windows Installer capability.
 use super::SqliteCasks;
 use casklet_application::managed_msi::{MsiRepository, product_code};
-use casklet_application::windows_inventory::ObservedInstallation;
+use casklet_application::windows_inventory::{ObservedInstallation, user_registration_alias};
 use casklet_contracts::{
     ConfirmInstallerCandidate, InstallerCandidateView, InstallerInspection, MsiCleanupItem,
     MsiCleanupPlan,
@@ -55,8 +55,10 @@ impl MsiRepository for SqliteCasks {
         };
         let active: bool = tx.query_row("SELECT state='ACTIVE' AND NOT EXISTS(SELECT 1 FROM cask_removals WHERE cask_id=?1) FROM casks WHERE id=?1", [&cask_id], |r| r.get(0)).map_err(|e| e.to_string())?;
         let busy: i64 = tx.query_row("SELECT (SELECT COUNT(*) FROM msi_cleanup_locks)+(SELECT COUNT(*) FROM winget_locks)+(SELECT COUNT(*) FROM installer_locks)+(SELECT COUNT(*) FROM removal_locks WHERE cask_id=?1)+(SELECT COUNT(*) FROM operation_locks WHERE lock_key='cask:'||?1||':mutation')", [&cask_id], |r| r.get(0)).map_err(|e| e.to_string())?;
-        let associated: i64 = tx.query_row("SELECT COUNT(*) FROM windows_cask_associations WHERE installation_id=?1 AND removed_at_ms IS NULL", [&observed.installation_id], |r| r.get(0)).map_err(|e|e.to_string())?;
-        let existing_product: i64 = tx.query_row("SELECT COUNT(*) FROM managed_msi_installations WHERE product_code=?1 COLLATE NOCASE AND state='OWNED'", [&code], |r|r.get(0)).map_err(|e|e.to_string())?;
+        let alias = user_registration_alias(&observed.source_key);
+        let code_alias = user_registration_alias(&code);
+        let associated: i64 = tx.query_row("SELECT COUNT(*) FROM windows_cask_associations a JOIN windows_installations w ON w.id=a.installation_id WHERE a.removed_at_ms IS NULL AND (w.id=?1 OR w.source_key=?2 COLLATE NOCASE OR w.source_key=?3 COLLATE NOCASE)", params![observed.installation_id,observed.source_key,alias], |r| r.get(0)).map_err(|e|e.to_string())?;
+        let existing_product: i64 = tx.query_row("SELECT COUNT(*) FROM managed_msi_installations WHERE state='OWNED' AND (product_code=?1 COLLATE NOCASE OR product_code=?2 COLLATE NOCASE)", params![code,code_alias], |r|r.get(0)).map_err(|e|e.to_string())?;
         let evidence = casklet_domain::installer::InstallerOwnershipEvidence {
             supported_format: inspection.format == "MSI" || is_exe,
             successful_launch: state == "REVIEW_REQUIRED" && exit == Some(0),
@@ -115,7 +117,8 @@ impl MsiRepository for SqliteCasks {
         installation_id: &str,
         code: &str,
     ) -> Result<u64, String> {
-        let count: i64 = self.connection()?.query_row("SELECT (SELECT COUNT(*) FROM windows_cask_associations a JOIN windows_installations w ON w.id=a.installation_id WHERE a.removed_at_ms IS NULL AND a.cask_id!=?1 AND (w.id=?2 OR upper(w.source_key) LIKE '%'||upper(?3)))+(SELECT COUNT(*) FROM managed_msi_installations WHERE product_code=?3 COLLATE NOCASE AND cask_id!=?1 AND state='OWNED')+(SELECT COUNT(*) FROM winget_installations WHERE registry_installation_id=?2 AND state!='REMOVED')",params![cask_id,installation_id,code],|r|r.get(0)).map_err(|e|e.to_string())?;
+        let alias = user_registration_alias(code);
+        let count: i64 = self.connection()?.query_row("SELECT (SELECT COUNT(*) FROM windows_cask_associations a JOIN windows_installations w ON w.id=a.installation_id WHERE a.removed_at_ms IS NULL AND a.cask_id!=?1 AND (w.id=?2 OR upper(w.source_key) LIKE '%'||upper(?3) OR w.source_key=?4 COLLATE NOCASE))+(SELECT COUNT(*) FROM managed_msi_installations WHERE (product_code=?3 COLLATE NOCASE OR product_code=?4 COLLATE NOCASE) AND cask_id!=?1 AND state='OWNED')+(SELECT COUNT(*) FROM winget_installations g LEFT JOIN windows_installations w ON w.id=g.registry_installation_id WHERE g.state!='REMOVED' AND (g.registry_installation_id=?2 OR w.source_key=?3 COLLATE NOCASE OR w.source_key=?4 COLLATE NOCASE))",params![cask_id,installation_id,code,alias],|r|r.get(0)).map_err(|e|e.to_string())?;
         u64::try_from(count).map_err(|e| e.to_string())
     }
     fn save_msi_plan(&self, plan: &MsiCleanupPlan, now: i64) -> Result<(), String> {
