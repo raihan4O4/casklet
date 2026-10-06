@@ -78,6 +78,7 @@ $files = @($snapshotFile, (Join-Path $output 'release-notes.md'), $cliZip, $inst
     channel = $(if ($Alpha) { 'alpha' } else { 'review-only' })
     file_cleanup = [bool]$Alpha
     verified_msi_uninstall = [bool]$Alpha
+    registered_exe_uninstall = [bool]$Alpha
     winget_uninstall = $false
     dirty_source = $dirty
     source_snapshot_sha256 = (Get-FileHash -LiteralPath $snapshotFile -Algorithm SHA256).Hash.ToLowerInvariant()
