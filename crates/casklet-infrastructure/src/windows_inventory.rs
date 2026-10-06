@@ -189,6 +189,14 @@ impl InstalledInventoryRepository for SqliteCasks {
         if state != "ACTIVE" {
             return Err("Cask is not active".into());
         }
+        let msi_busy: bool = tx
+            .query_row("SELECT EXISTS(SELECT 1 FROM msi_cleanup_locks)", [], |r| {
+                r.get(0)
+            })
+            .map_err(|e| e.to_string())?;
+        if msi_busy {
+            return Err("Application cleanup is active".into());
+        }
         let uninstalling:i64=tx.query_row("SELECT COUNT(*) FROM winget_installations w JOIN winget_locks l ON l.cask_id=w.cask_id JOIN winget_operations o ON o.id=l.operation_id AND o.action='UNINSTALL' WHERE w.registry_installation_id=?1 AND w.state='INSTALLED'",[&item.installation_id],|r|r.get(0)).map_err(|e|e.to_string())?;
         if uninstalling != 0 {
             return Err("Installation has an active uninstall operation".into());
@@ -209,10 +217,15 @@ impl InstalledInventoryRepository for SqliteCasks {
     ) -> Result<(), String> {
         let mut connection = self.connection()?;
         let tx = connection.transaction().map_err(|e| e.to_string())?;
+        let blocked: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM managed_msi_installations WHERE installation_id=?1 AND cask_id=?2 AND state='OWNED') OR EXISTS(SELECT 1 FROM msi_cleanup_locks WHERE cask_id=?2)", params![installation_id,cask_id], |r|r.get(0)).map_err(|e|e.to_string())?;
+        if blocked {
+            return Err("Use managed application cleanup or explicitly keep the installation before detaching it".into());
+        }
         let changed = tx.execute("UPDATE windows_cask_associations SET removed_at_ms=?3,revision=revision+1 WHERE cask_id=?1 AND installation_id=?2 AND removed_at_ms IS NULL",params![cask_id,installation_id,now]).map_err(|e|e.to_string())?;
         if changed != 1 {
             return Err("Active association not found".into());
         }
+        tx.execute("UPDATE installer_operations SET installed_for_cask=0 WHERE cask_id=?1 AND confirmed_installation_id=?2",params![cask_id,installation_id]).map_err(|e|e.to_string())?;
         tx.execute("INSERT INTO projection_jobs(cask_id,target_revision,state,updated_at_ms) VALUES (?1,1,'PENDING',?2) ON CONFLICT(cask_id) DO UPDATE SET target_revision=target_revision+1,state='PENDING',updated_at_ms=excluded.updated_at_ms",params![cask_id,now]).map_err(|e|e.to_string())?;
         tx.commit().map_err(|e| e.to_string())?;
         Ok(())
@@ -238,8 +251,8 @@ impl InstalledInventoryRepository for SqliteCasks {
                 state: row.get(8)?,
                 ambiguous_name: false,
                 associated_cask_id: Some(cask_id.into()),
-                provenance: "DETECTED_WINDOWS_REGISTRY".into(),
-                removal_policy: "DETACH_ONLY".into(),
+                provenance: if connection.query_row("SELECT EXISTS(SELECT 1 FROM installer_operations WHERE cask_id=?1 AND confirmed_installation_id=?2 AND installed_for_cask=1)",params![cask_id,row.get::<_,String>(1)?],|r|r.get::<_,bool>(0))? { "INSTALLED_BY_CASKLET" } else { "DETECTED_WINDOWS_REGISTRY" }.into(),
+                removal_policy: if connection.query_row("SELECT EXISTS(SELECT 1 FROM managed_msi_installations WHERE installation_id=?1 AND cask_id=?2 AND state='OWNED')",params![row.get::<_,String>(1)?,cask_id],|r|r.get::<_,bool>(0))? { "MANAGED_MSI" } else { "DETACH_ONLY" }.into(),
             })
         })
         .map_err(|e| e.to_string())?

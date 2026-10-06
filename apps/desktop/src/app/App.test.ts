@@ -9,10 +9,12 @@ import {
 import { afterEach, expect, test, vi } from "vitest";
 import App from "./App.svelte";
 import Workspace from "./Workspace.svelte";
+import MsiCleanup from "./MsiCleanup.svelte";
 import ToastArea from "./ToastArea.svelte";
 import { clearNotices, notify } from "./notifications";
 import { revealWindow } from "./windowReady";
 import { caskColor } from "./format";
+import { applicationRows } from "./applications";
 import { open } from "@tauri-apps/plugin-dialog";
 
 vi.stubGlobal("matchMedia", () => ({ matches: true }));
@@ -29,13 +31,21 @@ HTMLDialogElement.prototype.close = function () {
 
 const calls = vi.hoisted(() => ({
   invoke: vi.fn(),
+  events: new Map<string, (event: { payload: unknown }) => void>(),
   drop: null as
     | null
     | ((event: { payload: { type: string; paths: string[] } }) => void),
 }));
 vi.mock("@tauri-apps/api/core", () => calls);
 vi.mock("@tauri-apps/api/event", () => ({
-  listen: vi.fn(async () => () => {}),
+  listen: vi.fn(
+    async (name: string, handler: (event: { payload: unknown }) => void) => {
+      calls.events.set(name, handler);
+      return () => {
+        calls.events.delete(name);
+      };
+    },
+  ),
 }));
 vi.mock("@tauri-apps/api/window", () => ({
   getCurrentWindow: () => ({
@@ -54,6 +64,8 @@ vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn(), save: vi.fn() }));
 
 afterEach(() => {
   cleanup();
+  localStorage.clear();
+  calls.events.clear();
   clearNotices();
   vi.useRealTimers();
   vi.mocked(open).mockReset();
@@ -123,11 +135,20 @@ test("an empty Cask removes after confirmation without creating a cleanup plan",
     expect((remove as HTMLButtonElement).disabled).toBe(false),
   );
   await fireEvent.click(remove);
+  const modal = screen.getByRole("dialog", {
+    name: "Permanently remove Cask?",
+  });
+  expect(modal.getAttribute("open")).not.toBeNull();
+  expect(document.activeElement).toBe(
+    within(modal).getByRole("button", { name: "Cancel" }),
+  );
   expect(
     calls.invoke.mock.calls.some(([command]) => command === "remove_cask"),
   ).toBe(false);
   await fireEvent.click(
-    screen.getByRole("button", { name: "Confirm Remove Cask" }),
+    within(screen.getByRole("dialog")).getByRole("button", {
+      name: "Remove Cask",
+    }),
   );
   await waitFor(() =>
     expect(calls.invoke).toHaveBeenCalledWith("remove_cask", {
@@ -141,6 +162,515 @@ test("an empty Cask removes after confirmation without creating a cleanup plan",
   ).toBe(false);
   await screen.findByText("Cask removed permanently.");
   expect(screen.queryByRole("button", { name: "Archive Cask" })).toBeNull();
+});
+
+test("Overview metadata and resource choices stay compact", async () => {
+  ownershipWorkspace();
+  await screen.findByRole("heading", { name: "Ownership" });
+  const info = screen.getByLabelText("Cask information") as HTMLDetailsElement;
+  expect(info.open).toBe(false);
+  expect(within(info).getByText("Storage Location")).toBeTruthy();
+  expect(screen.queryByText("Size on Disk")).toBeNull();
+  await fireEvent.click(screen.getByRole("button", { name: "Add Items" }));
+  expect(screen.getByRole("button", { name: "Add File" })).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Add Folder" })).toBeTruthy();
+  expect(screen.queryByRole("button", { name: "Add Reference" })).toBeNull();
+});
+
+test("Cask removal invalidates the library immediately and older queries cannot resurrect it", async () => {
+  const cask = {
+    version: 1,
+    id: "deleted",
+    name: "Deleted",
+    description: "",
+    state: "ACTIVE",
+    managedStorageRoot: "C:/Casklets/deleted",
+    createdAtMs: 1,
+    updatedAtMs: 1,
+    revision: 0,
+  };
+  const initial = {
+    version: 1,
+    totalItems: 0,
+    managedBytes: 0,
+    unknownEntries: 0,
+    storageRoot: "C:/Casklets",
+    casks: [
+      {
+        cask,
+        itemCount: 0,
+        fileCount: 0,
+        applicationCount: 0,
+        managedBytes: 0,
+        referencedBytes: 0,
+        unknownEntries: 0,
+      },
+    ],
+  };
+  let requests = 0;
+  let completeStale: ((value: typeof initial) => void) | undefined;
+  calls.invoke.mockImplementation(async (command) => {
+    if (command === "cask_library") {
+      requests++;
+      if (requests === 1) return initial;
+      if (requests === 2)
+        return new Promise((resolve) => {
+          completeStale = resolve;
+        });
+      return { ...initial, casks: [] };
+    }
+    if (command === "recovery_status")
+      return { version: 1, operations: [], pendingManifestCasks: [] };
+    return null;
+  });
+  render(App);
+  await screen.findByRole("button", { name: "Open Deleted" });
+  await waitFor(() => expect(calls.events.has("casks.removed")).toBe(true));
+  calls.events.get("casks.changed")?.({ payload: null });
+  await waitFor(() => expect(completeStale).toBeDefined());
+  calls.events.get("casks.removed")?.({ payload: "deleted" });
+  await waitFor(() =>
+    expect(screen.queryByRole("button", { name: "Open Deleted" })).toBeNull(),
+  );
+  completeStale?.(initial);
+  await waitFor(() =>
+    expect(screen.getByRole("heading", { name: "No Casks yet" })).toBeTruthy(),
+  );
+  expect(screen.queryByRole("button", { name: "Open Deleted" })).toBeNull();
+});
+
+test("installer diagnostics and history are absent while EXE limits remain clear", async () => {
+  const path = "C:/private/installers/setup.exe";
+  ownershipWorkspace([], (command) =>
+    command === "inspect_installer_artifact"
+      ? {
+          version: 1,
+          path,
+          format: "EXE",
+          sha256: "secret-hash",
+          sizeBytes: 12,
+          signatureStatus: "UNKNOWN",
+          signatureDetail: "PowerShell execution-policy detail",
+          signer: null,
+          productName: "Example setup",
+          publisher: null,
+          productVersion: null,
+          productCode: null,
+          warnings: ["Technical diagnostic"],
+        }
+      : undefined,
+  );
+  vi.mocked(open).mockResolvedValue(path);
+  await screen.findByRole("heading", { name: "Ownership" });
+  await fireEvent.click(screen.getByRole("button", { name: "Applications" }));
+  await fireEvent.click(
+    screen.getByRole("button", { name: "Add Application" }),
+  );
+  await fireEvent.click(
+    screen.getByRole("button", { name: /Install Application/ }),
+  );
+  await fireEvent.click(
+    screen.getByRole("button", { name: "Select MSI or EXE" }),
+  );
+  await screen.findByText("Example setup");
+  expect(
+    screen.getByText(/automatic uninstall is not supported/i),
+  ).toBeTruthy();
+  expect(screen.queryByText(path)).toBeNull();
+  expect(screen.queryByText(/secret-hash/)).toBeNull();
+  expect(screen.queryByText(/PowerShell/)).toBeNull();
+  expect(screen.queryByText("Technical details")).toBeNull();
+  expect(screen.queryByText(/Advanced installer history/i)).toBeNull();
+});
+
+test("Select and Install uses one command and automatically refreshes Applications", async () => {
+  let installed = false;
+  const path = "C:/setup.msi";
+  ownershipWorkspace([], (command) => {
+    if (command === "inspect_installer_artifact")
+      return {
+        version: 1,
+        path,
+        format: "MSI",
+        sha256: "selected-hash",
+        sizeBytes: 1,
+        signatureStatus: "VALID",
+        signer: "Publisher",
+        productName: "Example MSI",
+        productCode: "{12345678-1234-1234-1234-123456789ABC}",
+        warnings: [],
+      };
+    if (command === "install_application") {
+      installed = true;
+      return {
+        version: 1,
+        id: "install-op",
+        caskId: "ownership-cask",
+        state: "CONFIRMED_ASSOCIATION",
+        confirmedInstallationId: "new-app",
+        exitCode: 0,
+        errorCode: null,
+        candidates: [],
+        warnings: [],
+      };
+    }
+    if (command === "list_associated_applications")
+      return installed
+        ? [
+            {
+              version: 1,
+              installationId: "new-app",
+              applicationId: "app",
+              name: "Installed Example",
+              availability: "PRESENT",
+              state: "PRESENT",
+              removalPolicy: "MANAGED_MSI",
+              scope: "USER",
+              publisher: "Publisher",
+              displayVersion: "1",
+              caskId: "ownership-cask",
+            },
+          ]
+        : [];
+    return undefined;
+  });
+  vi.mocked(open).mockResolvedValue(path);
+  await screen.findByRole("heading", { name: "Ownership" });
+  await fireEvent.click(screen.getByRole("button", { name: "Applications" }));
+  await fireEvent.click(
+    screen.getByRole("button", { name: "Add Application" }),
+  );
+  await fireEvent.click(
+    screen.getByRole("button", { name: /Install Application/ }),
+  );
+  await fireEvent.click(
+    screen.getByRole("button", { name: "Select MSI or EXE" }),
+  );
+  const install = await screen.findByRole("button", { name: "Install" });
+  expect(
+    calls.invoke.mock.calls.some(
+      ([command]) => command === "install_application",
+    ),
+  ).toBe(false);
+  await fireEvent.click(
+    screen.getByRole("checkbox", { name: "Request administrator privileges" }),
+  );
+  await fireEvent.click(install);
+  await screen.findByText("Installed Example");
+  expect(calls.invoke).toHaveBeenCalledWith("install_application", {
+    request: {
+      version: 1,
+      caskId: "ownership-cask",
+      path,
+      expectedSha256: "selected-hash",
+      acceptExecutionRisk: true,
+      allowElevation: true,
+    },
+  });
+  expect(
+    calls.invoke.mock.calls.filter(
+      ([command]) => command === "install_application",
+    ),
+  ).toHaveLength(1);
+  expect(
+    calls.invoke.mock.calls.some(([command]) =>
+      [
+        "register_installer_artifact",
+        "launch_installer_artifact",
+        "confirm_installer_candidate",
+        "close_installer_operation",
+      ].includes(command),
+    ),
+  ).toBe(false);
+  expect(screen.queryByText("Recovery required")).toBeNull();
+  expect(screen.queryByRole("button", { name: "Review launch" })).toBeNull();
+});
+
+function appFixture(
+  name: string,
+  id: string,
+  managed = false,
+): Parameters<typeof applicationRows>[1][number] {
+  return {
+    version: 1,
+    applicationId: `app-${id}`,
+    installationId: id,
+    name,
+    displayVersion: "1.0",
+    publisher: "Example Publisher",
+    scope: "USER",
+    sourceKey: "registry",
+    installLocation: null,
+    state: "PRESENT",
+    ambiguousName: false,
+    associatedCaskId: "ownership-cask",
+    provenance: "DETECTED_WINDOWS_REGISTRY",
+    removalPolicy: managed ? "MANAGED_MSI" : "DETACH_ONLY",
+  };
+}
+
+test("application presentation merges provider rows without inferring ownership from names", () => {
+  const app = appFixture("Example", "one");
+  const winget = {
+    version: 1,
+    id: "provider",
+    caskId: "ownership-cask",
+    packageId: "Example.App",
+    packageVersion: "1",
+    registryInstallationId: "one",
+    state: "INSTALLED",
+    provenance: "INSTALLED_BY_CASKLET",
+    canPlanUninstall: true,
+    warnings: [],
+  };
+  const merged = applicationRows([], [app], [winget]);
+  expect(merged).toHaveLength(1);
+  expect(merged[0]).toMatchObject({
+    name: "Example",
+    kind: "winget",
+    management: "managed",
+  });
+  expect(
+    applicationRows([], [app, appFixture("Example", "two")], []),
+  ).toHaveLength(2);
+  expect(applicationRows([], [app], [])[0].management).toBe("associated");
+  expect(
+    applicationRows(
+      [],
+      [],
+      [
+        { ...winget, registryInstallationId: "", id: "a" },
+        { ...winget, registryInstallationId: "", id: "b" },
+      ],
+    ),
+  ).toHaveLength(2);
+});
+
+test("Applications keeps Add above a large library and supports focused navigation and filters", async () => {
+  const apps = Array.from({ length: 10 }, (_, index) =>
+    appFixture(`App ${index}`, `id-${index}`, index % 2 === 0),
+  );
+  ownershipWorkspace([], (command) =>
+    command === "list_associated_applications" ? apps : undefined,
+  );
+  await screen.findByRole("heading", { name: "Ownership" });
+  await fireEvent.click(screen.getByRole("button", { name: "Applications" }));
+  const add = screen.getByRole("button", { name: "Add Application" });
+  const list = await screen.findByRole("list", { name: "Application list" });
+  expect(within(list).getAllByRole("listitem")).toHaveLength(10);
+  expect(
+    add.compareDocumentPosition(list) & Node.DOCUMENT_POSITION_FOLLOWING,
+  ).not.toBe(0);
+  await fireEvent.input(
+    screen.getByRole("textbox", { name: "Search Cask applications" }),
+    { target: { value: "App 7" } },
+  );
+  expect(
+    within(screen.getByRole("list", { name: "Application list" })).getAllByRole(
+      "listitem",
+    ),
+  ).toHaveLength(1);
+  await fireEvent.click(
+    within(
+      screen.getByRole("group", { name: "Filter applications" }),
+    ).getByRole("button", { name: "Managed" }),
+  );
+  expect(screen.getByText("No matching applications")).toBeTruthy();
+  await fireEvent.click(screen.getByRole("button", { name: "Reset filters" }));
+  expect(screen.getByText("App 7")).toBeTruthy();
+  await fireEvent.click(add);
+  const install = screen.getByRole("button", { name: /Install Application/ });
+  await waitFor(() => expect(document.activeElement).toBe(install));
+  await fireEvent.click(install);
+  await waitFor(() =>
+    expect(
+      document.activeElement?.classList.contains("application-workflow-panel"),
+    ).toBe(true),
+  );
+  const panel = screen.getByRole("region", { name: "Install Application" });
+  expect(
+    panel.compareDocumentPosition(
+      screen.getByRole("list", { name: "Application list" }),
+    ) & Node.DOCUMENT_POSITION_FOLLOWING,
+  ).not.toBe(0);
+  await fireEvent.click(
+    screen.getByRole("button", { name: "Close application workflow" }),
+  );
+  await waitFor(() => expect(document.activeElement).toBe(add));
+  expect(
+    screen.queryByRole("region", { name: "Install Application" }),
+  ).toBeNull();
+});
+
+test("interrupted installation remains recoverable without exposing installer diagnostics", async () => {
+  let kept = false;
+  const operation = {
+    version: 1,
+    id: "private-operation-id",
+    artifactId: "artifact",
+    caskId: "ownership-cask",
+    state: "RECOVERY_REQUIRED",
+    exitCode: null,
+    errorCode: "LAUNCH_UNCERTAIN",
+    confirmedInstallationId: null,
+    candidates: [],
+    startedAtMs: 1,
+    warnings: ["secret implementation detail"],
+  };
+  ownershipWorkspace([], (command) => {
+    if (command === "list_installer_operations") return kept ? [] : [operation];
+    if (command === "get_installer_operation")
+      return {
+        ...operation,
+        state: kept ? "CLOSED_PRESERVED" : operation.state,
+      };
+    if (command === "close_installer_operation") {
+      kept = true;
+      return null;
+    }
+    return undefined;
+  });
+  await screen.findByRole("heading", { name: "Ownership" });
+  await fireEvent.click(screen.getByRole("button", { name: "Applications" }));
+  await fireEvent.click(
+    await screen.findByRole("button", { name: "View installation" }),
+  );
+  expect(
+    screen.queryByText(
+      /private-operation-id|LAUNCH_UNCERTAIN|secret implementation/,
+    ),
+  ).toBeNull();
+  expect(screen.queryByText("Technical details")).toBeNull();
+  const keep = screen.getByRole("button", { name: "Keep installed changes" });
+  expect((keep as HTMLButtonElement).disabled).toBe(true);
+  await fireEvent.click(
+    screen.getByRole("checkbox", {
+      name: "The installer and any apps it opened have finished.",
+    }),
+  );
+  await fireEvent.click(keep);
+  await waitFor(() =>
+    expect(calls.invoke).toHaveBeenCalledWith("close_installer_operation", {
+      request: { version: 1, id: "private-operation-id" },
+    }),
+  );
+  expect(
+    calls.invoke.mock.calls.some(
+      ([command]) => command === "install_application",
+    ),
+  ).toBe(false);
+});
+
+test("clearing completed Activity preserves active and recovery work across reload", async () => {
+  const entries = ["COMPLETE", "RUNNING", "RECOVERY_REQUIRED"].map(
+    (state, index) => ({
+      version: 1,
+      id: `op-${index}`,
+      caskId: "ownership-cask",
+      state,
+      step: `Step ${index}`,
+      updatedAtMs: 1,
+      startedAtMs: 1,
+      progressCompleted: 0,
+      progressTotal: null,
+      errorCode: null,
+      cancellationRequested: false,
+    }),
+  );
+  ownershipWorkspace([], (command) =>
+    command === "list_operations" ? entries : undefined,
+  );
+  await screen.findByRole("heading", { name: "Ownership" });
+  await fireEvent.click(screen.getByRole("button", { name: "Activity" }));
+  await screen.findByText("Step 0");
+  await fireEvent.click(screen.getByRole("button", { name: "Clear history" }));
+  expect(screen.queryByText("Step 0")).toBeNull();
+  expect(screen.getByText("Step 1")).toBeTruthy();
+  expect(screen.getByText("Step 2")).toBeTruthy();
+  expect(
+    calls.invoke.mock.calls.some(([command]) =>
+      /clear|delete.*operation/.test(command),
+    ),
+  ).toBe(false);
+  cleanup();
+  ownershipWorkspace([], (command) =>
+    command === "list_operations" ? entries : undefined,
+  );
+  await screen.findByRole("heading", { name: "Ownership" });
+  await fireEvent.click(screen.getByRole("button", { name: "Activity" }));
+  await screen.findByText("Step 1");
+  expect(screen.queryByText("Step 0")).toBeNull();
+});
+
+test("MSI application cleanup separates preview, review, approval and confirmed execution", async () => {
+  let plan = {
+    version: 1,
+    id: "msi-plan",
+    caskId: "test",
+    state: "DRAFT",
+    planHash: "hash",
+    expiresAtMs: Date.now() + 600000,
+    items: [
+      {
+        installationId: "msi",
+        name: "Managed app",
+        productCode: "{PRODUCT}",
+        evidenceSha256: "evidence",
+        action: "UNINSTALL",
+        state: "PENDING",
+      },
+    ],
+  };
+  calls.invoke.mockImplementation(async (command) => {
+    if (command === "latest_msi_cleanup") return null;
+    if (command === "approve_msi_cleanup")
+      plan = { ...plan, state: "APPROVED" };
+    if (command === "execute_msi_cleanup")
+      plan = {
+        ...plan,
+        state: "COMPLETE",
+        items: plan.items.map((item) => ({ ...item, state: "SUCCEEDED" })),
+      };
+    return plan;
+  });
+  render(MsiCleanup, {
+    caskId: "test",
+    enabled: true,
+    hasManaged: true,
+    onChanged: async () => {},
+  });
+  await fireEvent.click(
+    screen.getByRole("button", { name: "Preview application cleanup" }),
+  );
+  await screen.findByText("Managed app");
+  expect(
+    calls.invoke.mock.calls.some(
+      ([command]) => command === "execute_msi_cleanup",
+    ),
+  ).toBe(false);
+  await fireEvent.click(
+    screen.getByRole("button", { name: "Review applications" }),
+  );
+  await fireEvent.click(
+    screen.getByRole("button", { name: "Approve uninstall" }),
+  );
+  await waitFor(() =>
+    expect(
+      (
+        screen.getByRole("button", {
+          name: "Uninstall applications",
+        }) as HTMLButtonElement
+      ).disabled,
+    ).toBe(true),
+  );
+  await fireEvent.click(screen.getByLabelText(/I confirm uninstalling/));
+  await fireEvent.click(
+    screen.getByRole("button", { name: "Uninstall applications" }),
+  );
+  await screen.findByText("Uninstalled");
+  expect(calls.invoke).toHaveBeenCalledWith("execute_msi_cleanup", {
+    request: { version: 1, id: "msi-plan", planHash: "hash" },
+  });
 });
 
 test("in-place ownership needs explicit consent and uses the shared adoption command", async () => {
@@ -781,18 +1311,8 @@ test("sort direction toggles and Cask menus dismiss and replace one another", as
   expect(items.getAttribute("data-direction")).toBe("ascending");
   await fireEvent.click(items);
   expect(items.getAttribute("data-direction")).toBe("descending");
-  const triggers = screen.getAllByRole("button", { name: /Actions for/ });
-  await fireEvent.click(triggers[0]);
-  expect(screen.getAllByRole("menu")).toHaveLength(1);
-  await fireEvent.click(triggers[1]);
-  await waitFor(() => expect(screen.getAllByRole("menu")).toHaveLength(1));
-  expect(triggers[0].getAttribute("aria-expanded")).toBe("false");
-  await fireEvent.pointerDown(document.body);
-  await waitFor(() => expect(screen.queryByRole("menu")).toBeNull());
-  await fireEvent.click(triggers[0]);
-  await fireEvent.keyDown(document, { key: "Escape" });
-  await waitFor(() => expect(screen.queryByRole("menu")).toBeNull());
-  expect(document.activeElement).toBe(triggers[0]);
+  expect(screen.queryByRole("button", { name: /Actions for/ })).toBeNull();
+  expect(screen.queryByRole("menu")).toBeNull();
 });
 
 test("Cask accents are stable and varied by identity", () => {
@@ -1050,6 +1570,12 @@ test("an expired saved plan cannot be reviewed, approved, or executed", async ()
     screen.getByRole("button", { name: /Approved.*1 items/ }),
   );
   await screen.findByRole("status", { name: "Cleanup status: Expired" });
+  expect(
+    screen
+      .getByRole("status", { name: "Cleanup status: Expired" })
+      .closest("details")
+      ?.querySelector("summary")?.textContent,
+  ).toBe("Recent cleanups");
   for (const name of ["Review Cleanup", "Approve Cleanup", "Execute Cleanup"])
     expect(
       (screen.getByRole("button", { name }) as HTMLButtonElement).disabled,
@@ -1060,4 +1586,54 @@ test("an expired saved plan cannot be reviewed, approved, or executed", async ()
   expect(
     screen.queryByLabelText("I confirm the cleanup actions shown above"),
   ).toBeNull();
+});
+
+test("installer artifacts stay out of Files and Cask-installed EXE provenance stays distinct", async () => {
+  const artifact = {
+    version: 1,
+    id: "installer-resource",
+    kind: "FILE",
+    name: "setup.exe",
+    path: "C:/Casklets/test/setup.exe",
+    management: "MANAGED",
+    containment: "INTERNAL",
+    availability: "PRESENT",
+    relationship: "OWNED",
+    removalPolicy: "DELETE_WHEN_UNREFERENCED",
+    categoryKey: "applications",
+    sizeBytes: 1,
+    sizeQuality: "EXACT",
+    revision: 0,
+  };
+  const exe = {
+    ...appFixture("Installed EXE", "exe-app"),
+    provenance: "INSTALLED_BY_CASKLET",
+  };
+  ownershipWorkspace([artifact], (command) => {
+    if (command === "list_installer_artifacts")
+      return [{ id: "artifact", resourceId: artifact.id }];
+    if (command === "list_associated_applications") return [exe];
+    return undefined;
+  });
+  await screen.findByRole("heading", { name: "Ownership" });
+  await waitFor(() =>
+    expect(calls.invoke).toHaveBeenCalledWith(
+      "list_installer_artifacts",
+      expect.anything(),
+    ),
+  );
+  await fireEvent.click(
+    screen.getByRole("button", { name: "Files & Folders" }),
+  );
+  expect(screen.queryByText("setup.exe")).toBeNull();
+  await fireEvent.click(screen.getByRole("button", { name: "Applications" }));
+  await screen.findByText("Installed EXE");
+  expect(screen.getByText("Installed for Cask")).toBeTruthy();
+  expect(
+    screen.getByRole("button", {
+      name: "Keep app and remove link to Installed EXE",
+    }),
+  ).toBeTruthy();
+  expect(applicationRows([], [exe], [])[0].management).toBe("managed");
+  expect(exe.removalPolicy).toBe("DETACH_ONLY");
 });

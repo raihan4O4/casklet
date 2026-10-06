@@ -2,6 +2,8 @@
 export const CONTRACT_VERSION = 1;
 export type RemoveCask = { version: number; id: string; expectedRevision: number; confirm: boolean };
 export type CaskRemovalStatus = { version: number; canRemove: boolean; resourceCount: number; applicationCount: number; unfinishedOperations: number };
+export type MsiCleanupItem = { installationId: string; name: string; productCode: string; evidenceSha256: string; action: string; state: string };
+export type MsiCleanupPlan = { version: number; id: string; caskId: string; state: string; planHash: string; expiresAtMs: number; items: MsiCleanupItem[] };
 export type CreateCask = { version: number; name: string };
 export type GetCask = { version: number; id: string };
 export type ListCasks = { version: number };
@@ -52,6 +54,7 @@ export type RegisterInstallerArtifact = { version: number; caskId: string; path:
 export type ListInstallerArtifacts = { version: number; caskId: string };
 export type InstallerArtifactView = { version: number; id: string; caskId: string; resourceId: string; sourcePath: string; inspection: InstallerInspection; registeredAtMs: number; warnings: string[] };
 export type LaunchInstallerArtifact = { version: number; artifactId: string; expectedSha256: string; acceptExecutionRisk: boolean; allowElevation: boolean };
+export type InstallApplication = { allowElevation: boolean; version: number; caskId: string; path: string; expectedSha256: string; acceptExecutionRisk: boolean };
 export type InstallerCandidateView = { installationId: string; evidenceSha256: string; name: string; publisher: string | null; displayVersion: string | null; scope: string; confidence: string; evidence: string[] };
 export type InstallerOperationView = { version: number; id: string; artifactId: string; caskId: string; state: string; exitCode: number | null; errorCode: string | null; candidates: InstallerCandidateView[]; confirmedInstallationId: string | null; startedAtMs: number; warnings: string[] };
 export type GetInstallerOperation = { version: number; id: string };

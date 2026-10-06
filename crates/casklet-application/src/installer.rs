@@ -1,4 +1,4 @@
-//! Installer artifacts are referenced resources. Correlation offers candidates, never ownership.
+//! Installer orchestration. Correlation creates references; verified MSI ownership uses its provider.
 use crate::projection::{ManifestProjection, ProjectionRepository};
 use crate::resource::{ResourceRepository, ResourceStorage};
 use crate::windows_inventory::{
@@ -20,6 +20,8 @@ use uuid::Uuid;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum InstallerOutcome {
     Exited(i32),
+    /// Windows launcher waited for the executable and its descendants.
+    ProcessTreeExited(i32),
     TimedOut,
     Cancelled,
     ElevationDeclined,
@@ -92,13 +94,14 @@ pub trait InstallerRepository {
     /// Closes uncertain work without granting ownership.
     fn close_installer_preserved(&self, id: &str, now: i64) -> Result<(), String>;
     /// # Errors
-    /// Records explicit, evidence-matched association confirmation.
+    /// Records confirmation and optional install provenance atomically.
     fn confirm_installer_candidate(
         &self,
         id: &str,
         installation_id: &str,
         evidence_sha256: &str,
         now: i64,
+        installed_for_cask: bool,
     ) -> Result<(), String>;
 }
 
@@ -168,9 +171,86 @@ where
         + ResourceRepository
         + ProjectionRepository
         + InstalledInventoryRepository
-        + InstallerRepository,
+        + InstallerRepository
+        + crate::managed_msi::MsiRepository,
     S: ResourceStorage + ManifestProjection + InstalledInventorySource + InstallerSource,
 {
+    /// # Errors
+    /// Copies and runs explicitly selected bytes, then resolves supported outcomes.
+    pub fn install_application(
+        &self,
+        request: &casklet_contracts::InstallApplication,
+        correlation_id: &str,
+        started: &dyn Fn(&str),
+    ) -> Result<InstallerOperationView, ApiError>
+    where
+        S: crate::managed_msi::MsiUninstaller,
+    {
+        check_version(request.version, correlation_id)?;
+        if !request.accept_execution_risk {
+            return Err(fail(
+                "REVIEW_REQUIRED",
+                "Choose Install to authorize this installer",
+                correlation_id,
+            ));
+        }
+        let artifact = self.register_installer_artifact(
+            &RegisterInstallerArtifact {
+                version: request.version,
+                cask_id: request.cask_id.clone(),
+                path: request.path.clone(),
+                expected_sha256: request.expected_sha256.clone(),
+            },
+            correlation_id,
+        )?;
+        let launch = LaunchInstallerArtifact {
+            version: request.version,
+            artifact_id: artifact.id,
+            expected_sha256: artifact.inspection.sha256,
+            accept_execution_risk: true,
+            // Elevation is explicit and limited to this installer.
+            allow_elevation: request.allow_elevation,
+        };
+        let managed = artifact.inspection.format == "MSI"
+            && artifact
+                .inspection
+                .product_code
+                .as_deref()
+                .and_then(crate::managed_msi::product_code)
+                .is_some();
+        let operation = if managed {
+            self.launch_managed_msi_artifact(&launch, correlation_id, started)?
+        } else {
+            self.launch_installer_artifact(&launch, correlation_id, started)?
+        };
+        if operation.state == "CONFIRMED_ASSOCIATION" {
+            return Ok(operation);
+        }
+        // Association is safe to automate; it never grants EXE uninstall authority.
+        // A parent-only exit, failure or reboot remains unresolved.
+        if operation.state == "REVIEW_REQUIRED" && operation.exit_code == Some(0) {
+            let matching: Vec<_> = operation
+                .candidates
+                .iter()
+                .filter(|item| matches!(item.confidence.as_str(), "HIGH" | "MEDIUM"))
+                .collect();
+            if matching.len() == 1 {
+                return self.confirm_candidate(
+                    &ConfirmInstallerCandidate {
+                        version: request.version,
+                        operation_id: operation.id.clone(),
+                        installation_id: matching[0].installation_id.clone(),
+                    },
+                    correlation_id,
+                    true,
+                );
+            }
+            // Keep unresolved detection visible and durable rather than silently closing
+            // a Cask installation request or suggesting external-app association.
+            return Ok(operation);
+        }
+        Ok(operation)
+    }
     /// # Errors
     /// Returns file or metadata inspection errors.
     pub fn inspect_installer_artifact(
@@ -252,6 +332,61 @@ where
         self.repository
             .list_installers(&request.cask_id)
             .map_err(|e| fail("PERSISTENCE", e, correlation_id))
+    }
+    /// # Errors
+    /// Launches reviewed bytes and automatically claims only a verified new MSI installation.
+    pub fn launch_managed_msi_artifact(
+        &self,
+        request: &LaunchInstallerArtifact,
+        correlation_id: &str,
+        started: &dyn Fn(&str),
+    ) -> Result<InstallerOperationView, ApiError>
+    where
+        S: crate::managed_msi::MsiUninstaller,
+    {
+        check_version(request.version, correlation_id)?;
+        let artifact = self
+            .repository
+            .get_installer(&request.artifact_id)
+            .map_err(|e| fail("PERSISTENCE", e, correlation_id))?
+            .ok_or_else(|| fail("NOT_FOUND", "Installer not found", correlation_id))?;
+        if artifact.inspection.format != "MSI"
+            || artifact
+                .inspection
+                .product_code
+                .as_deref()
+                .and_then(crate::managed_msi::product_code)
+                .is_none()
+        {
+            return Err(fail(
+                "UNSUPPORTED_INSTALLER",
+                "Managed installation requires a supported MSI package",
+                correlation_id,
+            ));
+        }
+        let operation = self.launch_installer_artifact(request, correlation_id, started)?;
+        if operation.state == "REVIEW_REQUIRED"
+            && operation.exit_code == Some(0)
+            && operation.candidates.len() == 1
+        {
+            let claim = ConfirmInstallerCandidate {
+                version: request.version,
+                operation_id: operation.id.clone(),
+                installation_id: operation.candidates[0].installation_id.clone(),
+            };
+            // The launch action explicitly requested management, but only verified baseline
+            // evidence can grant it. Uncertain results stay reviewable with no ownership.
+            if self.claim_managed_msi(&claim, correlation_id).is_ok() {
+                return self.get_installer_operation(
+                    &GetInstallerOperation {
+                        version: request.version,
+                        id: operation.id,
+                    },
+                    correlation_id,
+                );
+            }
+        }
+        Ok(operation)
     }
     /// # Errors
     /// Launches reviewed bytes and returns a durable review result without ownership.
@@ -343,6 +478,30 @@ where
                 correlation_id,
             )
         })?;
+        if current.format == "MSI"
+            && let Some(code) = current
+                .product_code
+                .as_deref()
+                .and_then(crate::managed_msi::product_code)
+        {
+            let absent = !before.iter().any(|item| {
+                item.source_key
+                    .rsplit('\\')
+                    .next()
+                    .is_some_and(|key| key.eq_ignore_ascii_case(&code))
+            });
+            if let Err(reason) = self.repository.msi_baseline(&id, &code, absent) {
+                let _ = self.repository.finish_installer(
+                    &id,
+                    "RECOVERY_REQUIRED",
+                    None,
+                    Some("BASELINE_NOT_RECORDED"),
+                    &[],
+                    clock(correlation_id)?,
+                );
+                return Err(fail("RECOVERY_REQUIRED", reason, correlation_id));
+            }
+        }
         let run = catch_unwind(AssertUnwindSafe(|| {
             self.storage.run_installer(
                 &current,
@@ -372,6 +531,9 @@ where
             },
         );
         let (state, exit_code, error_code) = match (&run, &after) {
+            (Ok(InstallerOutcome::ProcessTreeExited(0)), Ok(_)) => {
+                ("REVIEW_REQUIRED", Some(0), None)
+            }
             (Ok(InstallerOutcome::Exited(0)), Ok(_)) if current.format == "MSI" => {
                 ("REVIEW_REQUIRED", Some(0), None)
             }
@@ -380,10 +542,18 @@ where
                 Some(0),
                 Some("CHILD_PROCESS_UNVERIFIED"),
             ),
-            (Ok(InstallerOutcome::Exited(3010 | 1641)), _) => (
+            (
+                Ok(
+                    InstallerOutcome::Exited(3010 | 1641)
+                    | InstallerOutcome::ProcessTreeExited(3010 | 1641),
+                ),
+                _,
+            ) => (
                 "RECOVERY_REQUIRED",
                 run.as_ref().ok().and_then(|v| {
-                    if let InstallerOutcome::Exited(code) = v {
+                    if let InstallerOutcome::Exited(code)
+                    | InstallerOutcome::ProcessTreeExited(code) = v
+                    {
                         Some(*code)
                     } else {
                         None
@@ -391,11 +561,13 @@ where
                 }),
                 Some("REBOOT_REQUIRED"),
             ),
-            (Ok(InstallerOutcome::Exited(code)), _) => (
-                "RECOVERY_REQUIRED",
-                Some(*code),
-                Some("INSTALLER_EXIT_UNCERTAIN"),
-            ),
+            (Ok(InstallerOutcome::Exited(code) | InstallerOutcome::ProcessTreeExited(code)), _) => {
+                (
+                    "RECOVERY_REQUIRED",
+                    Some(*code),
+                    Some("INSTALLER_EXIT_UNCERTAIN"),
+                )
+            }
             (Ok(InstallerOutcome::TimedOut), _) => ("RECOVERY_REQUIRED", None, Some("TIMED_OUT")),
             (Ok(InstallerOutcome::Cancelled), _) => ("RECOVERY_REQUIRED", None, Some("CANCELLED")),
             (Ok(InstallerOutcome::ElevationDeclined), _) => {
@@ -475,6 +647,14 @@ where
         request: &ConfirmInstallerCandidate,
         correlation_id: &str,
     ) -> Result<InstallerOperationView, ApiError> {
+        self.confirm_candidate(request, correlation_id, false)
+    }
+    fn confirm_candidate(
+        &self,
+        request: &ConfirmInstallerCandidate,
+        correlation_id: &str,
+        installed_for_cask: bool,
+    ) -> Result<InstallerOperationView, ApiError> {
         check_version(request.version, correlation_id)?;
         let operation = self.get_installer_operation(
             &GetInstallerOperation {
@@ -529,6 +709,7 @@ where
                 &observed.installation_id,
                 &observed.evidence_sha256,
                 clock(correlation_id)?,
+                installed_for_cask,
             )
             .map_err(|e| fail("PERSISTENCE", e, correlation_id))?;
         self.get_installer_operation(

@@ -28,10 +28,10 @@ fn operation(row: &rusqlite::Row<'_>) -> rusqlite::Result<InstallerOperationView
     let candidates: Vec<InstallerCandidateView> = serde_json::from_str(&json).map_err(|e| {
         rusqlite::Error::FromSqlConversionFailure(7, rusqlite::types::Type::Text, Box::new(e))
     })?;
-    Ok(InstallerOperationView{version:CONTRACT_VERSION,id:row.get(0)?,artifact_id:row.get(1)?,cask_id:row.get(2)?,state:row.get(3)?,exit_code:row.get(4)?,error_code:row.get(5)?,confirmed_installation_id:row.get(6)?,candidates,started_at_ms:row.get(8)?,warnings:vec!["Candidates are observations, not owned installations. Confirming one only creates a detach-only association.".into()]})
+    Ok(InstallerOperationView{version:CONTRACT_VERSION,id:row.get(0)?,artifact_id:row.get(1)?,cask_id:row.get(2)?,state:row.get(3)?,exit_code:row.get(4)?,error_code:row.get(5)?,confirmed_installation_id:row.get(6)?,candidates,started_at_ms:row.get(8)?,warnings:vec![if row.get::<_,bool>(9)? { "A managed MSI ownership record is present. Current uninstall eligibility is determined by an approved cleanup plan." } else { "Candidates are observations, not owned installations. Reference confirmation creates a detach-only association." }.into()]})
 }
 const ARTIFACT: &str = "SELECT id,cask_id,resource_id,inspection_json,registered_at_ms,source_path FROM installer_artifacts";
-const OPERATION: &str = "SELECT id,artifact_id,cask_id,state,exit_code,error_code,confirmed_installation_id,candidates_json,started_at_ms FROM installer_operations";
+const OPERATION: &str = "SELECT id,artifact_id,cask_id,state,exit_code,error_code,confirmed_installation_id,candidates_json,started_at_ms,EXISTS(SELECT 1 FROM managed_msi_installations m WHERE m.operation_id=installer_operations.id) FROM installer_operations";
 
 fn mark_stale(connection: &rusqlite::Connection, cask_id: Option<&str>) -> Result<(), String> {
     let now = i64::try_from(
@@ -85,7 +85,7 @@ impl InstallerRepository for SqliteCasks {
         if state != "ACTIVE" {
             return Err("Cask is not active".into());
         }
-        let busy:i64=tx.query_row("SELECT (SELECT COUNT(*) FROM installer_locks)+(SELECT COUNT(*) FROM winget_locks)+(SELECT COUNT(*) FROM operation_locks WHERE lock_key=?1)+(SELECT COUNT(*) FROM removal_locks WHERE cask_id=?2)",params![format!("cask:{cask_id}:mutation"),cask_id],|r|r.get(0)).map_err(|e|e.to_string())?;
+        let busy:i64=tx.query_row("SELECT (SELECT COUNT(*) FROM installer_locks)+(SELECT COUNT(*) FROM msi_cleanup_locks)+(SELECT COUNT(*) FROM winget_locks)+(SELECT COUNT(*) FROM operation_locks WHERE lock_key=?1)+(SELECT COUNT(*) FROM removal_locks WHERE cask_id=?2)",params![format!("cask:{cask_id}:mutation"),cask_id],|r|r.get(0)).map_err(|e|e.to_string())?;
         if busy != 0 {
             return Err("Another provider or Cask mutation is active".into());
         }
@@ -188,18 +188,22 @@ impl InstallerRepository for SqliteCasks {
         installation_id: &str,
         evidence_sha256: &str,
         now: i64,
+        installed_for_cask: bool,
     ) -> Result<(), String> {
         let mut c = self.connection()?;
         let tx = c.transaction().map_err(|e| e.to_string())?;
-        let (state, json): (String, String) = tx
+        let (state, json, exit_code): (String, String, Option<i32>) = tx
             .query_row(
-                "SELECT state,candidates_json FROM installer_operations WHERE id=?1",
+                "SELECT state,candidates_json,exit_code FROM installer_operations WHERE id=?1",
                 [id],
-                |r| Ok((r.get(0)?, r.get(1)?)),
+                |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
             )
             .map_err(|e| e.to_string())?;
         if !matches!(state.as_str(), "REVIEW_REQUIRED" | "RECOVERY_REQUIRED") {
             return Err("Operation is not awaiting review".into());
+        }
+        if installed_for_cask && (state != "REVIEW_REQUIRED" || exit_code != Some(0)) {
+            return Err("Only a confirmed successful installation can belong to its Cask".into());
         }
         let candidates: Vec<InstallerCandidateView> =
             serde_json::from_str(&json).map_err(|e| e.to_string())?;
@@ -209,7 +213,8 @@ impl InstallerRepository for SqliteCasks {
         {
             return Err("Candidate evidence changed".into());
         }
-        tx.execute("UPDATE installer_operations SET state='CONFIRMED_ASSOCIATION',confirmed_installation_id=?2,updated_at_ms=?3,revision=revision+1 WHERE id=?1",params![id,installation_id,now]).map_err(|e|e.to_string())?;
+        tx.execute("UPDATE installer_operations SET state='CONFIRMED_ASSOCIATION',confirmed_installation_id=?2,updated_at_ms=?3,installed_for_cask=?4,revision=revision+1 WHERE id=?1",params![id,installation_id,now,installed_for_cask]).map_err(|e|e.to_string())?;
+        tx.execute("INSERT INTO projection_jobs(cask_id,target_revision,state,updated_at_ms) SELECT cask_id,1,'PENDING',?2 FROM installer_operations WHERE id=?1 ON CONFLICT(cask_id) DO UPDATE SET target_revision=target_revision+1,state='PENDING',updated_at_ms=excluded.updated_at_ms",params![id,now]).map_err(|e|e.to_string())?;
         tx.execute("DELETE FROM installer_locks WHERE operation_id=?1", [id])
             .map_err(|e| e.to_string())?;
         tx.commit().map_err(|e| e.to_string())
@@ -251,7 +256,10 @@ mod tests {
     #[derive(Clone, Copy)]
     enum Mode {
         Success,
+        ManagedMsi,
         ExeSuccess,
+        ExeTreeSuccess,
+        ExeTreeAmbiguous,
         Ambiguous,
         Failure,
         Cancelled,
@@ -263,6 +271,7 @@ mod tests {
         mode: Mode,
         registry: Mutex<Vec<ObservedInstallation>>,
         runs: AtomicUsize,
+        elevation: std::sync::atomic::AtomicBool,
     }
     fn observed(id: &str) -> ObservedInstallation {
         ObservedInstallation {
@@ -309,25 +318,38 @@ mod tests {
                 product_name: Some("Example App".into()),
                 publisher: Some("Example Ltd".into()),
                 product_version: Some("1.0".into()),
-                product_code: None,
+                product_code: if matches!(self.mode, Mode::ManagedMsi) {
+                    Some("{12345678-1234-1234-1234-123456789ABC}".into())
+                } else {
+                    None
+                },
                 warnings: vec!["Signature is evidence, not safety".into()],
             })
         }
         fn run_installer(
             &self,
             _: &InstallerInspection,
-            _: bool,
+            elevated: bool,
             _: &dyn Fn() -> bool,
             _: &dyn Fn(),
         ) -> Result<InstallerOutcome, String> {
+            self.elevation.store(elevated, Ordering::SeqCst);
             self.runs.fetch_add(1, Ordering::SeqCst);
             let mut registry = self.registry.lock().unwrap();
             *registry = match self.mode {
-                Mode::Ambiguous => vec![observed("one"), observed("two")],
+                Mode::Ambiguous | Mode::ExeTreeAmbiguous => vec![observed("one"), observed("two")],
                 _ => vec![observed("one")],
             };
+            if matches!(self.mode, Mode::ManagedMsi) {
+                registry[0].source_key =
+                    "HKCU64\\Uninstall\\{12345678-1234-1234-1234-123456789ABC}".into();
+                registry[0].evidence_json = "{\"windowsInstaller\":1}".into();
+            }
             match self.mode {
-                Mode::Success | Mode::ExeSuccess | Mode::Ambiguous => {
+                Mode::ExeTreeSuccess | Mode::ExeTreeAmbiguous => {
+                    Ok(InstallerOutcome::ProcessTreeExited(0))
+                }
+                Mode::Success | Mode::ManagedMsi | Mode::ExeSuccess | Mode::Ambiguous => {
                     Ok(InstallerOutcome::Exited(0))
                 }
                 Mode::Failure => Err("fake process failure".into()),
@@ -335,6 +357,12 @@ mod tests {
                 Mode::TimedOut => Ok(InstallerOutcome::TimedOut),
                 Mode::Reboot => Ok(InstallerOutcome::Exited(3010)),
             }
+        }
+    }
+    impl casklet_application::managed_msi::MsiUninstaller for FakeStorage {
+        fn uninstall_msi(&self, _code: &str) -> Result<i32, String> {
+            self.registry.lock().unwrap().clear();
+            Ok(0)
         }
     }
     impl ResourceStorage for FakeStorage {
@@ -386,11 +414,13 @@ mod tests {
     fn setup(mode: Mode) -> (CaskService<SqliteCasks, FakeStorage>, String, String) {
         let root = std::env::temp_dir().join(format!("casklet-m9-{}", uuid::Uuid::new_v4()));
         fs::create_dir_all(&root).unwrap();
-        let source = root.join(if matches!(mode, Mode::Success | Mode::Ambiguous) {
-            "setup.msi"
-        } else {
-            "setup.exe"
-        });
+        let source = root.join(
+            if matches!(mode, Mode::Success | Mode::ManagedMsi | Mode::Ambiguous) {
+                "setup.msi"
+            } else {
+                "setup.exe"
+            },
+        );
         fs::write(&source, b"fake installer bytes").unwrap();
         let local = LocalStorage::new(root.join("casks"));
         let cask = Cask::new(
@@ -410,6 +440,7 @@ mod tests {
                     mode,
                     registry: Mutex::new(vec![]),
                     runs: AtomicUsize::new(0),
+                    elevation: std::sync::atomic::AtomicBool::new(false),
                 },
             },
             cask.id,
@@ -460,6 +491,215 @@ mod tests {
             )
             .unwrap()
     }
+    fn install(
+        service: &CaskService<SqliteCasks, FakeStorage>,
+        cask_id: &str,
+        path: &str,
+    ) -> InstallerOperationView {
+        let preview = service.storage.inspect_installer(path).unwrap();
+        service
+            .install_application(
+                &casklet_contracts::InstallApplication {
+                    allow_elevation: false,
+                    version: CONTRACT_VERSION,
+                    cask_id: cask_id.into(),
+                    path: path.into(),
+                    expected_sha256: preview.sha256,
+                    accept_execution_risk: true,
+                },
+                "test",
+                &|_| {},
+            )
+            .unwrap()
+    }
+    #[test]
+    fn explicit_elevation_reaches_the_installer_adapter() {
+        let (service, cask_id, path) = setup(Mode::ManagedMsi);
+        let preview = service.storage.inspect_installer(&path).unwrap();
+        service
+            .install_application(
+                &casklet_contracts::InstallApplication {
+                    version: CONTRACT_VERSION,
+                    cask_id,
+                    path,
+                    expected_sha256: preview.sha256,
+                    accept_execution_risk: true,
+                    allow_elevation: true,
+                },
+                "test",
+                &|_| {},
+            )
+            .unwrap();
+        assert!(service.storage.elevation.load(Ordering::SeqCst));
+    }
+    #[test]
+    fn one_action_install_automatically_owns_verified_new_msi() {
+        let (service, cask_id, path) = setup(Mode::ManagedMsi);
+        let operation = install(&service, &cask_id, &path);
+        assert_eq!(operation.state, "CONFIRMED_ASSOCIATION");
+        assert_eq!(
+            service
+                .repository
+                .list_associated_installed(&cask_id)
+                .unwrap()[0]
+                .removal_policy,
+            "MANAGED_MSI"
+        );
+        assert_eq!(service.storage.runs.load(Ordering::SeqCst), 1);
+    }
+    #[test]
+    fn process_tree_complete_exe_is_automatically_linked_without_uninstall_authority() {
+        let (service, cask_id, path) = setup(Mode::ExeTreeSuccess);
+        let operation = install(&service, &cask_id, &path);
+        assert_eq!(operation.state, "CONFIRMED_ASSOCIATION");
+        assert_eq!(
+            service
+                .repository
+                .list_associated_installed(&cask_id)
+                .unwrap()[0]
+                .removal_policy,
+            "DETACH_ONLY"
+        );
+        let owned: i64 = service
+            .repository
+            .connection()
+            .unwrap()
+            .query_row("SELECT COUNT(*) FROM managed_msi_installations", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        assert_eq!(owned, 0);
+        assert_eq!(
+            service
+                .repository
+                .list_associated_installed(&cask_id)
+                .unwrap()[0]
+                .provenance,
+            "INSTALLED_BY_CASKLET"
+        );
+        service
+            .repository
+            .disassociate_installed(&cask_id, &operation.confirmed_installation_id.unwrap(), 1)
+            .unwrap();
+        let claimed: bool = service
+            .repository
+            .connection()
+            .unwrap()
+            .query_row(
+                "SELECT installed_for_cask FROM installer_operations WHERE id=?1",
+                [&operation.id],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert!(!claimed);
+    }
+    #[test]
+    fn ambiguous_completed_install_remains_unresolved_without_claiming_a_candidate() {
+        let (service, cask_id, path) = setup(Mode::ExeTreeAmbiguous);
+        let operation = install(&service, &cask_id, &path);
+        assert_eq!(operation.state, "REVIEW_REQUIRED");
+        assert!(
+            service
+                .repository
+                .list_associated_installed(&cask_id)
+                .unwrap()
+                .is_empty()
+        );
+    }
+    #[test]
+    fn parent_only_exit_failure_and_reboot_are_not_automatically_completed() {
+        for mode in [
+            Mode::ExeSuccess,
+            Mode::Failure,
+            Mode::Reboot,
+            Mode::TimedOut,
+        ] {
+            let (service, cask_id, path) = setup(mode);
+            let operation = install(&service, &cask_id, &path);
+            assert_eq!(operation.state, "RECOVERY_REQUIRED");
+            assert!(operation.confirmed_installation_id.is_none());
+            assert!(
+                service
+                    .repository
+                    .list_associated_installed(&cask_id)
+                    .unwrap()
+                    .is_empty()
+            );
+            let locks: i64 = service
+                .repository
+                .connection()
+                .unwrap()
+                .query_row("SELECT COUNT(*) FROM installer_locks", [], |r| r.get(0))
+                .unwrap();
+            assert_eq!(locks, 1);
+        }
+    }
+    #[test]
+    fn install_requires_consent_and_unchanged_selected_bytes() {
+        let (service, cask_id, path) = setup(Mode::ManagedMsi);
+        let mut request = casklet_contracts::InstallApplication {
+            allow_elevation: false,
+            version: CONTRACT_VERSION,
+            cask_id,
+            path,
+            expected_sha256: "wrong".into(),
+            accept_execution_risk: false,
+        };
+        assert!(
+            service
+                .install_application(&request, "test", &|_| {})
+                .is_err()
+        );
+        request.accept_execution_risk = true;
+        assert!(
+            service
+                .install_application(&request, "test", &|_| {})
+                .is_err()
+        );
+        assert_eq!(service.storage.runs.load(Ordering::SeqCst), 0);
+        assert!(
+            service
+                .repository
+                .list_installers(&request.cask_id)
+                .unwrap()
+                .is_empty()
+        );
+    }
+    #[test]
+    fn explicitly_managed_launch_records_baseline_and_tracks_only_verified_new_msi() {
+        let (service, cask_id, source) = setup(Mode::ManagedMsi);
+        let item = register(&service, &cask_id, &source);
+        let operation = service
+            .launch_managed_msi_artifact(
+                &LaunchInstallerArtifact {
+                    version: CONTRACT_VERSION,
+                    artifact_id: item.id,
+                    expected_sha256: item.inspection.sha256,
+                    accept_execution_risk: true,
+                    allow_elevation: false,
+                },
+                "test",
+                &|_| {},
+            )
+            .unwrap();
+        assert_eq!(operation.state, "CONFIRMED_ASSOCIATION");
+        let apps = service
+            .repository
+            .list_associated_installed(&cask_id)
+            .unwrap();
+        assert_eq!(apps[0].removal_policy, "MANAGED_MSI");
+        let plan = service
+            .create_msi_cleanup(
+                &casklet_contracts::GetCask {
+                    version: CONTRACT_VERSION,
+                    id: cask_id,
+                },
+                "test",
+            )
+            .unwrap();
+        assert_eq!(plan.items[0].action, "UNINSTALL");
+        assert_eq!(service.storage.runs.load(Ordering::SeqCst), 1);
+    }
     #[test]
     fn registration_copies_bytes_without_execution_and_review_only_associates() {
         let (service, cask_id, source) = setup(Mode::Success);
@@ -495,6 +735,7 @@ mod tests {
             .unwrap();
         assert_eq!(associated.len(), 1);
         assert_eq!(associated[0].removal_policy, "DETACH_ONLY");
+        assert_eq!(associated[0].provenance, "DETECTED_WINDOWS_REGISTRY");
     }
     #[test]
     fn ambiguous_and_uncertain_outcomes_never_claim_installation() {

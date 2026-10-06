@@ -2,7 +2,7 @@
 
 ## Unreleased — Simple cleanup and permanent Cask removal
 
-- Add explicit 0.1.0-alpha.1 file-cleanup builds without enabling provider uninstall.
+- Add explicit 0.1.0-alpha.1 file-cleanup builds without enabling WinGet uninstall.
 - Persist and rediscover cleanup history; reconcile failed workers and require explicit uncertain-run preservation.
 - Extract cleanup presentation, consolidate migrations and system executable resolution, and report GUI startup errors.
 - Patch frontend security dependencies; validate feature profiles separately and replace the integration task placeholder.
@@ -37,3 +37,10 @@ All notable changes will be documented here.
 ## Unreleased
 
 - Began Milestone 0 reproducible repository foundation.
+
+## Alpha cleanup follow-up
+
+- Add explicit verified MSI ownership, expiring uninstall plans, guarded execution, and durable interrupted cleanup across CLI/GUI.
+- Retire empty Cask storage safely, retain audit metadata separately, and report preserved unknown/recovery data.
+- Improve removal confirmation, immediate list synchronization, Activity display clearing, contained cleanup history, installer diagnostics, and compact Overview/intake.
+- Suppress helper/portable console windows and hide the Cask listing action menu for Alpha.

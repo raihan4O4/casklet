@@ -231,8 +231,16 @@ fn cleanup_requires_explicit_noninteractive_confirmation() {
 
 #[cfg(all(feature = "alpha-cleanup", not(feature = "reviewed-removal")))]
 #[test]
-fn alpha_cleanup_does_not_enable_provider_uninstall() {
+fn alpha_cleanup_supports_msi_but_does_not_enable_winget_uninstall() {
     let binary = env!("CARGO_BIN_EXE_casklet");
+    assert!(
+        Command::new(binary)
+            .args(["msi", "execute", "--help"])
+            .output()
+            .unwrap()
+            .status
+            .success()
+    );
     assert!(
         Command::new(binary)
             .args(["cleanup", "execute", "--help"])

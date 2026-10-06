@@ -17,3 +17,12 @@ pub(super) fn system_binary(name: &str) -> Result<PathBuf, String> {
     let text = path.to_string_lossy();
     Ok(PathBuf::from(text.strip_prefix(r"\\?\").unwrap_or(&text)))
 }
+/// Suppress automatically allocated console windows while preserving application UI/UAC.
+pub(crate) fn hide_console(command: &mut std::process::Command) -> &mut std::process::Command {
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        command.creation_flags(0x0800_0000);
+    }
+    command
+}

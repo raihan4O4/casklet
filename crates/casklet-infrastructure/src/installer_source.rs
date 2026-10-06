@@ -47,7 +47,11 @@ if([IO.Path]::GetExtension($p) -ieq '.msi'){
 }
 $r | ConvertTo-Json -Compress -Depth 3
 "#;
-const ELEVATE_SCRIPT: &str = r"$ErrorActionPreference='Stop'; try { $p=Start-Process -FilePath $env:CASKLET_INSTALLER_PATH -WorkingDirectory $env:CASKLET_INSTALLER_DIR -Verb RunAs -PassThru -Wait; exit $p.ExitCode } catch { exit 1223 }";
+const ELEVATE_MSI_SCRIPT: &str = r#"$ErrorActionPreference='Stop'; try { $p=Start-Process -FilePath $env:CASKLET_MSIEXEC_PATH -ArgumentList @('/i', ('"'+$env:CASKLET_INSTALLER_PATH+'"'), '/norestart') -WorkingDirectory $env:CASKLET_INSTALLER_DIR -Verb RunAs -PassThru -Wait; exit $p.ExitCode } catch { if ($_.Exception.NativeErrorCode -eq 1223) { exit 1223 }; exit 125 }"#;
+const ELEVATE_SCRIPT: &str = r"$ErrorActionPreference='Stop'; try { $p=Start-Process -FilePath $env:CASKLET_INSTALLER_PATH -WorkingDirectory $env:CASKLET_INSTALLER_DIR -Verb RunAs -PassThru -Wait; exit $p.ExitCode } catch { if ($_.Exception.NativeErrorCode -eq 1223) { exit 1223 }; exit 125 }";
+// Start-Process -Wait tracks descendants as well as the bootstrapper. Paths are
+// environment values, never interpolated into executable PowerShell code.
+const INSTALL_SCRIPT: &str = r"$ErrorActionPreference='Stop'; try { $p=Start-Process -FilePath $env:CASKLET_INSTALLER_PATH -WorkingDirectory $env:CASKLET_INSTALLER_DIR -PassThru -Wait; exit $p.ExitCode } catch { if($_.Exception.NativeErrorCode -eq 1223){exit 1223}; exit 125 }";
 
 fn process_path(path: &str) -> PathBuf {
     if let Some(rest) = path.strip_prefix(r"\\?\UNC\") {
@@ -119,7 +123,7 @@ fn metadata(path: &Path) -> Result<serde_json::Value, String> {
     let fixed_script = format!(
         "Import-Module Microsoft.PowerShell.Security -ErrorAction Stop; Import-Module Microsoft.PowerShell.Utility -ErrorAction Stop; {INSPECT_SCRIPT}"
     );
-    let mut child = Command::new(powershell)
+    let mut child = super::windows_process::hide_console(&mut Command::new(powershell))
         .args([
             "-NoLogo",
             "-NoProfile",
@@ -129,6 +133,7 @@ fn metadata(path: &Path) -> Result<serde_json::Value, String> {
             "-Command",
             &fixed_script,
         ])
+        .env("CASKLET_MSIEXEC_PATH", system_binary("msiexec.exe")?)
         .env("CASKLET_INSTALLER_PATH", path)
         .env("PSModulePath", trusted_modules)
         .stdin(Stdio::null())
@@ -298,11 +303,11 @@ fn run_with_timeout(
     let path = launch_path.as_path();
     let _held = hold_verified(artifact, path)?;
     let cwd = path.parent().ok_or("Installer directory missing")?;
-    let mut command = if artifact.format == "MSI" {
+    let mut command = if artifact.format == "MSI" && !allow_elevation {
         let mut c = Command::new(system_binary("msiexec.exe")?);
         c.arg("/i").arg(path).arg("/norestart");
         c
-    } else if allow_elevation {
+    } else {
         let powershell = system_binary("WindowsPowerShell\\v1.0\\powershell.exe")?;
         let trusted_modules = powershell
             .parent()
@@ -316,16 +321,21 @@ fn run_with_timeout(
             "-ExecutionPolicy",
             "RemoteSigned",
             "-Command",
-            ELEVATE_SCRIPT,
+            if allow_elevation && artifact.format == "MSI" {
+                ELEVATE_MSI_SCRIPT
+            } else if allow_elevation {
+                ELEVATE_SCRIPT
+            } else {
+                INSTALL_SCRIPT
+            },
         ])
         .env("PSModulePath", trusted_modules)
+        .env("CASKLET_MSIEXEC_PATH", system_binary("msiexec.exe")?)
         .env("CASKLET_INSTALLER_PATH", path)
         .env("CASKLET_INSTALLER_DIR", cwd);
         c
-    } else {
-        Command::new(path)
     };
-    let mut child = command
+    let mut child = super::windows_process::hide_console(&mut command)
         .current_dir(cwd)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
@@ -350,8 +360,10 @@ fn run_with_timeout(
         if let Some(status) = child.try_wait().map_err(|e| e.to_string())? {
             let code = status.code().unwrap_or(-1);
             return Ok(
-                if allow_elevation && artifact.format == "EXE" && code == 1223 {
+                if (allow_elevation || artifact.format == "EXE") && code == 1223 {
                     InstallerOutcome::ElevationDeclined
+                } else if artifact.format == "EXE" {
+                    InstallerOutcome::ProcessTreeExited(code)
                 } else {
                     InstallerOutcome::Exited(code)
                 },
@@ -375,7 +387,29 @@ mod tests {
             std::env::temp_dir().join(format!("casklet-installer & args-{}", uuid::Uuid::new_v4()));
         fs::create_dir_all(&root).unwrap();
         let source = root.join("fake.rs");
-        fs::write(&source,"fn main(){std::fs::write(std::env::current_exe().unwrap().parent().unwrap().join(\"launched.marker\"),b\"yes\").unwrap();if std::env::current_exe().unwrap().file_name().unwrap().to_string_lossy().contains(\"sleep\"){std::thread::sleep(std::time::Duration::from_secs(5));}}").unwrap();
+        fs::write(
+            &source,
+            r#"
+fn main() {
+    let exe = std::env::current_exe().unwrap();
+    let dir = exe.parent().unwrap();
+    if std::env::args().any(|arg| arg == "child") {
+        std::thread::sleep(std::time::Duration::from_millis(800));
+        std::fs::write(dir.join("child.marker"), b"complete").unwrap();
+        return;
+    }
+    std::fs::write(dir.join("launched.marker"), b"yes").unwrap();
+    let name = exe.file_name().unwrap().to_string_lossy();
+    if name.contains("tree") {
+        std::process::Command::new(&exe).arg("child").spawn().unwrap();
+    }
+    if name.contains("sleep") {
+        std::thread::sleep(std::time::Duration::from_secs(5));
+    }
+}
+"#,
+        )
+        .unwrap();
         let executable = root.join("installer & exact.exe");
         let status = Command::new("rustc")
             .args([source.to_str().unwrap(), "-o", executable.to_str().unwrap()])
@@ -403,12 +437,31 @@ mod tests {
                 false,
                 &|| false,
                 &|| {},
-                Duration::from_secs(3)
+                Duration::from_secs(15)
             )
             .unwrap(),
-            InstallerOutcome::Exited(0)
+            InstallerOutcome::ProcessTreeExited(0)
         );
         assert!(root.join("launched.marker").exists());
+        let tree = root.join("tree & exact.exe");
+        fs::copy(&executable, &tree).unwrap();
+        let mut bootstrapper = inspection.clone();
+        bootstrapper.path = tree.to_string_lossy().into_owned();
+        assert_eq!(
+            run_with_timeout(
+                &bootstrapper,
+                false,
+                &|| false,
+                &|| {},
+                Duration::from_secs(15)
+            )
+            .unwrap(),
+            InstallerOutcome::ProcessTreeExited(0)
+        );
+        assert!(
+            root.join("child.marker").exists(),
+            "launch must wait for the bootstrapper's child"
+        );
         let sleeper = root.join("sleep & exact.exe");
         fs::copy(&executable, &sleeper).unwrap();
         let mut sleeping = inspection.clone();

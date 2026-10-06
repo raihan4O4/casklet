@@ -270,7 +270,7 @@ pub fn launch_verified(root: &Path, relative: &str, expected_hash: &str) -> Resu
     if sha256_file(&mut file)? != expected_hash {
         return Err("Installed executable changed".into());
     }
-    Command::new(&executable)
+    super::windows_process::hide_console(&mut Command::new(&executable))
         .current_dir(root)
         .spawn()
         .map_err(|e| e.to_string())?;

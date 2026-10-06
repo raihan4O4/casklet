@@ -52,3 +52,8 @@ export function activityDay(timestamp: number): string {
     year: "numeric",
   });
 }
+export function signatureLabel(status: string): string {
+  if (status === "VALID") return "Signed";
+  if (status === "UNSIGNED") return "Unsigned";
+  return "Signature not verified";
+}

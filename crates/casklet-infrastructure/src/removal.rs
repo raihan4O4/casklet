@@ -333,7 +333,7 @@ impl RemovalRepository for SqliteCasks {
         }
         let active_installer: i64 = transaction
             .query_row(
-                "SELECT COUNT(*) FROM installer_locks WHERE cask_id=?1",
+                "SELECT (SELECT COUNT(*) FROM installer_locks WHERE cask_id=?1)+(SELECT COUNT(*) FROM msi_cleanup_locks WHERE cask_id=?1)",
                 [&cask_id],
                 |row| row.get(0),
             )
