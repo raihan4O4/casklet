@@ -21,3 +21,9 @@ Run scripts/installed-desktop-smoke.ps1 after packaging. It refuses an existing 
 The workflow now runs on develop pushes as well as main pushes and pull requests. Hosted results require a push; local checks are recorded separately. Packaging records supported registered-EXE uninstall capability alongside MSI capability.
 
 The final candidate must pass the shared local CI gate, dependency audits, clean-source packaging/checksums, real Windows fixture cleanup, and the installed-desktop test. Real third-party MSI/EXE/UAC, clean-machine and signing gates remain open; fixture tests do not close them.
+
+## Merged source validation
+
+Merged develop passed cargo xtask check: 107 all-feature Rust tests, separate default/Alpha profiles, 29 GUI tests, strict Clippy, formatting, frontend lint/type checks, generated contracts and builds. Bootstrap, frozen-lockfile install, baseline secret scan and branch ancestry checks passed. Rust dependency policy passed with existing duplicate-version/allowance warnings. The frontend audit initially failed for source-map-js 1.2.1; pinning the [maintainer's patched 1.2.2 release](https://github.com/7rulnik/source-map-js/releases/tag/v1.2.2) passed the audit. Evidence: target/develop-quality.log, target/develop-rust-policy.log, target/develop-frontend-audit.log, target/develop-bootstrap.log.
+
+Final packaging and installed/cleanup results are retained in target/develop-package.log, target/develop-installed-smoke.log and target/develop-alpha-smoke.log. These executable checks must complete successfully for the candidate; their logs are separate from hosted CI results. The package must identify clean develop source and pass scripts/verify-release.ps1.
