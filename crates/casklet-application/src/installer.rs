@@ -226,28 +226,28 @@ where
         if operation.state == "CONFIRMED_ASSOCIATION" {
             return Ok(operation);
         }
-        // Association is safe to automate; it never grants EXE uninstall authority.
-        // A parent-only exit, failure or reboot remains unresolved.
-        if operation.state == "REVIEW_REQUIRED" && operation.exit_code == Some(0) {
-            let matching: Vec<_> = operation
-                .candidates
-                .iter()
-                .filter(|item| matches!(item.confidence.as_str(), "HIGH" | "MEDIUM"))
-                .collect();
-            if matching.len() == 1 {
-                return self.confirm_candidate(
-                    &ConfirmInstallerCandidate {
-                        version: request.version,
-                        operation_id: operation.id.clone(),
-                        installation_id: matching[0].installation_id.clone(),
-                    },
-                    correlation_id,
-                    true,
-                );
-            }
-            // Keep unresolved detection visible and durable rather than silently closing
-            // a Cask installation request or suggesting external-app association.
-            return Ok(operation);
+        // Install and Associate Existing App have separate ownership transactions.
+        if operation.state == "REVIEW_REQUIRED"
+            && operation.exit_code == Some(0)
+            && operation.candidates.len() == 1
+            && matches!(
+                operation.candidates[0].confidence.as_str(),
+                "HIGH" | "MEDIUM"
+            )
+        {
+            let claim = ConfirmInstallerCandidate {
+                version: request.version,
+                operation_id: operation.id.clone(),
+                installation_id: operation.candidates[0].installation_id.clone(),
+            };
+            self.claim_managed_msi(&claim, correlation_id)?;
+            return self.get_installer_operation(
+                &GetInstallerOperation {
+                    version: request.version,
+                    id: operation.id,
+                },
+                correlation_id,
+            );
         }
         Ok(operation)
     }

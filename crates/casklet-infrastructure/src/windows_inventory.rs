@@ -17,6 +17,8 @@ struct RawRegistration {
     publisher: Option<String>,
     display_version: Option<String>,
     install_location: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    uninstall_string: Option<String>,
     windows_installer: Option<u32>,
     system_component: Option<u32>,
     parent_key_name: Option<String>,
@@ -49,6 +51,12 @@ fn normalize(raw: RawRegistration) -> Option<ObservedInstallation> {
         publisher: raw.publisher,
         display_version: raw.display_version,
         install_location: raw.install_location,
+        // MSI uses typed ProductCode uninstall; preserve pre-schema-16 evidence hashes.
+        uninstall_string: if raw.windows_installer == Some(1) {
+            None
+        } else {
+            raw.uninstall_string
+        },
         windows_installer: raw.windows_installer,
         system_component: raw.system_component,
         parent_key_name: raw.parent_key_name,
@@ -110,6 +118,7 @@ fn registry_scan() -> Result<Vec<ObservedInstallation>, String> {
                 publisher: read("Publisher"),
                 display_version: read("DisplayVersion"),
                 install_location: read("InstallLocation"),
+                uninstall_string: read("UninstallString"),
                 windows_installer: key.get_value("WindowsInstaller").ok(),
                 system_component: key.get_value("SystemComponent").ok(),
                 parent_key_name: read("ParentKeyName"),
@@ -252,7 +261,7 @@ impl InstalledInventoryRepository for SqliteCasks {
                 ambiguous_name: false,
                 associated_cask_id: Some(cask_id.into()),
                 provenance: if connection.query_row("SELECT EXISTS(SELECT 1 FROM installer_operations WHERE cask_id=?1 AND confirmed_installation_id=?2 AND installed_for_cask=1)",params![cask_id,row.get::<_,String>(1)?],|r|r.get::<_,bool>(0))? { "INSTALLED_BY_CASKLET" } else { "DETECTED_WINDOWS_REGISTRY" }.into(),
-                removal_policy: if connection.query_row("SELECT EXISTS(SELECT 1 FROM managed_msi_installations WHERE installation_id=?1 AND cask_id=?2 AND state='OWNED')",params![row.get::<_,String>(1)?,cask_id],|r|r.get::<_,bool>(0))? { "MANAGED_MSI" } else { "DETACH_ONLY" }.into(),
+                removal_policy: connection.query_row("SELECT COALESCE((SELECT CASE WHEN product_code LIKE '{%}' THEN 'MANAGED_MSI' ELSE 'CASKLET_OWNED' END FROM managed_msi_installations WHERE installation_id=?1 AND cask_id=?2 AND state='OWNED'),'DETACH_ONLY')",params![row.get::<_,String>(1)?,cask_id],|r|r.get::<_,String>(0))?,
             })
         })
         .map_err(|e| e.to_string())?
@@ -274,6 +283,7 @@ mod tests {
             publisher: Some("Vendor".into()),
             display_version: None,
             install_location: None,
+            uninstall_string: None,
             windows_installer: None,
             system_component: None,
             parent_key_name: None,

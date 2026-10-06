@@ -52,6 +52,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../../../migrations/0013_cask_removal.sql"),
     include_str!("../../../migrations/0014_managed_msi.sql"),
     include_str!("../../../migrations/0015_installer_provenance.sql"),
+    include_str!("../../../migrations/0016_application_lifecycle.sql"),
 ];
 
 impl SqliteCasks {
@@ -738,8 +739,9 @@ mod tests {
             include_str!("../../../migrations/0013_cask_removal.sql"),
             include_str!("../../../migrations/0014_managed_msi.sql"),
             include_str!("../../../migrations/0015_installer_provenance.sql"),
+            include_str!("../../../migrations/0016_application_lifecycle.sql"),
         ];
-        for version in 1..=14 {
+        for version in 1..=16 {
             let root = std::env::temp_dir().join(format!(
                 "casklet-upgrade-{version}-{}",
                 uuid::Uuid::new_v4()
@@ -759,7 +761,7 @@ mod tests {
             let reopened = SqliteCasks::open(db).unwrap();
             assert_eq!(reopened.list().unwrap()[0].name, "Existing");
             assert!(reopened.list().unwrap()[0].description.is_empty());
-            if version < 15 {
+            if version < 16 {
                 let backups = fs::read_dir(root.join("backups"))
                     .unwrap()
                     .collect::<Result<Vec<_>, _>>()
@@ -1168,7 +1170,7 @@ mod tests {
             .unwrap()
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(schema_version, 15);
+        assert_eq!(schema_version, 16);
         assert_eq!(
             reopened
                 .list(

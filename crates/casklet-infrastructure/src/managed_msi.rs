@@ -26,69 +26,82 @@ impl MsiRepository for SqliteCasks {
         &self,
         request: &ConfirmInstallerCandidate,
         observed: &ObservedInstallation,
+        uninstaller_sha256: Option<&str>,
         now: i64,
     ) -> Result<(), String> {
         let mut c = self.connection()?;
         let tx = c
             .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
             .map_err(|e| e.to_string())?;
-        let (cask_id, state, exit, inspection, candidates, baseline, absent): (String,String,Option<i32>,String,String,String,bool) = tx.query_row("SELECT o.cask_id,o.state,o.exit_code,a.inspection_json,o.candidates_json,b.product_code,b.absent_before FROM installer_operations o JOIN installer_artifacts a ON a.id=o.artifact_id JOIN installer_msi_baselines b ON b.operation_id=o.id WHERE o.id=?1", [&request.operation_id], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?,row.get(5)?,row.get(6)?))).map_err(|_| "This launch has no verified MSI baseline".to_owned())?;
+        let (cask_id, state, exit, inspection, candidates, baseline, absent): (String,String,Option<i32>,String,String,Option<String>,Option<bool>) = tx.query_row("SELECT o.cask_id,o.state,o.exit_code,a.inspection_json,o.candidates_json,b.product_code,b.absent_before FROM installer_operations o JOIN installer_artifacts a ON a.id=o.artifact_id LEFT JOIN installer_msi_baselines b ON b.operation_id=o.id WHERE o.id=?1", [&request.operation_id], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?,row.get(4)?,row.get(5)?,row.get(6)?))).map_err(|_| "Installation operation could not be read".to_owned())?;
         let inspection: InstallerInspection =
             serde_json::from_str(&inspection).map_err(|e| e.to_string())?;
         let candidates: Vec<InstallerCandidateView> =
             serde_json::from_str(&candidates).map_err(|e| e.to_string())?;
-        let code = inspection
-            .product_code
-            .as_deref()
-            .and_then(product_code)
-            .ok_or("MSI ProductCode unavailable")?;
+        let msi_code = inspection.product_code.as_deref().and_then(product_code);
+        let is_exe = inspection.format == "EXE";
         let registration: serde_json::Value =
             serde_json::from_str(&observed.evidence_json).map_err(|e| e.to_string())?;
+        let code = if is_exe {
+            observed
+                .source_key
+                .rsplit('\\')
+                .next()
+                .and_then(product_code)
+                .filter(|_| registration["windowsInstaller"].as_u64() == Some(1))
+                .unwrap_or_else(|| observed.source_key.clone())
+        } else {
+            msi_code.ok_or("MSI ProductCode unavailable")?
+        };
         let active: bool = tx.query_row("SELECT state='ACTIVE' AND NOT EXISTS(SELECT 1 FROM cask_removals WHERE cask_id=?1) FROM casks WHERE id=?1", [&cask_id], |r| r.get(0)).map_err(|e| e.to_string())?;
         let busy: i64 = tx.query_row("SELECT (SELECT COUNT(*) FROM msi_cleanup_locks)+(SELECT COUNT(*) FROM winget_locks)+(SELECT COUNT(*) FROM installer_locks)+(SELECT COUNT(*) FROM removal_locks WHERE cask_id=?1)+(SELECT COUNT(*) FROM operation_locks WHERE lock_key='cask:'||?1||':mutation')", [&cask_id], |r| r.get(0)).map_err(|e| e.to_string())?;
         let associated: i64 = tx.query_row("SELECT COUNT(*) FROM windows_cask_associations WHERE installation_id=?1 AND removed_at_ms IS NULL", [&observed.installation_id], |r| r.get(0)).map_err(|e|e.to_string())?;
         let existing_product: i64 = tx.query_row("SELECT COUNT(*) FROM managed_msi_installations WHERE product_code=?1 COLLATE NOCASE AND state='OWNED'", [&code], |r|r.get(0)).map_err(|e|e.to_string())?;
         let evidence = casklet_domain::installer::InstallerOwnershipEvidence {
-            supported_format: inspection.format == "MSI",
+            supported_format: inspection.format == "MSI" || is_exe,
             successful_launch: state == "REVIEW_REQUIRED" && exit == Some(0),
-            verified_new_product: absent && baseline == code,
+            verified_new_product: is_exe
+                || (absent == Some(true) && baseline.as_deref() == Some(code.as_str())),
             single_exact_candidate: candidates.len() == 1
-                && candidates[0].installation_id == observed.installation_id,
+                && candidates[0].installation_id == observed.installation_id
+                && matches!(candidates[0].confidence.as_str(), "HIGH" | "MEDIUM"),
             current_identity: candidates.len() == 1
                 && candidates[0].evidence_sha256 == observed.evidence_sha256
                 && observed.installation_id == request.installation_id,
-            supported_registration: registration["windowsInstaller"].as_u64() == Some(1)
-                && observed
-                    .source_key
-                    .rsplit('\\')
-                    .next()
-                    .is_some_and(|key| key.eq_ignore_ascii_case(&code)),
+            supported_registration: is_exe
+                || registration["windowsInstaller"].as_u64() == Some(1)
+                    && observed
+                        .source_key
+                        .rsplit('\\')
+                        .next()
+                        .is_some_and(|key| key.eq_ignore_ascii_case(&code)),
             active_cask: active,
             unshared_and_unlocked: busy == 0 && associated == 0 && existing_product == 0,
         };
         if !evidence.permits_ownership() {
             return Err(
-                "Only a new, successful, unshared and verified MSI installation can be managed"
-                    .into(),
+                "Only a new, successful, unshared and verified installation can be owned".into(),
             );
         }
         super::windows_inventory::upsert(&tx, observed, now)?;
         tx.execute("INSERT INTO windows_cask_associations(id,cask_id,installation_id,created_at_ms) VALUES (?1,?2,?3,?4)", params![uuid::Uuid::new_v4().to_string(),cask_id,observed.installation_id,now]).map_err(|e|e.to_string())?;
-        tx.execute("INSERT INTO managed_msi_installations(installation_id,cask_id,operation_id,product_code,evidence_sha256,display_name,state,claimed_at_ms) VALUES (?1,?2,?3,?4,?5,?6,'OWNED',?7)",params![observed.installation_id,cask_id,request.operation_id,code,observed.evidence_sha256,observed.name,now]).map_err(|e|e.to_string())?;
-        tx.execute("UPDATE installer_operations SET state='CONFIRMED_ASSOCIATION',confirmed_installation_id=?2,updated_at_ms=?3,revision=revision+1 WHERE id=?1",params![request.operation_id,observed.installation_id,now]).map_err(|e|e.to_string())?;
+        tx.execute("INSERT INTO managed_msi_installations(installation_id,cask_id,operation_id,product_code,evidence_sha256,display_name,state,claimed_at_ms,uninstaller_sha256,registration_json) VALUES (?1,?2,?3,?4,?5,?6,'OWNED',?7,?8,?9)",params![observed.installation_id,cask_id,request.operation_id,code,observed.evidence_sha256,observed.name,now,uninstaller_sha256,observed.evidence_json]).map_err(|e|e.to_string())?;
+        tx.execute("UPDATE installer_operations SET state='CONFIRMED_ASSOCIATION',installed_for_cask=1,confirmed_installation_id=?2,updated_at_ms=?3,revision=revision+1 WHERE id=?1",params![request.operation_id,observed.installation_id,now]).map_err(|e|e.to_string())?;
         queue_projection(&tx, &cask_id, now)?;
         tx.commit().map_err(|e| e.to_string())
     }
     fn owned_msi(&self, cask_id: &str) -> Result<Vec<MsiCleanupItem>, String> {
         let c = self.connection()?;
-        let mut s = c.prepare("SELECT installation_id,display_name,product_code,evidence_sha256 FROM managed_msi_installations WHERE cask_id=?1 AND state='OWNED' ORDER BY installation_id").map_err(|e|e.to_string())?;
+        let mut s = c.prepare("SELECT installation_id,display_name,product_code,evidence_sha256,uninstaller_sha256,'PRESERVE' FROM managed_msi_installations WHERE cask_id=?1 AND state='OWNED' UNION ALL SELECT w.id,w.display_name,w.source_key,w.evidence_sha256,NULL,'DETACH' FROM windows_installations w JOIN windows_cask_associations a ON a.installation_id=w.id WHERE a.cask_id=?1 AND a.removed_at_ms IS NULL AND NOT EXISTS(SELECT 1 FROM managed_msi_installations m WHERE m.installation_id=w.id AND m.cask_id=?1 AND m.state='OWNED') ORDER BY 1").map_err(|e|e.to_string())?;
         s.query_map([cask_id], |r| {
             Ok(MsiCleanupItem {
                 installation_id: r.get(0)?,
                 name: r.get(1)?,
                 product_code: r.get(2)?,
                 evidence_sha256: r.get(3)?,
-                action: "PRESERVE".into(),
+                action: r.get(5)?,
+                uninstaller_sha256: r.get(4)?,
+                result: None,
                 state: "PENDING".into(),
             })
         })
@@ -134,21 +147,28 @@ impl MsiRepository for SqliteCasks {
             );
         }
         let mut steps = c
-            .prepare("SELECT installation_id,state FROM msi_cleanup_steps WHERE plan_id=?1")
+            .prepare(
+                "SELECT installation_id,state,result_code FROM msi_cleanup_steps WHERE plan_id=?1",
+            )
             .map_err(|e| e.to_string())?;
         for step in steps
             .query_map([id], |r| {
-                Ok((r.get::<_, String>(0)?, r.get::<_, String>(1)?))
+                Ok((
+                    r.get::<_, String>(0)?,
+                    r.get::<_, String>(1)?,
+                    r.get::<_, Option<String>>(2)?,
+                ))
             })
             .map_err(|e| e.to_string())?
         {
-            let (id, state) = step.map_err(|e| e.to_string())?;
+            let (id, state, result) = step.map_err(|e| e.to_string())?;
             if let Some(item) = plan
                 .items
                 .iter_mut()
                 .find(|item| item.installation_id == id)
             {
                 item.state = state;
+                item.result = result;
             }
         }
         Ok(Some(plan))
@@ -217,7 +237,8 @@ impl MsiRepository for SqliteCasks {
         let mut c = self.connection()?;
         let tx = c.transaction().map_err(|e| e.to_string())?;
         tx.execute("INSERT INTO msi_cleanup_steps(plan_id,installation_id,state,result_code,at_ms) VALUES (?1,?2,?3,?4,?5) ON CONFLICT(plan_id,installation_id) DO UPDATE SET state=excluded.state,result_code=excluded.result_code,at_ms=excluded.at_ms",params![plan.id,item.installation_id,item.state,result,now]).map_err(|e|e.to_string())?;
-        if item.state == "SUCCEEDED" {
+        if matches!(item.state.as_str(), "SUCCEEDED" | "DETACHED") {
+            tx.execute("UPDATE installer_operations SET installed_for_cask=0 WHERE cask_id=?1 AND confirmed_installation_id=?2", params![plan.cask_id,item.installation_id]).map_err(|e|e.to_string())?;
             tx.execute("UPDATE managed_msi_installations SET state='REMOVED' WHERE installation_id=?1 AND cask_id=?2 AND state='OWNED'",params![item.installation_id,plan.cask_id]).map_err(|e|e.to_string())?;
             tx.execute("UPDATE windows_cask_associations SET removed_at_ms=?3,revision=revision+1 WHERE installation_id=?1 AND cask_id=?2 AND removed_at_ms IS NULL",params![item.installation_id,plan.cask_id,now]).map_err(|e|e.to_string())?;
         }
@@ -241,6 +262,7 @@ impl MsiRepository for SqliteCasks {
         if changed != 1 {
             return Err("Managed MSI installation not found".into());
         }
+        tx.execute("UPDATE installer_operations SET installed_for_cask=0 WHERE cask_id=?1 AND confirmed_installation_id=?2",params![cask_id,installation_id]).map_err(|e|e.to_string())?;
         tx.execute("UPDATE windows_cask_associations SET removed_at_ms=?3,revision=revision+1 WHERE installation_id=?1 AND cask_id=?2 AND removed_at_ms IS NULL",params![installation_id,cask_id,now]).map_err(|e|e.to_string())?;
         queue_projection(&tx, cask_id, now)?;
         tx.commit().map_err(|e| e.to_string())
@@ -265,6 +287,8 @@ mod tests {
         registry: Mutex<Vec<ObservedInstallation>>,
         runs: AtomicUsize,
         fail: bool,
+        fail_once: Mutex<bool>,
+        order: Mutex<Vec<String>>,
     }
     impl InstalledInventorySource for Fake {
         fn scan_installed(&self) -> Result<Vec<ObservedInstallation>, String> {
@@ -274,11 +298,40 @@ mod tests {
     impl MsiUninstaller for Fake {
         fn uninstall_msi(&self, code: &str) -> Result<i32, String> {
             assert_eq!(code, CODE);
+            self.order.lock().unwrap().push(code.into());
             self.runs.fetch_add(1, Ordering::SeqCst);
             if self.fail {
                 return Err("interrupted after launch".into());
             }
-            self.registry.lock().unwrap().clear();
+            if std::mem::take(&mut *self.fail_once.lock().unwrap()) {
+                return Ok(1603);
+            }
+            self.registry
+                .lock()
+                .unwrap()
+                .retain(|item| !item.source_key.ends_with(code));
+            Ok(0)
+        }
+        fn inspect_registered_uninstaller(
+            &self,
+            _item: &ObservedInstallation,
+        ) -> Result<String, String> {
+            Ok("exe-hash".into())
+        }
+        fn uninstall_registered(
+            &self,
+            item: &ObservedInstallation,
+            hash: &str,
+        ) -> Result<i32, String> {
+            assert_eq!(hash, "exe-hash");
+            self.order
+                .lock()
+                .unwrap()
+                .push(item.installation_id.clone());
+            self.registry
+                .lock()
+                .unwrap()
+                .retain(|entry| entry.installation_id != item.installation_id);
             Ok(0)
         }
     }
@@ -352,6 +405,8 @@ mod tests {
                         registry: Mutex::new(vec![observed]),
                         runs: AtomicUsize::new(0),
                         fail,
+                        fail_once: Mutex::new(false),
+                        order: Mutex::new(vec![]),
                     },
                 },
                 cask_id: cask.id,
@@ -436,13 +491,12 @@ mod tests {
         );
     }
     #[test]
-    fn existing_legacy_uncertain_and_exe_launches_never_gain_ownership() {
+    fn existing_legacy_and_uncertain_launches_never_gain_ownership() {
         for sql in [
             "DELETE FROM installer_msi_baselines",
             "UPDATE installer_msi_baselines SET absent_before=0",
             "UPDATE installer_operations SET exit_code=3010,state='RECOVERY_REQUIRED'",
             "UPDATE installer_operations SET candidates_json='[]'",
-            "UPDATE installer_artifacts SET inspection_json=json_set(inspection_json,'$.format','EXE')",
         ] {
             let f = Fixture::new(false);
             f.service
@@ -586,5 +640,182 @@ mod tests {
                 .is_err()
         );
         assert_eq!(f.service.storage.runs.load(Ordering::SeqCst), 0);
+    }
+    fn add_queue_apps(f: &Fixture) {
+        let base = f.service.storage.registry.lock().unwrap()[0].clone();
+        for (id, owned) in [("second-exe", true), ("zzz-reference", false)] {
+            let mut item = base.clone();
+            item.installation_id = id.into();
+            item.application_id = format!("app-{id}");
+            item.name = id.into();
+            item.source_key = format!("HKCU64\\Uninstall\\{id}");
+            item.evidence_sha256 = format!("hash-{id}");
+            item.evidence_json = "{}".into();
+            f.service
+                .repository
+                .associate_installed(&f.cask_id, &item, 2)
+                .unwrap();
+            if owned {
+                let c = f.service.repository.connection().unwrap();
+                c.execute("INSERT INTO installer_operations(id,artifact_id,cask_id,state,exit_code,confirmed_installation_id,started_at_ms,updated_at_ms,installed_for_cask) VALUES (?1,'artifact',?2,'CONFIRMED_ASSOCIATION',0,?1,2,2,1)",params![id,f.cask_id]).unwrap();
+                c.execute("INSERT INTO managed_msi_installations(installation_id,cask_id,operation_id,product_code,evidence_sha256,display_name,state,claimed_at_ms,uninstaller_sha256) VALUES (?1,?2,?1,?3,?4,?1,'OWNED',2,'exe-hash')", params![id,f.cask_id,item.source_key,item.evidence_sha256]).unwrap();
+            }
+            f.service.storage.registry.lock().unwrap().push(item);
+        }
+    }
+    #[test]
+    fn references_detach_before_sequential_owned_uninstalls_and_failure_can_retry() {
+        let f = Fixture::new(false);
+        f.claim().unwrap();
+        add_queue_apps(&f);
+        *f.service.storage.fail_once.lock().unwrap() = true;
+        let plan = f.preview();
+        f.service
+            .approve_msi_cleanup(&Fixture::request(&plan), "test")
+            .unwrap();
+        let result = f
+            .service
+            .execute_msi_cleanup(&Fixture::request(&plan), "test")
+            .unwrap();
+        assert_eq!(result.state, "PARTIAL");
+        assert_eq!(
+            *f.service.storage.order.lock().unwrap(),
+            vec![CODE, "second-exe"]
+        );
+        assert_eq!(
+            result
+                .items
+                .iter()
+                .find(|item| item.installation_id == "installed")
+                .unwrap()
+                .state,
+            "FAILED"
+        );
+        assert_eq!(
+            result
+                .items
+                .iter()
+                .find(|item| item.installation_id == "zzz-reference")
+                .unwrap()
+                .state,
+            "DETACHED"
+        );
+        let remaining = f
+            .service
+            .repository
+            .list_associated_installed(&f.cask_id)
+            .unwrap();
+        assert_eq!(remaining.len(), 1);
+        assert_eq!(remaining[0].installation_id, "installed");
+        assert_eq!(f.service.storage.registry.lock().unwrap().len(), 2); // failed MSI and untouched reference
+        assert!(
+            !f.service
+                .repository
+                .removal_status(&f.cask_id)
+                .unwrap()
+                .can_remove
+        );
+        f.service
+            .close_msi_cleanup(
+                &GetRemovalPlan {
+                    version: CONTRACT_VERSION,
+                    id: plan.id,
+                },
+                "test",
+            )
+            .unwrap();
+        let retry = f.preview();
+        assert_eq!(retry.items.len(), 1);
+        f.service
+            .approve_msi_cleanup(&Fixture::request(&retry), "test")
+            .unwrap();
+        assert_eq!(
+            f.service
+                .execute_msi_cleanup(&Fixture::request(&retry), "test")
+                .unwrap()
+                .state,
+            "COMPLETE"
+        );
+        assert!(
+            f.service
+                .repository
+                .removal_status(&f.cask_id)
+                .unwrap()
+                .can_remove
+        );
+        assert_eq!(
+            f.service.storage.registry.lock().unwrap()[0].installation_id,
+            "zzz-reference"
+        );
+    }
+    #[test]
+    fn single_application_removal_preserves_other_owners_and_references() {
+        let f = Fixture::new(false);
+        f.claim().unwrap();
+        add_queue_apps(&f);
+        let plan = f
+            .service
+            .create_application_removal(
+                &casklet_contracts::DisassociateInstalledApplication {
+                    version: CONTRACT_VERSION,
+                    cask_id: f.cask_id.clone(),
+                    installation_id: "second-exe".into(),
+                },
+                "test",
+            )
+            .unwrap();
+        assert_eq!(plan.items.len(), 1);
+        f.service
+            .approve_msi_cleanup(&Fixture::request(&plan), "test")
+            .unwrap();
+        assert_eq!(
+            f.service
+                .execute_msi_cleanup(&Fixture::request(&plan), "test")
+                .unwrap()
+                .state,
+            "COMPLETE"
+        );
+        assert_eq!(
+            f.service
+                .repository
+                .list_associated_installed(&f.cask_id)
+                .unwrap()
+                .len(),
+            2
+        );
+        assert_eq!(*f.service.storage.order.lock().unwrap(), vec!["second-exe"]);
+    }
+    #[test]
+    fn interruption_stops_queue_and_keeps_unstarted_ownership() {
+        let f = Fixture::new(true);
+        f.claim().unwrap();
+        add_queue_apps(&f);
+        let plan = f.preview();
+        f.service
+            .approve_msi_cleanup(&Fixture::request(&plan), "test")
+            .unwrap();
+        let result = f
+            .service
+            .execute_msi_cleanup(&Fixture::request(&plan), "test")
+            .unwrap();
+        assert_eq!(result.state, "PARTIAL");
+        assert_eq!(*f.service.storage.order.lock().unwrap(), vec![CODE]);
+        assert_eq!(
+            result
+                .items
+                .iter()
+                .find(|item| item.installation_id == "second-exe")
+                .unwrap()
+                .state,
+            "PENDING"
+        );
+        assert_eq!(
+            f.service
+                .repository
+                .list_associated_installed(&f.cask_id)
+                .unwrap()
+                .len(),
+            2
+        );
     }
 }

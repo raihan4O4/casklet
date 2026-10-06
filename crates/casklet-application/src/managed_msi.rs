@@ -1,4 +1,4 @@
-//! Explicit MSI ownership and durable, inspectable uninstall orchestration.
+//! Persistent installer ownership and durable, inspectable application cleanup.
 use crate::installer::InstallerRepository;
 use crate::windows_inventory::{
     InstalledInventoryRepository, InstalledInventorySource, ObservedInstallation,
@@ -28,6 +28,7 @@ pub trait MsiRepository {
         &self,
         request: &ConfirmInstallerCandidate,
         observed: &ObservedInstallation,
+        uninstaller_sha256: Option<&str>,
         now: i64,
     ) -> Result<(), String>;
     /// # Errors
@@ -69,6 +70,23 @@ pub trait MsiUninstaller {
     /// # Errors
     /// Executes system msiexec with a validated `ProductCode`; never a registry command.
     fn uninstall_msi(&self, product_code: &str) -> Result<i32, String>;
+    /// # Errors
+    /// Inspects a registered direct executable; shell commands are unsupported.
+    fn inspect_registered_uninstaller(
+        &self,
+        _item: &ObservedInstallation,
+    ) -> Result<String, String> {
+        Err("No supported registered uninstaller".into())
+    }
+    /// # Errors
+    /// Runs the exact reviewed executable and waits for its process tree.
+    fn uninstall_registered(
+        &self,
+        _item: &ObservedInstallation,
+        _hash: &str,
+    ) -> Result<i32, String> {
+        Err("No supported registered uninstaller".into())
+    }
 }
 
 /// MSI `ProductCodes` must be a GUID, never process arguments.
@@ -99,6 +117,7 @@ fn hash(cask_id: &str, items: &[MsiCleanupItem], expires_at_ms: i64) -> String {
             &item.product_code,
             &item.evidence_sha256,
             &item.action,
+            item.uninstaller_sha256.as_deref().unwrap_or(""),
         ]
     })) {
         digest.update(value.len().to_le_bytes());
@@ -116,7 +135,7 @@ where
         api_error("MSI_CLEANUP", message, correlation)
     }
     /// # Errors
-    /// Claims only explicit, currently verified, newly installed MSI products.
+    /// Claims currently verified new MSI/EXE installations, separately from references.
     pub fn claim_managed_msi(
         &self,
         request: &ConfirmInstallerCandidate,
@@ -134,6 +153,10 @@ where
             .claim_msi(
                 request,
                 &observed,
+                self.storage
+                    .inspect_registered_uninstaller(&observed)
+                    .ok()
+                    .as_deref(),
                 now().map_err(|e| Self::msi_error(e, correlation))?,
             )
             .map_err(|e| Self::msi_error(e, correlation))
@@ -150,23 +173,40 @@ where
                         .rsplit('\\')
                         .next()
                         .is_some_and(|key| key.eq_ignore_ascii_case(&item.product_code))
+                        || entry.source_key == item.product_code
                 })
                 .collect();
+            if item.action == "DETACH" {
+                continue;
+            }
             let verified = matches.len() == 1
                 && matches[0].installation_id == item.installation_id
-                && matches[0].evidence_sha256 == item.evidence_sha256;
-            item.action = if verified
-                && self.repository.msi_dependents(
-                    cask_id,
-                    &item.installation_id,
-                    &item.product_code,
-                )? == 0
-            {
+                && matches[0].evidence_sha256 == item.evidence_sha256
+                && (product_code(&item.product_code).is_some()
+                    || item.uninstaller_sha256.as_ref().is_some_and(|hash| {
+                        self.storage
+                            .inspect_registered_uninstaller(matches[0])
+                            .as_ref()
+                            == Ok(hash)
+                    }));
+            let shared = self.repository.msi_dependents(
+                cask_id,
+                &item.installation_id,
+                &item.product_code,
+            )? != 0;
+            item.action = if verified && !shared {
                 "UNINSTALL"
             } else {
                 "PRESERVE"
             }
             .into();
+            item.result = if shared {
+                Some("Shared installation".into())
+            } else if !verified {
+                Some("Registration or uninstaller is unavailable, changed or unsupported".into())
+            } else {
+                None
+            };
         }
         Ok(items)
     }
@@ -175,6 +215,14 @@ where
     pub fn create_msi_cleanup(
         &self,
         request: &GetCask,
+        correlation: &str,
+    ) -> Result<MsiCleanupPlan, ApiError> {
+        self.create_application_cleanup(request, None, correlation)
+    }
+    fn create_application_cleanup(
+        &self,
+        request: &GetCask,
+        installation_id: Option<&str>,
         correlation: &str,
     ) -> Result<MsiCleanupPlan, ApiError> {
         check_version(request.version, correlation)?;
@@ -190,9 +238,15 @@ where
             ));
         }
         let current = now().map_err(|e| Self::msi_error(e, correlation))?;
-        let items = self
+        let mut items = self
             .msi_items(&request.id)
             .map_err(|e| Self::msi_error(e, correlation))?;
+        if let Some(id) = installation_id {
+            items.retain(|item| item.installation_id == id);
+            if items.is_empty() {
+                return Err(Self::msi_error("Application not found".into(), correlation));
+            }
+        }
         let expires_at_ms = current + 900_000;
         let plan_hash = hash(&request.id, &items, expires_at_ms);
         if let Some(previous) = self
@@ -226,6 +280,22 @@ where
             .save_msi_plan(&plan, current)
             .map_err(|e| Self::msi_error(e, correlation))?;
         Ok(plan)
+    }
+    /// # Errors
+    /// Creates an inspectable plan for one application using the same cleanup queue.
+    pub fn create_application_removal(
+        &self,
+        request: &casklet_contracts::DisassociateInstalledApplication,
+        correlation: &str,
+    ) -> Result<MsiCleanupPlan, ApiError> {
+        self.create_application_cleanup(
+            &GetCask {
+                version: request.version,
+                id: request.cask_id.clone(),
+            },
+            Some(&request.installation_id),
+            correlation,
+        )
     }
     /// # Errors
     /// Loads durable state, including interrupted execution.
@@ -262,12 +332,13 @@ where
         {
             return Err("Plan changed or expired. Create a new preview".into());
         }
-        if hash(
-            &plan.cask_id,
-            &self.msi_items(&plan.cask_id)?,
-            plan.expires_at_ms,
-        ) != plan.plan_hash
-        {
+        let mut current = self.msi_items(&plan.cask_id)?;
+        current.retain(|item| {
+            plan.items
+                .iter()
+                .any(|selected| selected.installation_id == item.installation_id)
+        });
+        if hash(&plan.cask_id, &current, plan.expires_at_ms) != plan.plan_hash {
             return Err(
                 "Application ownership or registration changed. Create a new preview".into(),
             );
@@ -295,8 +366,29 @@ where
             .map_err(|e| Self::msi_error(e, correlation))?;
         Ok(plan)
     }
+    fn run_application_uninstaller(&self, item: &MsiCleanupItem) -> Result<i32, String> {
+        if product_code(&item.product_code).is_some() {
+            self.storage.uninstall_msi(&item.product_code)
+        } else {
+            let observed = self
+                .storage
+                .scan_installed()?
+                .into_iter()
+                .find(|entry| {
+                    entry.installation_id == item.installation_id
+                        && entry.evidence_sha256 == item.evidence_sha256
+                })
+                .ok_or("EVIDENCE_CHANGED")?;
+            self.storage.uninstall_registered(
+                &observed,
+                item.uninstaller_sha256
+                    .as_deref()
+                    .ok_or("UNINSTALLER_UNVERIFIED")?,
+            )
+        }
+    }
     /// # Errors
-    /// Executes approved MSI actions with durable intent and per-item revalidation.
+    /// Executes the approved sequential application queue with durable intent and revalidation.
     pub fn execute_msi_cleanup(
         &self,
         request: &ApproveRemovalPlan,
@@ -314,18 +406,23 @@ where
                 now().map_err(|e| Self::msi_error(e, correlation))?,
             )
             .map_err(|e| Self::msi_error(e, correlation))?;
-        for index in 0..plan.items.len() {
+        // Detach references before launching any owned application uninstaller.
+        let mut order: Vec<_> = (0..plan.items.len()).collect();
+        order.sort_by_key(|index| plan.items[*index].action != "DETACH");
+        let mut failed = false;
+        for index in order {
             let mut item = plan.items[index].clone();
             if item.action == "PRESERVE" {
                 item.state = "PRESERVED".into();
                 plan.items[index] = item;
                 continue;
             }
+            let mut completed = false;
             let result = catch_unwind(AssertUnwindSafe(|| -> Result<(), String> {
                 let current = self.msi_items(&plan.cask_id)?;
                 if !current.iter().any(|entry| {
                     entry.installation_id == item.installation_id
-                        && entry.action == "UNINSTALL"
+                        && entry.action == item.action
                         && entry.product_code == item.product_code
                         && entry.evidence_sha256 == item.evidence_sha256
                 }) {
@@ -333,7 +430,11 @@ where
                 }
                 item.state = "RUNNING".into();
                 self.repository.msi_step(&plan, &item, None, now()?)?;
-                let code = self.storage.uninstall_msi(&item.product_code)?;
+                if item.action == "DETACH" {
+                    return Ok(());
+                }
+                let code = self.run_application_uninstaller(&item)?;
+                completed = !matches!(code, 3010 | 1641);
                 if code != 0 {
                     return Err(format!("UNINSTALL_EXIT_{code}"));
                 }
@@ -343,18 +444,24 @@ where
                         .rsplit('\\')
                         .next()
                         .is_some_and(|key| key.eq_ignore_ascii_case(&item.product_code))
+                        || entry.source_key == item.product_code
                 }) {
                     return Err("UNINSTALL_NOT_VERIFIED".into());
                 }
                 Ok(())
             }))
             .unwrap_or_else(|_| Err("UNINSTALL_INTERRUPTED".into()));
-            item.state = if result.is_ok() {
+            item.state = if result.is_ok() && item.action == "DETACH" {
+                "DETACHED"
+            } else if result.is_ok() {
                 "SUCCEEDED"
+            } else if completed {
+                "FAILED"
             } else {
                 "UNKNOWN"
             }
             .into();
+            item.result = result.as_ref().err().cloned();
             self.repository
                 .msi_step(
                     &plan,
@@ -365,13 +472,13 @@ where
                 .map_err(|e| Self::msi_error(e, correlation))?;
             plan.items[index] = item;
             if result.is_err() {
-                plan.state = "PARTIAL".into();
-                break;
+                failed = true;
+                if !completed && plan.items[index].state == "UNKNOWN" {
+                    break;
+                }
             }
         }
-        if plan.state == "EXECUTING" {
-            plan.state = "COMPLETE".into();
-        }
+        plan.state = if failed { "PARTIAL" } else { "COMPLETE" }.into();
         self.repository
             .transition_msi(
                 &plan,

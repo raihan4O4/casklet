@@ -44,6 +44,7 @@ pub fn run() {
             managed_msi::install_application,
             managed_msi::launch_managed_msi_artifact,
             managed_msi::create_msi_cleanup,
+            managed_msi::create_application_removal,
             managed_msi::latest_msi_cleanup,
             managed_msi::approve_msi_cleanup,
             managed_msi::execute_msi_cleanup,

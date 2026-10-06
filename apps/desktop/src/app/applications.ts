@@ -52,11 +52,9 @@ export function applicationRows(
       version: item.displayVersion,
       publisher: item.publisher,
       provider: item.removalPolicy === "MANAGED_MSI" ? "MSI" : "Windows",
-      management:
-        item.removalPolicy === "MANAGED_MSI" ||
-        item.provenance === "INSTALLED_BY_CASKLET"
-          ? "managed"
-          : "associated",
+      management: ["MANAGED_MSI", "CASKLET_OWNED"].includes(item.removalPolicy)
+        ? "managed"
+        : "associated",
       kind: "windows",
       item,
     });

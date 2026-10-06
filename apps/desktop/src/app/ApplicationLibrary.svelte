@@ -248,9 +248,9 @@
               class="application-badge"
               class:owned={row.management === "managed"}
               >{row.management === "managed"
-                ? "Installed for Cask"
+                ? "Casklet-owned"
                 : row.management === "associated"
-                  ? "Associated"
+                  ? "Reference"
                   : "Not verified"}</span
             >
             <div class="application-row-actions">
@@ -266,19 +266,21 @@
                 >{/if}
               <button
                 type="button"
-                aria-label={`${row.kind === "windows" && row.item.removalPolicy !== "MANAGED_MSI" ? "Keep app and remove link to" : row.kind === "winget" ? "Manage" : "Cleanup"} ${row.name}`}
+                aria-label={`${row.kind === "windows" && !["MANAGED_MSI", "CASKLET_OWNED"].includes(row.item.removalPolicy) ? "Keep app and remove link to" : row.kind === "winget" ? "Manage" : "Remove"} ${row.name}`}
                 disabled={busy ||
                   (row.kind === "portable" && !row.item.canPlanRemoval) ||
                   (row.kind === "winget" && !row.item.canPlanUninstall)}
                 onclick={() => onAction(row)}
                 >{row.kind === "windows" &&
-                row.item.removalPolicy !== "MANAGED_MSI"
+                !["MANAGED_MSI", "CASKLET_OWNED"].includes(
+                  row.item.removalPolicy,
+                )
                   ? row.management === "managed"
                     ? "Keep app"
                     : "Remove link"
                   : row.kind === "winget"
                     ? "Manage"
-                    : "Cleanup"}</button
+                    : "Remove"}</button
               >
             </div>
           </li>{/each}
