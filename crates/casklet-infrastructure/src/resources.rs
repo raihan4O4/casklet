@@ -93,7 +93,7 @@ impl ResourceRepository for SqliteCasks {
         {
             return Err("The database directory cannot be owned as resource data".into());
         }
-        let available: i64 = transaction.query_row("SELECT COUNT(*) FROM casks WHERE id=?1 AND state='ACTIVE' AND NOT EXISTS (SELECT 1 FROM operation_locks WHERE lock_key='cask:'||?1||':mutation') AND NOT EXISTS (SELECT 1 FROM removal_locks WHERE cask_id=?1) AND NOT EXISTS (SELECT 1 FROM installer_locks WHERE cask_id=?1)", [&resource.cask_id], |row| row.get(0)).map_err(|e| e.to_string())?;
+        let available: i64 = transaction.query_row("SELECT COUNT(*) FROM casks WHERE id=?1 AND state='ACTIVE' AND NOT EXISTS (SELECT 1 FROM operation_locks WHERE lock_key='cask:'||?1||':mutation') AND NOT EXISTS (SELECT 1 FROM removal_locks WHERE cask_id=?1) AND NOT EXISTS (SELECT 1 FROM installer_locks WHERE cask_id=?1) AND NOT EXISTS (SELECT 1 FROM msi_cleanup_locks WHERE cask_id=?1)", [&resource.cask_id], |row| row.get(0)).map_err(|e| e.to_string())?;
         if available != 1 {
             return Err("Cask changed or has unfinished work".into());
         }
@@ -186,7 +186,7 @@ impl ResourceRepository for SqliteCasks {
             .map_err(|e| e.to_string())?;
         let installer_lock: i64 = transaction
             .query_row(
-                "SELECT COUNT(*) FROM installer_locks WHERE cask_id=?1",
+                "SELECT (SELECT COUNT(*) FROM installer_locks WHERE cask_id=?1)+(SELECT COUNT(*) FROM msi_cleanup_locks WHERE cask_id=?1)",
                 [&resource.cask_id],
                 |row| row.get(0),
             )
@@ -244,7 +244,7 @@ impl ResourceRepository for SqliteCasks {
             .map_err(|e| e.to_string())?;
         let installer_lock: i64 = transaction
             .query_row(
-                "SELECT COUNT(*) FROM installer_locks WHERE cask_id=?1",
+                "SELECT (SELECT COUNT(*) FROM installer_locks WHERE cask_id=?1)+(SELECT COUNT(*) FROM msi_cleanup_locks WHERE cask_id=?1)",
                 [&resource.cask_id],
                 |row| row.get(0),
             )

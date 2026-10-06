@@ -1,3 +1,4 @@
+mod managed_msi;
 use tauri::{Emitter, Manager};
 use tauri_plugin_dialog::DialogExt;
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -15,15 +16,7 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_dialog::init())
         .setup(move |app| {
-            match service {
-                Ok(service) => { app.manage(service); }
-                Err(problem) => {
-                    app.dialog().message(format!("Casklet could not open its local data. Reopen newer data with the matching Casklet version, or restore a verified database backup. Resource files have not been removed.\n\nDetails: {problem}"))
-                        .title("Casklet cannot open your data")
-                        .kind(tauri_plugin_dialog::MessageDialogKind::Error).blocking_show();
-                    app.handle().exit(1);
-                }
-            }
+            initialize_service(app, service);
             Ok(())
         })
         .manage(std::sync::Mutex::new(()))
@@ -47,6 +40,15 @@ pub fn run() {
             set_cask_archived,
             remove_cask,
             cask_removal_status,
+            managed_msi::claim_managed_msi,
+            managed_msi::install_application,
+            managed_msi::launch_managed_msi_artifact,
+            managed_msi::create_msi_cleanup,
+            managed_msi::latest_msi_cleanup,
+            managed_msi::approve_msi_cleanup,
+            managed_msi::execute_msi_cleanup,
+            managed_msi::close_msi_cleanup,
+            managed_msi::release_managed_msi,
             inspect_portable_zip,
             install_portable_zip,
             list_portable_installations,
@@ -103,6 +105,20 @@ pub fn run() {
         ])
         .run(tauri::generate_context!())
         .expect("failed to run Casklet desktop");
+}
+
+fn initialize_service(app: &mut tauri::App, service: Result<Service, String>) {
+    match service {
+        Ok(service) => {
+            app.manage(service);
+        }
+        Err(problem) => {
+            app.dialog().message(format!("Casklet could not open its local data. Reopen newer data with the matching Casklet version, or restore a verified database backup. Resource files have not been removed.\n\nDetails: {problem}"))
+                        .title("Casklet cannot open your data")
+                        .kind(tauri_plugin_dialog::MessageDialogKind::Error).blocking_show();
+            app.handle().exit(1);
+        }
+    }
 }
 
 type Service = casklet_application::CaskService<
@@ -238,15 +254,21 @@ fn cask_removal_status(
 }
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
-fn remove_cask(
+async fn remove_cask(
     app: tauri::AppHandle,
     service: tauri::State<'_, Service>,
     request: casklet_contracts::RemoveCask,
-) -> Result<(), casklet_contracts::ApiError> {
+) -> Result<Option<String>, casklet_contracts::ApiError> {
     use tauri::Emitter;
-    service.remove_cask(&request, "desktop")?;
+    let id = request.id.clone();
+    let service = service.inner().clone();
+    let warning =
+        tauri::async_runtime::spawn_blocking(move || service.remove_cask(&request, "desktop"))
+            .await
+            .map_err(|e| worker_error(&e))??;
+    let _ = app.emit("casks.removed", &id);
     let _ = app.emit("casks.changed", ());
-    Ok(())
+    Ok(warning)
 }
 
 #[tauri::command]
@@ -993,7 +1015,6 @@ fn removal_capability() -> bool {
     cfg!(any(feature = "reviewed-removal", feature = "alpha-cleanup"))
 }
 
-#[cfg(not(feature = "reviewed-removal"))]
 fn removal_review_pending() -> casklet_contracts::ApiError {
     casklet_contracts::ApiError {
         version: casklet_contracts::CONTRACT_VERSION,

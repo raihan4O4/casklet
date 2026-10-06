@@ -24,17 +24,27 @@
     WingetUninstallPlanView,
     WingetOperationView,
     WingetSearchResult,
-    InstallerInspection,
     InstallerArtifactView,
+    InstallerInspection,
     InstallerOperationView,
     DatabaseBackupView,
   } from "../contracts/generated/casklet";
   import { CONTRACT_VERSION } from "../contracts/generated/casklet";
+  import MsiCleanup from "./MsiCleanup.svelte";
+  import ApplicationLibrary from "./ApplicationLibrary.svelte";
+  import { applicationRows, type ApplicationRow } from "./applications";
   import CleanupReview from "./CleanupReview.svelte";
   import PopupMenu from "./PopupMenu.svelte";
   import { notify } from "./notifications";
   import Icon from "./Icon.svelte";
-  import { caskColor, activityDay, bytes, relativeTime, label } from "./format";
+  import {
+    caskColor,
+    activityDay,
+    bytes,
+    relativeTime,
+    label,
+    signatureLabel,
+  } from "./format";
   let {
     caskId = null,
     mode = "detail",
@@ -82,7 +92,13 @@
   let activeOperation = $state("");
   let operations: OperationView[] = $state([]);
   const recentOperations = $derived(
-    [...operations].sort((a, b) => b.updatedAtMs - a.updatedAtMs),
+    [...operations]
+      .filter(
+        (item) =>
+          !["COMPLETE", "CANCELLED", "FAILED"].includes(item.state) ||
+          activityHidden[item.id] !== item.updatedAtMs,
+      )
+      .sort((a, b) => b.updatedAtMs - a.updatedAtMs),
   );
   $effect(() => {
     if (error) {
@@ -102,6 +118,30 @@
   });
   let caskRemovalStatus: CaskRemovalStatus | null = $state(null);
   let removeConfirmation = $state(false);
+  let removeDialog = $state<HTMLDialogElement>(null!);
+  let activityHidden = $state<Record<string, number>>({});
+  const activityKey = () => `casklet.activity.hidden.${caskId ?? "all"}`;
+  function clearActivity() {
+    activityHidden = Object.fromEntries(
+      operations
+        .filter((item) =>
+          ["COMPLETE", "CANCELLED", "FAILED"].includes(item.state),
+        )
+        .map((item) => [item.id, item.updatedAtMs]),
+    );
+    try {
+      localStorage.setItem(activityKey(), JSON.stringify(activityHidden));
+    } catch {
+      error =
+        "Activity hidden for this session; your display preference could not be saved.";
+    }
+  }
+  async function confirmCaskRemoval() {
+    removeConfirmation = true;
+    await tick();
+    removeDialog.showModal();
+    removeDialog.querySelector<HTMLButtonElement>("button")?.focus();
+  }
   let removed = $state(false);
   let reviewedPlanHash = $state("");
   let executionConfirmed = $state(false);
@@ -113,6 +153,7 @@
   let permanentPlan = $state(false);
   let permanentConfirmation = $state(false);
   let removalBusy = $state(false);
+  let historyPlanId = $state("");
   let cleanupHistory: RemovalPlanView[] = $state([]);
   const cleanupPending = $derived(
     cleanupHistory.some((plan) =>
@@ -145,29 +186,43 @@
   let wingetOperation: WingetOperationView | null = $state(null);
   let wingetBusy = $state(false);
   let wingetConfirmation = $state("");
+  let installerArtifacts: InstallerArtifactView[] = $state([]);
+  let installerElevation = $state(false);
   let installerPath = $state("");
   let installerPreview: InstallerInspection | null = $state(null);
-  let installerItems: InstallerArtifactView[] = $state([]);
-  let installerOperations: InstallerOperationView[] = $state([]);
   let installerOperation: InstallerOperationView | null = $state(null);
   let installerOperationId = $state("");
-  let installerSelected: InstallerArtifactView | null = $state(null);
-  let installerAccept = $state(false);
-  let installerElevate = $state(false);
   let installerBusy = $state(false);
+  let installerKeepConfirmed = $state(false);
+  let installerRefreshRevision = 0;
   let fileResources = $derived(
     resources.filter(
       (resource) =>
-        !portableItems.some((item) => item.resourceId === resource.id),
+        !portableItems.some((item) => item.resourceId === resource.id) &&
+        !installerArtifacts.some((item) => item.resourceId === resource.id),
     ),
   );
-  let appCount = $derived(
-    new Set([
-      ...portableItems.map((item) => item.installationId),
-      ...associatedApps.map((item) => item.installationId),
-      ...wingetItems.map((item) => item.registryInstallationId),
-    ]).size,
+  const applications = $derived(
+    applicationRows(portableItems, associatedApps, wingetItems),
   );
+  const appCount = $derived(applications.length);
+  const installerNeedsAttention = $derived.by(() =>
+    ["RUNNING", "REVIEW_REQUIRED", "RECOVERY_REQUIRED"].includes(
+      installerOperation?.state ?? "",
+    ),
+  );
+  async function applicationAction(row: ApplicationRow) {
+    if (row.kind === "portable") {
+      await previewPortableRemoval(row.item);
+    } else if (row.kind === "winget") {
+      applicationWorkflow = "winget";
+      await planWingetUninstall(row.item);
+    } else if (row.item.removalPolicy === "MANAGED_MSI") {
+      await navigateCleanup();
+    } else {
+      await disassociateDetected(row.item);
+    }
+  }
   let portableBytes = $derived(
     resources
       .filter(
@@ -187,13 +242,15 @@
       (summary?.referencedLogicalBytes ?? 0),
   );
   async function inspectInstaller() {
+    if (installerBusy) return;
+    installerBusy = true;
+    installerPreview = null;
     try {
       const path = await open({
         multiple: false,
         filters: [{ name: "Windows installer", extensions: ["msi", "exe"] }],
       });
       if (typeof path !== "string") return;
-      installerBusy = true;
       installerPreview = await invoke<InstallerInspection>(
         "inspect_installer_artifact",
         { request: { version: CONTRACT_VERSION, path } },
@@ -206,100 +263,106 @@
       installerBusy = false;
     }
   }
-  async function registerInstaller() {
-    if (!selected || !installerPreview) return;
-    installerBusy = true;
-    try {
-      await invoke<InstallerArtifactView>("register_installer_artifact", {
-        request: {
-          version: CONTRACT_VERSION,
-          caskId: selected.id,
-          path: installerPath,
-          expectedSha256: installerPreview.sha256,
-        },
-      });
-      installerPreview = null;
-      await refreshInstallers();
-      await refreshResources();
-      progress = "Installer copy registered without launching it.";
-      error = "";
-    } catch (cause) {
-      error = message(cause);
-    } finally {
-      installerBusy = false;
-    }
-  }
   async function refreshInstallers() {
     if (!selected) return;
     const caskId = selected.id;
-    installerItems = await invoke<InstallerArtifactView[]>(
+    const artifacts = await invoke<InstallerArtifactView[]>(
       "list_installer_artifacts",
       { request: { version: CONTRACT_VERSION, caskId } },
     );
-    installerOperations = await invoke<InstallerOperationView[]>(
+    if (selected?.id !== caskId) return;
+    installerArtifacts = artifacts;
+    const operations = await invoke<InstallerOperationView[]>(
       "list_installer_operations",
-      { request: { version: CONTRACT_VERSION, caskId } },
+      {
+        request: { version: CONTRACT_VERSION, caskId },
+      },
     );
+    if (selected?.id !== caskId) return;
+    const pending = operations.find((operation) =>
+      ["RUNNING", "REVIEW_REQUIRED", "RECOVERY_REQUIRED"].includes(
+        operation.state,
+      ),
+    );
+    if (pending && !installerBusy && !installerNeedsAttention) {
+      installerRefreshRevision += 1;
+      installerOperation = pending;
+      installerOperationId = pending.id;
+      installerKeepConfirmed = false;
+    }
   }
-  async function launchInstaller() {
-    if (!installerSelected || !installerAccept) return;
+  async function installApplication() {
+    if (!selected || !installerPreview || installerBusy) return;
+    const caskId = selected.id;
     installerBusy = true;
+    installerOperation = null;
+    installerOperationId = "";
+    error = "";
     try {
-      installerOperation = await invoke<InstallerOperationView>(
-        "launch_installer_artifact",
+      const result = await invoke<InstallerOperationView>(
+        "install_application",
         {
           request: {
             version: CONTRACT_VERSION,
-            artifactId: installerSelected.id,
-            expectedSha256: installerSelected.inspection.sha256,
+            caskId,
+            path: installerPath,
+            expectedSha256: installerPreview.sha256,
             acceptExecutionRisk: true,
-            allowElevation: installerElevate,
+            allowElevation: installerElevation,
           },
         },
       );
-      installerOperationId = installerOperation.id;
+      if (selected?.id !== caskId) return;
+      installerRefreshRevision += 1;
+      installerOperation = result;
+      installerKeepConfirmed = false;
+      installerOperationId = result.id;
+      installerPreview = null;
+      await refreshResources();
       await refreshInstallers();
-      progress =
-        "Installer launch finished. Review observed candidates; none is owned automatically.";
-      error = "";
+      progress = result.confirmedInstallationId
+        ? "Application added to this Cask."
+        : "Installer finished. Check its result below.";
     } catch (cause) {
       error = message(cause);
-      await refreshInstallers().catch(() => {});
+      if (selected?.id === caskId) {
+        await refreshInstallerOperation().catch(() => {});
+        await refreshResources().catch(() => {});
+      }
     } finally {
       installerBusy = false;
-      installerAccept = false;
-      if (installerOperationId) void refreshInstallerOperation();
     }
+  }
+  function installerStatus(operation: InstallerOperationView) {
+    if (operation.state === "RUNNING")
+      return "Installing… Finish the installer and close any apps it opened.";
+    if (operation.confirmedInstallationId)
+      return "Application added to this Cask.";
+    if (operation.errorCode === "REBOOT_REQUIRED")
+      return "Restart Windows to finish installation. Casklet could not yet verify the application.";
+    if (operation.errorCode === "ELEVATION_DECLINED")
+      return "Installation cancelled. Windows permission was declined.";
+    if (operation.errorCode?.includes("CANCELLED"))
+      return "Installation cancelled. Some changes may remain.";
+    if (operation.state === "CLOSED_PRESERVED")
+      return "Installed changes have been kept. Casklet could not identify one matching application; no application was claimed.";
+    return "Installation could not be confirmed. Check the Windows installer. If it has finished, you can keep its changes below.";
   }
   async function refreshInstallerOperation() {
     if (installerOperationId) {
+      const operationId = installerOperationId;
+      const revision = ++installerRefreshRevision;
       const result = await invoke<InstallerOperationView>(
         "get_installer_operation",
-        { request: { version: CONTRACT_VERSION, id: installerOperationId } },
+        { request: { version: CONTRACT_VERSION, id: operationId } },
       );
-      if (result.caskId === selected?.id) installerOperation = result;
-    }
-  }
-  async function confirmInstallerCandidate(id: string) {
-    if (!installerOperation) return;
-    try {
-      installerOperation = await invoke<InstallerOperationView>(
-        "confirm_installer_candidate",
-        {
-          request: {
-            version: CONTRACT_VERSION,
-            operationId: installerOperation.id,
-            installationId: id,
-          },
-        },
-      );
-      await refreshAssociated();
-      await refreshInstallers();
-      progress =
-        "Candidate associated as a reference. Casklet did not claim installation ownership.";
-      error = "";
-    } catch (cause) {
-      error = message(cause);
+      if (
+        revision === installerRefreshRevision &&
+        operationId === installerOperationId &&
+        result.caskId === selected?.id
+      )
+        installerOperation = result;
+      installerKeepConfirmed = false;
     }
   }
   async function cancelInstaller() {
@@ -314,25 +377,29 @@
     }
   }
   async function closeInstaller() {
-    if (!installerOperation) return;
+    if (!installerOperation || installerBusy || !installerKeepConfirmed) return;
+    installerBusy = true;
     try {
       await invoke("close_installer_operation", {
         request: { version: CONTRACT_VERSION, id: installerOperation.id },
       });
       await refreshInstallerOperation();
       await refreshInstallers();
-      progress = "Installer outcome preserved for manual inspection.";
+      installerKeepConfirmed = false;
+      progress =
+        "Installed software has been kept. The installer will not run again.";
     } catch (cause) {
       error = message(cause);
+    } finally {
+      installerBusy = false;
     }
   }
   function resetInstallerReview() {
+    installerRefreshRevision += 1;
     installerPreview = null;
-    installerSelected = null;
-    installerAccept = false;
-    installerElevate = false;
     installerOperation = null;
     installerOperationId = "";
+    installerKeepConfirmed = false;
   }
   async function searchWinget() {
     wingetBusy = true;
@@ -741,6 +808,7 @@
       return;
     }
     removalBusy = true;
+    historyPlanId = "";
     const previous = removalPlan?.id;
     try {
       removalPlan = await invoke<RemovalPlanView>("create_removal_plan", {
@@ -773,7 +841,7 @@
     if (!selected || !removeConfirmation || metadataBusy) return;
     metadataBusy = true;
     try {
-      await invoke("remove_cask", {
+      const storageWarning = await invoke<string | null>("remove_cask", {
         request: {
           version: CONTRACT_VERSION,
           id: selected.id,
@@ -781,10 +849,13 @@
           confirm: true,
         },
       });
+      removeDialog?.close();
+      removeConfirmation = false;
       removed = true;
       selected = null;
       removalPlan = null;
       progress = "Cask permanently removed.";
+      if (storageWarning) notify(storageWarning, "info");
     } catch (cause) {
       error = message(cause);
       await refreshResources();
@@ -1048,6 +1119,7 @@
     }
   }
   async function loadCleanupPlan(plan: RemovalPlanView) {
+    historyPlanId = plan.id;
     await navigateCleanup(
       plan.scope === "RESOURCES"
         ? plan.items.map((item) => item.resourceId)
@@ -1085,10 +1157,7 @@
     await refreshWinget().catch(() => {
       wingetItems = [];
     });
-    await refreshInstallers().catch(() => {
-      installerItems = [];
-      installerOperations = [];
-    });
+    await refreshInstallers().catch(() => {});
     await refreshAssociated().catch(() => {
       associatedApps = [];
     });
@@ -1201,6 +1270,24 @@
     }
   }
   onMount(() => {
+    try {
+      const saved: unknown = JSON.parse(
+        localStorage.getItem(activityKey()) ?? "{}",
+      );
+      activityHidden =
+        saved && typeof saved === "object" && !Array.isArray(saved)
+          ? Object.fromEntries(
+              Object.entries(saved).filter(
+                ([, value]) =>
+                  typeof value === "number" &&
+                  Number.isFinite(value) &&
+                  value >= 0,
+              ),
+            )
+          : {};
+    } catch {
+      activityHidden = {};
+    }
     void initialize();
     void invoke<boolean>("removal_capability")
       .then((enabled) => {
@@ -1483,7 +1570,8 @@
           >
         </div>
       </div>
-      <section class="information-panel" aria-label="Cask information">
+      <details class="information-panel" aria-label="Cask information">
+        <summary>Details</summary>
         <div class="info-row">
           <Icon name="folder" /><span>Storage Location</span><span
             class="truncate path"
@@ -1506,12 +1594,7 @@
             >{relativeTime(selected.updatedAtMs)}</span
           >
         </div>
-        <div class="info-row">
-          <Icon name="storage" /><span>Size on Disk</span><span
-            >{bytes(summary?.physicalBytes)}</span
-          >
-        </div>
-      </section>
+      </details>
     {/if}
     {#if mode === "activity" || (selected && detailTab === "activity")}
       <details class="activity-tools">
@@ -1540,10 +1623,24 @@
         </div>
       </details>
       <section id="operations" aria-label="Operation center">
-        <h2>Activity</h2>
+        <div class="section-heading">
+          <h2>Activity</h2>
+          <button
+            class="secondary-button"
+            type="button"
+            onclick={clearActivity}
+            disabled={!recentOperations.some((item) =>
+              ["COMPLETE", "CANCELLED", "FAILED"].includes(item.state),
+            )}>Clear history</button
+          >
+        </div>
+        <p class="footnote">
+          Clears completed activity from this view. Ongoing work and recovery
+          records remain available.
+        </p>
         {#if recentOperations.length === 0}<div class="empty-state compact">
             <Icon name="activity" size={24} />
-            <h3>No activity yet</h3>
+            <h3>No recent activity</h3>
             <p>Resource operations and updates will appear here.</p>
           </div>{:else}<ul class="activity-list">
             {#each recentOperations as operation, index (operation.id)}
@@ -1686,546 +1783,429 @@
       {/if}
     {/if}
     {#if selected && detailTab === "apps"}
-      <div class="section-heading">
-        <h2>Associated applications</h2>
-        <span class="count">{appCount}</span>
-      </div>
-      <p class="intro">
-        Installations belong to applications. An association records their
-        relationship to this Cask.
-      </p>
-      {#if appCount === 0}<div class="empty-state compact">
-          <Icon name="package" size={28} />
-          <h3>No applications yet</h3>
-          <p>Add a portable app or associate an existing installation.</p>
-        </div>{/if}
-      <ul class="application-list">
-        {#each portableItems as item (item.installationId)}<li>
-            <Icon name="package" />
-            <div class="item-text">
-              <strong title={item.applicationName}
-                >{item.applicationName}</strong
-              ><span
-                >{item.applicationVersion ?? "Version not recorded"} · Managed portable
-                installation</span
-              >
-            </div>
+      <ApplicationLibrary
+        rows={applications}
+        workflow={applicationWorkflow}
+        busy={installerBusy || portableBusy || wingetBusy || installedBusy}
+        needsAttention={installerNeedsAttention}
+        installationRunning={installerOperation?.state === "RUNNING"}
+        onWorkflow={(value) => {
+          applicationWorkflow = value;
+        }}
+        onAction={(row) => void applicationAction(row)}
+        onLaunch={(row) => {
+          if (row.kind === "portable") void launchPortable(row.item);
+        }}
+      >
+        {#if applicationWorkflow === "portable"}
+          <section aria-label="Portable applications">
+            <h3>Portable applications</h3>
+            <p>
+              Review a ZIP before installing it. Portable applications are not
+              sandboxed; launch only software you trust.
+            </p>
             <button
               type="button"
-              disabled={!item.canLaunch || portableBusy}
-              onclick={() => void launchPortable(item)}>Launch</button
-            ><button
-              class="icon-button"
-              aria-label={`Preview removal of ${item.applicationName}`}
-              type="button"
-              disabled={!item.canPlanRemoval}
-              onclick={() => void previewPortableRemoval(item)}
-              ><Icon name="trash" size={16} /></button
+              disabled={portableBusy}
+              onclick={() => void inspectPortableArchive()}
+              >Inspect portable ZIP</button
             >
-          </li>{/each}
-        {#each associatedApps as item (item.installationId)}<li>
-            <Icon name="link" />
-            <div class="item-text">
-              <strong title={item.name}>{item.name}</strong><span
-                >{item.displayVersion ?? "Version not recorded"} · Associated · {label(
-                  item.state,
-                )}</span
-              ><small title={item.installationId}
-                >Installation: {item.installationId}</small
-              >
-            </div>
-            <button
-              class="icon-button"
-              type="button"
-              aria-label={`Detach ${item.name}`}
-              disabled={installedBusy}
-              onclick={() => void disassociateDetected(item)}
-              ><Icon name="close" size={16} /></button
-            >
-          </li>{/each}
-        {#each wingetItems.filter((item) => !associatedApps.some((app) => app.installationId === item.registryInstallationId)) as item (item.id)}<li
-          >
-            <Icon name="package" />
-            <div class="item-text">
-              <strong>{item.packageId}</strong><span
-                >{item.packageVersion} · WinGet · {label(item.state)}</span
-              >
-            </div>
-            <button
-              type="button"
-              disabled={!item.canPlanUninstall}
-              onclick={() => {
-                applicationWorkflow = "winget";
-                void planWingetUninstall(item);
-              }}>Review</button
-            >
-          </li>{/each}
-      </ul>
-      <details class="workflow-picker">
-        <summary
-          ><Icon name="plus" /> Add an application <Icon
-            name="down"
-            size={14}
-          /></summary
-        >
-        <div class="workflow-options">
-          {#each [{ key: "existing", title: "Associate existing app", description: "Reference a Windows installation" }, { key: "portable", title: "Install portable ZIP", description: "Review and install in managed storage" }, { key: "winget", title: "Install with WinGet", description: "Search and review a package" }, { key: "installer", title: "Register MSI / EXE", description: "Inspect an installer before launch" }] as workflow (workflow.key)}<button
-              type="button"
-              onclick={() => {
-                applicationWorkflow =
-                  workflow.key as typeof applicationWorkflow;
-              }}
-              ><strong>{workflow.title}</strong><span
-                >{workflow.description}</span
-              ></button
-            >{/each}
-        </div>
-      </details>
-      {#if applicationWorkflow}<div class="section-heading workflow-heading">
-          <span>Application workflow</span><button
-            class="text-button"
-            type="button"
-            onclick={() => {
-              applicationWorkflow = null;
-            }}>Close</button
-          >
-        </div>{/if}
-      {#if applicationWorkflow === "portable"}
-        <section aria-label="Portable applications">
-          <h3>Portable applications</h3>
-          <p>
-            Review a ZIP before installing it. Portable applications are not
-            sandboxed; launch only software you trust.
-          </p>
-          <button
-            type="button"
-            disabled={portableBusy}
-            onclick={() => void inspectPortableArchive()}
-            >Inspect portable ZIP</button
-          >
-          {#if portablePreview}
-            <div class="review">
-              <p><strong>Archive:</strong> {portablePath}</p>
-              <p><strong>SHA-256:</strong> {portablePreview.archiveSha256}</p>
-              <p>
-                {portablePreview.fileCount} files, {portablePreview.expandedBytes}
-                expanded bytes
-              </p>
-              <label for="portable-name">Application name</label><input
-                id="portable-name"
-                bind:value={portableName}
-                maxlength="120"
-              />
-              <label for="portable-version">Version (optional)</label><input
-                id="portable-version"
-                bind:value={portableVersion}
-                maxlength="80"
-              />
-              <label for="portable-executable">Executable to launch</label>
-              <select id="portable-executable" bind:value={portableExe}>
-                <option value="">Choose executable</option>
-                {#each portablePreview.executablePaths as executable (executable)}<option
-                    value={executable}>{executable}</option
-                  >{/each}
-              </select>
-              <button
-                type="button"
-                disabled={portableBusy || !portableExe || !portableName.trim()}
-                onclick={() => void installPortableArchive()}
-                >Install into this Cask</button
-              >
-            </div>
-          {/if}
-          {#if portableItems.length}
-            <ul>
-              {#each portableItems as item (item.installationId)}
-                <li>
-                  {item.applicationName}
-                  {item.applicationVersion ?? ""} ({item.state}) — {item.executableRelativePath}
-                  <button
-                    type="button"
-                    disabled={!item.canLaunch}
-                    onclick={() => void launchPortable(item)}>Launch</button
-                  >
-                  <button
-                    type="button"
-                    disabled={!item.canPlanRemoval}
-                    onclick={() => void previewPortableRemoval(item)}
-                    >Preview removal</button
-                  >
-                </li>
-              {/each}
-            </ul>
-          {/if}
-        </section>
-      {/if}
-      {#if applicationWorkflow === "winget"}
-        <section aria-label="WinGet packages">
-          <h3>WinGet packages</h3>
-          <p>
-            WinGet may install for your user or the whole machine. Casklet
-            records ownership only when the package and one new installed
-            instance both verify.
-          </p>
-          {#if wingetCapabilities?.search}
-            <label for="winget-search">Search WinGet</label><input
-              id="winget-search"
-              bind:value={wingetQuery}
-              maxlength="120"
-            />
-            <button
-              type="button"
-              disabled={wingetBusy || !wingetQuery.trim()}
-              onclick={() => void searchWinget()}>Search WinGet</button
-            >
-            {#if wingetSearchText}<pre>{wingetSearchText}</pre>{/if}
-            <label for="winget-id">Exact package ID</label><input
-              id="winget-id"
-              bind:value={wingetPackageId}
-              maxlength="120"
-            />
-            <label for="winget-version">Exact version</label><input
-              id="winget-version"
-              bind:value={wingetVersion}
-              maxlength="80"
-            />
-            <button
-              type="button"
-              disabled={wingetBusy || !wingetPackageId || !wingetVersion}
-              onclick={() => void reviewWinget()}>Review package</button
-            >
-            {#if wingetReview}
+            {#if portablePreview}
               <div class="review">
+                <p><strong>Archive:</strong> {portablePath}</p>
+                <p><strong>SHA-256:</strong> {portablePreview.archiveSha256}</p>
                 <p>
-                  {wingetReview.packageId}
-                  {wingetReview.packageVersion} from {wingetReview.source}
+                  {portablePreview.fileCount} files, {portablePreview.expandedBytes}
+                  expanded bytes
                 </p>
-                <pre>{wingetReview.details}</pre>
-                <p>{wingetReview.warnings.join(" ")}</p>
-                <label
-                  ><input type="checkbox" bind:checked={wingetAccept} /> I reviewed
-                  this package and accept its package agreements</label
-                >
+                <label for="portable-name">Application name</label><input
+                  id="portable-name"
+                  bind:value={portableName}
+                  maxlength="120"
+                />
+                <label for="portable-version">Version (optional)</label><input
+                  id="portable-version"
+                  bind:value={portableVersion}
+                  maxlength="80"
+                />
+                <label for="portable-executable">Executable to launch</label>
+                <select id="portable-executable" bind:value={portableExe}>
+                  <option value="">Choose executable</option>
+                  {#each portablePreview.executablePaths as executable (executable)}<option
+                      value={executable}>{executable}</option
+                    >{/each}
+                </select>
                 <button
                   type="button"
-                  disabled={wingetBusy || !wingetAccept}
-                  onclick={() => void installWinget()}
-                  >Install for this Cask</button
+                  disabled={portableBusy ||
+                    !portableExe ||
+                    !portableName.trim()}
+                  onclick={() => void installPortableArchive()}
+                  >Install into this Cask</button
                 >
               </div>
             {/if}
-          {:else}<p>
-              {wingetCapabilities?.reason ??
-                "WinGet capability is being checked."}
-            </p>{/if}
-          {#if wingetOperation}
+            {#if portableItems.length}
+              <ul>
+                {#each portableItems as item (item.installationId)}
+                  <li>
+                    {item.applicationName}
+                    {item.applicationVersion ?? ""} ({item.state}) — {item.executableRelativePath}
+                    <button
+                      type="button"
+                      disabled={!item.canLaunch}
+                      onclick={() => void launchPortable(item)}>Launch</button
+                    >
+                    <button
+                      type="button"
+                      disabled={!item.canPlanRemoval}
+                      onclick={() => void previewPortableRemoval(item)}
+                      >Preview removal</button
+                    >
+                  </li>
+                {/each}
+              </ul>
+            {/if}
+          </section>
+        {/if}
+        {#if applicationWorkflow === "winget"}
+          <section aria-label="WinGet packages">
+            <h3>WinGet packages</h3>
             <p>
-              Operation {wingetOperation.id}: {wingetOperation.step} ({wingetOperation.state}){wingetOperation.errorCode
-                ? ` — ${wingetOperation.errorCode}`
-                : ""}
+              WinGet may install for your user or the whole machine. Casklet
+              records ownership only when the package and one new installed
+              instance both verify.
             </p>
-            {#if wingetOperation.state === "RUNNING"}<button
+            {#if wingetCapabilities?.search}
+              <label for="winget-search">Search WinGet</label><input
+                id="winget-search"
+                bind:value={wingetQuery}
+                maxlength="120"
+              />
+              <button
                 type="button"
-                disabled={wingetOperation.cancellationRequested}
-                onclick={() => void cancelWinget()}
-                >Cancel WinGet operation</button
-              >{/if}
-            {#if wingetOperation.state === "RECOVERY_REQUIRED"}<button
+                disabled={wingetBusy || !wingetQuery.trim()}
+                onclick={() => void searchWinget()}>Search WinGet</button
+              >
+              {#if wingetSearchText}<pre>{wingetSearchText}</pre>{/if}
+              <label for="winget-id">Exact package ID</label><input
+                id="winget-id"
+                bind:value={wingetPackageId}
+                maxlength="120"
+              />
+              <label for="winget-version">Exact version</label><input
+                id="winget-version"
+                bind:value={wingetVersion}
+                maxlength="80"
+              />
+              <button
                 type="button"
-                onclick={() => void closeWinget()}
-                >Keep outcome uncertain and close</button
-              >{/if}
-          {/if}
-          {#if wingetItems.length}<h4>WinGet installations for this Cask</h4>
-            <ul>
-              {#each wingetItems as item (item.id)}
-                <li>
-                  {item.packageId}
-                  {item.packageVersion} ({item.state}) — {item.registryInstallationId}
-                  <p>{item.warnings.join(" ")}</p>
+                disabled={wingetBusy || !wingetPackageId || !wingetVersion}
+                onclick={() => void reviewWinget()}>Review package</button
+              >
+              {#if wingetReview}
+                <div class="review">
+                  <p>
+                    {wingetReview.packageId}
+                    {wingetReview.packageVersion} from {wingetReview.source}
+                  </p>
+                  <pre>{wingetReview.details}</pre>
+                  <p>{wingetReview.warnings.join(" ")}</p>
+                  <label
+                    ><input type="checkbox" bind:checked={wingetAccept} /> I reviewed
+                    this package and accept its package agreements</label
+                  >
                   <button
                     type="button"
-                    disabled={wingetBusy || !item.canPlanUninstall}
-                    onclick={() => void planWingetUninstall(item)}
-                    >Preview uninstall</button
+                    disabled={wingetBusy || !wingetAccept}
+                    onclick={() => void installWinget()}
+                    >Install for this Cask</button
                   >
-                </li>
-              {/each}
-            </ul>{/if}
-          {#if wingetPlan}
-            <div class="review">
-              <p>
-                Uninstall plan {wingetPlan.id}: {wingetPlan.packageId}
-                {wingetPlan.packageVersion}, {wingetPlan.state}. Expires {new Date(
-                  wingetPlan.expiresAtMs,
-                ).toLocaleString()}.
-              </p>
-              <p>{wingetPlan.warnings.join(" ")}</p>
-              {#if wingetPlan.state === "DRAFT"}<button
-                  type="button"
-                  onclick={() => void approveWingetUninstall()}
-                  >Approve exact plan</button
-                >{/if}
-              {#if wingetPlan.state === "APPROVED" && wingetCapabilities?.uninstall}
-                <label for="winget-confirm"
-                  >Enter plan ID to confirm uninstall</label
-                ><input id="winget-confirm" bind:value={wingetConfirmation} />
-                <button
-                  type="button"
-                  disabled={wingetBusy || wingetConfirmation !== wingetPlan.id}
-                  onclick={() => void executeWingetUninstall()}
-                  >Execute approved uninstall</button
-                >
+                </div>
               {/if}
-              {#if wingetPlan.state === "APPROVED" && !wingetCapabilities?.uninstall}<p
-                >
-                  Uninstall execution is pending independent removal review.
-                </p>{/if}
-            </div>
-          {/if}
-        </section>
-      {/if}
-      {#if applicationWorkflow === "installer"}
-        <section aria-label="Installer artifacts">
-          <h3>MSI and EXE installers</h3>
-          <p>
-            Register a reviewed copy before launching it. Installers are not
-            sandboxed or certified by Casklet. They may change your user account
-            or the whole machine; cleanup is not guaranteed.
-          </p>
-          <button
-            type="button"
-            disabled={installerBusy}
-            onclick={() => void inspectInstaller()}>Inspect MSI or EXE</button
-          >
-          {#if installerPreview}<div class="review">
-              <p><strong>Source:</strong> {installerPath}</p>
+            {:else}<p>
+                {wingetCapabilities?.reason ??
+                  "WinGet capability is being checked."}
+              </p>{/if}
+            {#if wingetOperation}
               <p>
-                <strong>Format:</strong>
-                {installerPreview.format}; <strong>SHA-256:</strong>
-                {installerPreview.sha256}
-              </p>
-              <p>
-                Signature: {installerPreview.signatureStatus}{installerPreview.signatureDetail
-                  ? ` — ${installerPreview.signatureDetail}`
-                  : ""}; signer: {installerPreview.signer ?? "Unavailable"}.
-                Signature evidence does not establish safety.
-              </p>
-              <p>
-                Product: {installerPreview.productName ?? "Unknown"}; publisher: {installerPreview.publisher ??
-                  "Unknown"}; version: {installerPreview.productVersion ??
-                  "Unknown"}; MSI ProductCode: {installerPreview.productCode ??
-                  "Unavailable"}.
-              </p>
-              <p>{installerPreview.warnings.join(" ")}</p>
-              <button
-                type="button"
-                disabled={installerBusy}
-                onclick={() => void registerInstaller()}
-                >Copy and register for this Cask</button
-              >
-            </div>{/if}
-          {#if installerItems.length}<h4>Registered artifacts</h4>
-            <ul>
-              {#each installerItems as item (item.id)}<li>
-                  {item.inspection.productName ?? item.inspection.path} ({item
-                    .inspection.format}) — {item.inspection.signatureStatus}
-                  <button
-                    type="button"
-                    disabled={installerBusy}
-                    onclick={() => {
-                      installerSelected = item;
-                      installerAccept = false;
-                      installerElevate = false;
-                    }}>Review launch</button
-                  >
-                </li>{/each}
-            </ul>{/if}
-          {#if installerSelected}<div class="review">
-              <h4>Launch {installerSelected.inspection.format}</h4>
-              <p>Managed copy: {installerSelected.inspection.path}</p>
-              <p>Original source: {installerSelected.sourcePath}</p>
-              <p>SHA-256: {installerSelected.inspection.sha256}</p>
-              <p>
-                Signer: {installerSelected.inspection.signer ?? "Unavailable"}
-                ({installerSelected.inspection
-                  .signatureStatus}{installerSelected.inspection.signatureDetail
-                  ? ` — ${installerSelected.inspection.signatureDetail}`
-                  : ""}). Requested scope may be user or system; the installer
-                and Windows decide.
-              </p>
-              <p>{installerSelected.inspection.warnings.join(" ")}</p>
-              {#if installerSelected.inspection.format === "EXE"}<label
-                  ><input type="checkbox" bind:checked={installerElevate} /> Request
-                  Windows UAC elevation for this installer process</label
-                >{/if}
-              <label
-                ><input type="checkbox" bind:checked={installerAccept} /> I reviewed
-                this exact installer and approve launching it</label
-              >
-              <button
-                type="button"
-                disabled={installerBusy || !installerAccept}
-                onclick={() => void launchInstaller()}
-                >Launch selected installer</button
-              >
-            </div>{/if}
-          {#if installerOperation}<div class="review">
-              <p>
-                Operation {installerOperation.id}: {installerOperation.state}{installerOperation.errorCode
-                  ? ` — ${installerOperation.errorCode}`
-                  : ""}{installerOperation.exitCode !== null
-                  ? ` (exit ${installerOperation.exitCode})`
+                Operation {wingetOperation.id}: {wingetOperation.step} ({wingetOperation.state}){wingetOperation.errorCode
+                  ? ` — ${wingetOperation.errorCode}`
                   : ""}
               </p>
-              <p>{installerOperation.warnings.join(" ")}</p>
+              {#if wingetOperation.state === "RUNNING"}<button
+                  type="button"
+                  disabled={wingetOperation.cancellationRequested}
+                  onclick={() => void cancelWinget()}
+                  >Cancel WinGet operation</button
+                >{/if}
+              {#if wingetOperation.state === "RECOVERY_REQUIRED"}<button
+                  type="button"
+                  onclick={() => void closeWinget()}
+                  >Keep outcome uncertain and close</button
+                >{/if}
+            {/if}
+            {#if wingetItems.length}<h4>WinGet installations for this Cask</h4>
+              <ul>
+                {#each wingetItems as item (item.id)}
+                  <li>
+                    {item.packageId}
+                    {item.packageVersion} ({item.state}) — {item.registryInstallationId}
+                    <p>{item.warnings.join(" ")}</p>
+                    <button
+                      type="button"
+                      disabled={wingetBusy || !item.canPlanUninstall}
+                      onclick={() => void planWingetUninstall(item)}
+                      >Preview uninstall</button
+                    >
+                  </li>
+                {/each}
+              </ul>{/if}
+            {#if wingetPlan}
+              <div class="review">
+                <p>
+                  Uninstall plan {wingetPlan.id}: {wingetPlan.packageId}
+                  {wingetPlan.packageVersion}, {wingetPlan.state}. Expires {new Date(
+                    wingetPlan.expiresAtMs,
+                  ).toLocaleString()}.
+                </p>
+                <p>{wingetPlan.warnings.join(" ")}</p>
+                {#if wingetPlan.state === "DRAFT"}<button
+                    type="button"
+                    onclick={() => void approveWingetUninstall()}
+                    >Approve exact plan</button
+                  >{/if}
+                {#if wingetPlan.state === "APPROVED" && wingetCapabilities?.uninstall}
+                  <label for="winget-confirm"
+                    >Enter plan ID to confirm uninstall</label
+                  ><input id="winget-confirm" bind:value={wingetConfirmation} />
+                  <button
+                    type="button"
+                    disabled={wingetBusy ||
+                      wingetConfirmation !== wingetPlan.id}
+                    onclick={() => void executeWingetUninstall()}
+                    >Execute approved uninstall</button
+                  >
+                {/if}
+                {#if wingetPlan.state === "APPROVED" && !wingetCapabilities?.uninstall}<p
+                  >
+                    Uninstall execution is pending independent removal review.
+                  </p>{/if}
+              </div>
+            {/if}
+          </section>
+        {/if}
+        {#if applicationWorkflow === "installer"}
+          <section aria-label="Install Application" aria-busy={installerBusy}>
+            <p>
+              Choose an installer. Windows will guide you through installation.
+            </p>
+            <button
+              type="button"
+              disabled={installerBusy || installerNeedsAttention}
+              onclick={() => void inspectInstaller()}
+            >
+              {installerBusy
+                ? "Working…"
+                : installerPreview
+                  ? "Choose another installer"
+                  : "Select MSI or EXE"}
+            </button>
+            {#if installerPreview && !installerNeedsAttention}
+              <div class="review installer-selection">
+                <div class="application-icon">
+                  <Icon name="download" size={22} />
+                </div>
+                <div>
+                  <h4>
+                    {installerPreview.productName ??
+                      installerPath.split(/[\\/]/).pop() ??
+                      "Selected installer"}
+                  </h4>
+                  <p>
+                    {signatureLabel(installerPreview.signatureStatus)} · Only install
+                    software you trust.
+                  </p>
+                  <p>
+                    {installerPreview.format === "MSI" &&
+                    installerPreview.productCode
+                      ? "Verified new applications can be removed through Cask cleanup."
+                      : "Automatic uninstall is not supported. Remove installed software through Windows."}
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  class="primary"
+                  disabled={installerBusy}
+                  onclick={() => void installApplication()}
+                  >{installerBusy ? "Installing…" : "Install"}</button
+                >
+              </div>
+              <label class="check"
+                ><input
+                  type="checkbox"
+                  bind:checked={installerElevation}
+                  disabled={installerBusy}
+                /> Request administrator privileges</label
+              >
+            {/if}
+            {#if installerOperation}
+              <div class="installation-result" role="status">
+                <Icon
+                  name={installerOperation.confirmedInstallationId
+                    ? "check"
+                    : installerOperation.state === "RUNNING"
+                      ? "clock"
+                      : "info"}
+                  size={20}
+                />
+                <div>
+                  <p>{installerStatus(installerOperation)}</p>
+                  {#if installerOperation.confirmedInstallationId}<p
+                      class="muted"
+                    >
+                      {associatedApps.some(
+                        (item) =>
+                          item.installationId ===
+                            installerOperation?.confirmedInstallationId &&
+                          item.removalPolicy === "MANAGED_MSI",
+                      )
+                        ? "Included in approved Cask cleanup."
+                        : "Remove this software through Windows when you no longer need it."}
+                    </p>{/if}
+                </div>
+              </div>
               {#if installerOperation.state === "RUNNING"}<button
                   type="button"
                   onclick={() => void cancelInstaller()}
-                  >Request cancellation</button
-                >{/if}
-              {#if installerOperation.candidates.length}<h4>
-                  New registrations to review
-                </h4>
-                <ul>
-                  {#each installerOperation.candidates as candidate (candidate.installationId)}<li
-                    >
-                      {candidate.name} — {candidate.publisher ??
-                        "Unknown publisher"} ({candidate.scope}; {candidate.confidence}
-                      evidence)
-                      <p>{candidate.evidence.join("; ")}</p>
-                      {#if installerOperation.state === "REVIEW_REQUIRED" || installerOperation.state === "RECOVERY_REQUIRED"}<button
-                          type="button"
-                          onclick={() =>
-                            void confirmInstallerCandidate(
-                              candidate.installationId,
-                            )}>Confirm reference association</button
-                        >{/if}
-                    </li>{/each}
-                </ul>{:else}<p>
-                  No new Windows registration was observed. No association or
-                  ownership was created.
-                </p>{/if}
-              {#if installerOperation.state === "REVIEW_REQUIRED" || installerOperation.state === "RECOVERY_REQUIRED"}<button
-                  type="button"
-                  onclick={() => void closeInstaller()}
-                  >Preserve outcome and close review</button
-                >{/if}
-            </div>{/if}
-          {#if installerOperations.length}<h4>Installer operation history</h4>
-            <ul>
-              {#each installerOperations as operation (operation.id)}<li>
-                  {operation.id}: {operation.state}<button
-                    type="button"
-                    onclick={() => {
-                      installerOperationId = operation.id;
-                      void refreshInstallerOperation();
-                    }}>Inspect</button
+                  >Cancel installation</button
+                >
+              {:else if installerNeedsAttention}
+                <div class="installer-attention-actions">
+                  <p>
+                    Keeping changes leaves software installed and never runs the
+                    installer again.
+                  </p>
+                  <label class="checkbox-label"
+                    ><input
+                      type="checkbox"
+                      bind:checked={installerKeepConfirmed}
+                      disabled={installerBusy}
+                    />The installer and any apps it opened have finished.</label
                   >
-                </li>{/each}
-            </ul>{/if}
-        </section>
-      {/if}
-      {#if applicationWorkflow === "existing"}
-        <section
-          class="application-picker"
-          aria-label="Existing Windows applications"
-        >
-          <div class="section-heading">
-            <h3>Associate existing application</h3>
-          </div>
-          <p>
-            Link an installation to this activity. Association does not grant
-            ownership or uninstall permission.
-          </p>
-          <form
-            class="picker-search"
-            onsubmit={(event) => {
-              event.preventDefault();
-              void searchInstalled();
-            }}
-          >
-            <label for="installed-search">Search installed applications</label>
-            <div class="picker-search-row">
-              <label class="search-field"
-                ><Icon name="search" size={16} /><input
-                  id="installed-search"
-                  bind:value={installedQuery}
-                  maxlength="120"
-                  placeholder="Application name or publisher…"
-                /></label
-              ><button class="primary-button" disabled={installedBusy}
-                >{installedBusy ? "Searching…" : "Search"}</button
-              >
-            </div>
-          </form>
-          <div class="picker-results-heading">
-            <span
-              >{installedSearched
-                ? `${detectedApps.length} ${detectedApps.length === 1 ? "installation" : "installations"} found`
-                : "Windows installation inventory"}</span
-            ><button
-              class="text-button"
-              type="button"
-              disabled={installedBusy}
-              onclick={() => void refreshInstalled()}
-              ><Icon name="refresh" size={14} />Refresh inventory</button
-            >
-          </div>
-          {#if installedBusy}<p class="loading" role="status">
-              Reading installed applications…
-            </p>{:else if detectedApps.length}
-            <ul class="application-list picker-results">
-              {#each detectedApps as item (item.installationId)}
-                <li>
-                  <Icon name="package" size={18} />
-                  <div class="item-text">
-                    <strong title={item.name}>{item.name}</strong><span
-                      >{item.publisher ?? "Unknown publisher"} · {item.displayVersion ??
-                        "Version not recorded"} · {label(item.scope)}</span
-                    >
-                    <details class="metadata-disclosure">
-                      <summary>Installation details</summary>
-                      <p class="mono">{item.sourceKey}</p>
-                      {#if item.installLocation}<p>
-                          {item.installLocation}
-                        </p>{/if}{#if item.ambiguousName}<p class="warning">
-                          Other registrations use the same name. Check the
-                          source before associating.
-                        </p>{/if}
-                    </details>
-                  </div>
                   <button
                     type="button"
-                    disabled={installedBusy ||
-                      associatedApps.some(
-                        (a) => a.installationId === item.installationId,
-                      )}
-                    onclick={() => void associateDetected(item)}
-                    >{associatedApps.some(
-                      (a) => a.installationId === item.installationId,
-                    )
-                      ? "Associated"
-                      : "Associate"}</button
+                    disabled={installerBusy || !installerKeepConfirmed}
+                    onclick={() => void closeInstaller()}
+                    >Keep installed changes</button
                   >
-                </li>
-              {/each}
-            </ul>
-          {:else}<div class="empty-state compact">
-              <Icon name="search" size={24} />
-              <h3>
-                {installedSearched
-                  ? "No matching applications"
-                  : "Find an application"}
-              </h3>
-              <p>
-                {installedSearched
-                  ? "Try a different name, or refresh the inventory."
-                  : "Search by name or publisher. Refresh to discover recent installations."}
-              </p>
-            </div>{/if}
-        </section>
-      {/if}
+                </div>
+              {/if}
+            {/if}
+          </section>
+        {/if}
+        {#if applicationWorkflow === "existing"}
+          <section
+            class="application-picker"
+            aria-label="Existing Windows applications"
+          >
+            <div class="section-heading">
+              <h3>Associate existing application</h3>
+            </div>
+            <p>
+              Link an installation to this activity. Association does not grant
+              ownership or uninstall permission.
+            </p>
+            <form
+              class="picker-search"
+              onsubmit={(event) => {
+                event.preventDefault();
+                void searchInstalled();
+              }}
+            >
+              <label for="installed-search">Search installed applications</label
+              >
+              <div class="picker-search-row">
+                <label class="search-field"
+                  ><Icon name="search" size={16} /><input
+                    id="installed-search"
+                    bind:value={installedQuery}
+                    maxlength="120"
+                    placeholder="Application name or publisher…"
+                  /></label
+                ><button class="primary-button" disabled={installedBusy}
+                  >{installedBusy ? "Searching…" : "Search"}</button
+                >
+              </div>
+            </form>
+            <div class="picker-results-heading">
+              <span
+                >{installedSearched
+                  ? `${detectedApps.length} ${detectedApps.length === 1 ? "installation" : "installations"} found`
+                  : "Windows installation inventory"}</span
+              ><button
+                class="text-button"
+                type="button"
+                disabled={installedBusy}
+                onclick={() => void refreshInstalled()}
+                ><Icon name="refresh" size={14} />Refresh inventory</button
+              >
+            </div>
+            {#if installedBusy}<p class="loading" role="status">
+                Reading installed applications…
+              </p>{:else if detectedApps.length}
+              <ul class="application-list picker-results">
+                {#each detectedApps as item (item.installationId)}
+                  <li>
+                    <Icon name="package" size={18} />
+                    <div class="item-text">
+                      <strong title={item.name}>{item.name}</strong><span
+                        >{item.publisher ?? "Unknown publisher"} · {item.displayVersion ??
+                          "Version not recorded"} · {label(item.scope)}</span
+                      >
+                      <details class="metadata-disclosure">
+                        <summary>Installation details</summary>
+                        <p class="mono">{item.sourceKey}</p>
+                        {#if item.installLocation}<p>
+                            {item.installLocation}
+                          </p>{/if}{#if item.ambiguousName}<p class="warning">
+                            Other registrations use the same name. Check the
+                            source before associating.
+                          </p>{/if}
+                      </details>
+                    </div>
+                    <button
+                      type="button"
+                      disabled={installedBusy ||
+                        associatedApps.some(
+                          (a) => a.installationId === item.installationId,
+                        )}
+                      onclick={() => void associateDetected(item)}
+                      >{associatedApps.some(
+                        (a) => a.installationId === item.installationId,
+                      )
+                        ? "Associated"
+                        : "Associate"}</button
+                    >
+                  </li>
+                {/each}
+              </ul>
+            {:else}<div class="empty-state compact">
+                <Icon name="search" size={24} />
+                <h3>
+                  {installedSearched
+                    ? "No matching applications"
+                    : "Find an application"}
+                </h3>
+                <p>
+                  {installedSearched
+                    ? "Try a different name, or refresh the inventory."
+                    : "Search by name or publisher. Refresh to discover recent installations."}
+                </p>
+              </div>{/if}
+          </section>
+        {/if}
+      </ApplicationLibrary>
     {/if}
     {#if selected && detailTab === "files"}
       {#if adding || pendingPath}
@@ -2254,13 +2234,6 @@
                 ><Icon name="file" size={16} />Add File</button
               ><button type="button" onclick={() => void pick(true)}
                 ><Icon name="folder" size={16} />Add Folder</button
-              ><button
-                class="text-button"
-                type="button"
-                aria-expanded={referencePicker}
-                onclick={() => {
-                  referencePicker = !referencePicker;
-                }}><Icon name="link" size={16} />Add Reference</button
               >
             </div>
             {#if referencePicker}<div class="reference-picker">
@@ -2498,16 +2471,21 @@
             }}><Icon name="back" size={16} /> Back to Overview</button
           >
         </div>
+        <MsiCleanup
+          caskId={selected.id}
+          enabled={removalEnabled}
+          hasManaged={associatedApps.some(
+            (item) => item.removalPolicy === "MANAGED_MSI",
+          )}
+          onChanged={refreshResources}
+        />
         {#if caskRemovalStatus?.canRemove}
           <p>
             This Cask has no remaining items or unfinished work. You can remove
             it permanently.
           </p>
-          <button
-            type="button"
-            onclick={() => {
-              removeConfirmation = true;
-            }}>Remove Cask</button
+          <button type="button" onclick={() => void confirmCaskRemoval()}
+            >Remove Cask</button
           >
         {:else}
           {#if !removalPlan}<p class="cleanup-intro">
@@ -2522,9 +2500,11 @@
                 build.</span
               >
             </p>{/if}
-          {#if (caskRemovalStatus?.applicationCount ?? 0) > 0}<p>
-              Application dependencies remain. Review their associations or
-              uninstall options before removing the Cask.
+          {#if (caskRemovalStatus?.applicationCount ?? 0) > associatedApps.filter((item) => item.removalPolicy === "MANAGED_MSI").length}<p
+            >
+              Associated or unsupported applications remain. Keep and detach
+              their references, or use their provider/Windows uninstall options
+              before removing the Cask.
             </p>
             <button
               type="button"
@@ -2597,7 +2577,10 @@
             <button
               type="button"
               onclick={() => void previewRemoval()}
-              disabled={removalBusy ||
+              disabled={associatedApps.some(
+                (item) => item.removalPolicy === "MANAGED_MSI",
+              ) ||
+                removalBusy ||
                 cleanupPending ||
                 selected.state !== "ACTIVE" ||
                 ["PARTIAL", "EXECUTING"].includes(removalPlan?.state ?? "")}
@@ -2608,7 +2591,7 @@
               before removing the Cask.
             </p>{/if}
         {/if}
-        {#if removalPlan}
+        {#if removalPlan && !historyPlanId}
           <CleanupReview
             plan={removalPlan}
             {removalEnabled}
@@ -2640,26 +2623,27 @@
                 )} · {plan.items.length} items</button
               >
             {/each}
+            {#if removalPlan && historyPlanId}
+              <CleanupReview
+                plan={removalPlan}
+                {removalEnabled}
+                {removalBusy}
+                {reviewedPlanHash}
+                bind:executionConfirmed
+                bind:permanentConfirmation
+                bind:preserveConfirmed
+                onReview={() => {
+                  reviewedPlanHash = removalPlan!.planHash;
+                  executionConfirmed = false;
+                  permanentConfirmation = false;
+                }}
+                onApprove={() => void approveRemoval()}
+                onExecute={() => void executeRemoval()}
+                onClose={() => void closeUncertainRemoval()}
+              />
+            {/if}
           </details>
         {/if}
-        {#if removeConfirmation}<div role="alert">
-            <h3>Permanently remove {selected.name}?</h3>
-            <p>
-              This removes the Cask itself and cannot be undone. No resource
-              files or applications will be deleted. Removal will be blocked if
-              any dependencies or unfinished work remain.
-            </p>
-            <button
-              type="button"
-              disabled={metadataBusy}
-              onclick={() => void removeCask()}>Confirm Remove Cask</button
-            ><button
-              type="button"
-              onclick={() => {
-                removeConfirmation = false;
-              }}>Cancel</button
-            >
-          </div>{/if}
       </section>
     {/if}
     {#if selected && detailTab === "settings"}
@@ -2777,3 +2761,39 @@
       >
     </footer>{/if}
 </div>
+
+{#if removeConfirmation && selected}
+  <dialog
+    bind:this={removeDialog}
+    class="create-dialog remove-dialog"
+    aria-labelledby="remove-cask-title"
+    oncancel={(event) => {
+      if (metadataBusy) event.preventDefault();
+      else removeConfirmation = false;
+    }}
+  >
+    <h2 id="remove-cask-title">Permanently remove Cask?</h2>
+    <p>
+      <strong>{selected.name}</strong> will be removed permanently. Its empty storage
+      folder will also be removed. Resource files and installed applications are
+      not deleted by this action. Remaining dependencies or unfinished work block
+      removal.
+    </p>
+    <div class="dialog-actions">
+      <button
+        class="secondary-button"
+        type="button"
+        disabled={metadataBusy}
+        onclick={() => {
+          removeDialog.close();
+          removeConfirmation = false;
+        }}>Cancel</button
+      ><button
+        class="danger-button"
+        type="button"
+        disabled={metadataBusy}
+        onclick={() => void removeCask()}>Remove Cask</button
+      >
+    </div>
+  </dialog>
+{/if}

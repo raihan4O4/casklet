@@ -76,6 +76,10 @@ enum Command {
         #[command(subcommand)]
         action: WingetAction,
     },
+    Msi {
+        #[command(subcommand)]
+        action: MsiAction,
+    },
     Installer {
         #[command(subcommand)]
         action: InstallerAction,
@@ -229,6 +233,15 @@ enum WingetAction {
 
 #[derive(Debug, Subcommand)]
 enum InstallerAction {
+    /// Inspect, copy, install and resolve supported results in one workflow.
+    Install {
+        cask_id: String,
+        path: String,
+        #[arg(long)]
+        allow_elevation: bool,
+        #[arg(long)]
+        accept_risk: bool,
+    },
     Inspect {
         path: String,
     },
@@ -249,6 +262,8 @@ enum InstallerAction {
         accept_risk: bool,
         #[arg(long)]
         allow_elevation: bool,
+        #[arg(long)]
+        manage_msi: bool,
     },
     Operations {
         cask_id: String,
@@ -366,6 +381,46 @@ enum ResourceAction {
     },
 }
 #[derive(Debug, Subcommand)]
+enum MsiAction {
+    Manage {
+        operation_id: String,
+        installation_id: String,
+        #[arg(long)]
+        yes: bool,
+    },
+    Preview {
+        cask_id: String,
+    },
+    Latest {
+        cask_id: String,
+    },
+    #[cfg(any(feature = "alpha-cleanup", feature = "reviewed-removal"))]
+    Approve {
+        id: String,
+        #[arg(long)]
+        hash: String,
+    },
+    #[cfg(any(feature = "alpha-cleanup", feature = "reviewed-removal"))]
+    Execute {
+        id: String,
+        #[arg(long)]
+        hash: String,
+        #[arg(long)]
+        yes: bool,
+    },
+    Close {
+        id: String,
+        #[arg(long)]
+        yes: bool,
+    },
+    Keep {
+        cask_id: String,
+        installation_id: String,
+        #[arg(long)]
+        yes: bool,
+    },
+}
+#[derive(Debug, Subcommand)]
 enum CategoryAction {
     List { cask_id: String },
     Create { cask_id: String, name: String },
@@ -471,6 +526,23 @@ fn main() -> ExitCode {
     let correlation_id = uuid::Uuid::new_v4().to_string();
     let result = match cli.command {
         Command::Installer {
+            action: InstallerAction::Install { cask_id, path, accept_risk, allow_elevation },
+        } => {
+            if !accept_risk {
+                eprintln!("Choose --accept-risk to authorize running this installer");
+                return ExitCode::FAILURE;
+            }
+            service.inspect_installer_artifact(&InspectInstallerArtifact {
+                version: CONTRACT_VERSION, path: path.clone(),
+            }, &correlation_id).and_then(|preview| {
+                service.install_application(&casklet_contracts::InstallApplication {
+                    allow_elevation,
+                    version: CONTRACT_VERSION, cask_id, path,
+                    expected_sha256: preview.sha256, accept_execution_risk: true,
+                }, &correlation_id, &|id| eprintln!("Installing: {id}"))
+            }).map(|v| format!("{}\n", serde_json::to_string_pretty(&v).unwrap()))
+        }
+        Command::Installer {
             action: InstallerAction::Inspect { path },
         } => service
             .inspect_installer_artifact(
@@ -512,25 +584,13 @@ fn main() -> ExitCode {
             .map(|v| format!("{}\n", serde_json::to_string_pretty(&v).unwrap())),
         Command::Installer {
             action:
-                InstallerAction::Launch {
-                    artifact_id,
-                    hash,
-                    accept_risk,
-                    allow_elevation,
-                },
-        } => service
-            .launch_installer_artifact(
-                &LaunchInstallerArtifact {
-                    version: CONTRACT_VERSION,
-                    artifact_id,
-                    expected_sha256: hash,
-                    accept_execution_risk: accept_risk,
-                    allow_elevation,
-                },
-                &correlation_id,
-                &|id| eprintln!("Installer operation: {id}"),
-            )
-            .map(|v| format!("{}\n", serde_json::to_string_pretty(&v).unwrap())),
+                InstallerAction::Launch { artifact_id, hash, accept_risk, allow_elevation, manage_msi },
+        } => {
+            let request = LaunchInstallerArtifact {version:CONTRACT_VERSION,artifact_id,expected_sha256:hash,accept_execution_risk:accept_risk,allow_elevation};
+            let started = |id: &str| eprintln!("Installer operation: {id}");
+            let result = if manage_msi {service.launch_managed_msi_artifact(&request,&correlation_id,&started)} else {service.launch_installer_artifact(&request,&correlation_id,&started)};
+            result.map(|value|format!("{}\n",serde_json::to_string_pretty(&value).unwrap()))
+        }
         Command::Installer {
             action: InstallerAction::Operations { cask_id },
         } => service
@@ -1038,10 +1098,24 @@ fn main() -> ExitCode {
                 &correlation_id,
             )
             .map(|cask| render_cask_detail(&cask, cli.output)),
+        Command::Msi { action } => {
+            let result: Result<serde_json::Value, ApiError> = match action {
+                MsiAction::Manage { operation_id, installation_id, yes } => if yes { service.claim_managed_msi(&ConfirmInstallerCandidate { version:CONTRACT_VERSION,operation_id,installation_id }, &correlation_id).map(|()|serde_json::json!({"managed":true})) } else { Err(confirm_error("Confirm MSI ownership with --yes", &correlation_id)) },
+                MsiAction::Preview { cask_id } => service.create_msi_cleanup(&GetCask { version:CONTRACT_VERSION,id:cask_id }, &correlation_id).map(|value|serde_json::to_value(value).unwrap()),
+                MsiAction::Latest { cask_id } => service.latest_msi_cleanup(&GetCask { version:CONTRACT_VERSION,id:cask_id }, &correlation_id).map(|value|serde_json::to_value(value).unwrap()),
+                #[cfg(any(feature="alpha-cleanup",feature="reviewed-removal"))]
+                MsiAction::Approve { id, hash } => service.approve_msi_cleanup(&casklet_contracts::ApproveRemovalPlan { version:CONTRACT_VERSION,id,plan_hash:hash }, &correlation_id).map(|value|serde_json::to_value(value).unwrap()),
+                #[cfg(any(feature="alpha-cleanup",feature="reviewed-removal"))]
+                MsiAction::Execute { id, hash, yes } => if yes { service.execute_msi_cleanup(&casklet_contracts::ApproveRemovalPlan { version:CONTRACT_VERSION,id,plan_hash:hash }, &correlation_id).map(|value|serde_json::to_value(value).unwrap()) } else { Err(confirm_error("Confirm uninstall execution with --yes", &correlation_id)) },
+                MsiAction::Close { id, yes } => if yes { service.close_msi_cleanup(&GetRemovalPlan { version:CONTRACT_VERSION,id }, &correlation_id).map(|value|serde_json::to_value(value).unwrap()) } else { Err(confirm_error("Confirm preserved closure with --yes", &correlation_id)) },
+                MsiAction::Keep { cask_id, installation_id, yes } => if yes { service.release_managed_msi(&DisassociateInstalledApplication { version:CONTRACT_VERSION,cask_id,installation_id }, &correlation_id).map(|()|serde_json::json!({"preserved":true})) } else { Err(confirm_error("Confirm keeping and detaching the application with --yes", &correlation_id)) },
+            };
+            result.map(|value|format!("{}\n",serde_json::to_string_pretty(&value).unwrap()))
+        }
         Command::Cask { action: CaskAction::Remove { id, yes } } => {
             service.get(&GetCask { version: CONTRACT_VERSION, id: id.clone() }, &correlation_id).and_then(|cask| {
                 service.remove_cask(&casklet_contracts::RemoveCask { version: CONTRACT_VERSION, id, expected_revision: cask.revision, confirm: yes }, &correlation_id)
-            }).map(|()| if matches!(cli.output, Output::Json) { "{\"removed\":true}\n".into() } else { "Cask permanently removed. No resource files were deleted.\n".into() })
+             }).map(|warning| if matches!(cli.output, Output::Json) { format!("{}\n", serde_json::json!({"removed":true,"warning":warning})) } else { format!("Cask permanently removed.{}\n", warning.map_or(String::new(), |value| format!(" {value}"))) })
         }
         Command::Cask { action: CaskAction::RemovalStatus { id } } => service.cask_removal_status(&GetCask { version: CONTRACT_VERSION, id }, &correlation_id).map(|status| if matches!(cli.output, Output::Json) { format!("{}\n",serde_json::to_string(&status).unwrap()) } else { format!("{} file resources; {} application dependencies; {} unfinished operation checks. Can remove: {}\n",status.resource_count,status.application_count,status.unfinished_operations,status.can_remove) }),
         Command::Cask { action: CaskAction::Archive { ref id } | CaskAction::Restore { ref id } } => {
@@ -1706,5 +1780,14 @@ fn render_portable(item: &PortableInstallationView, output: Output) -> String {
             item.executable_relative_path,
             item.resource_id
         ),
+    }
+}
+
+fn confirm_error(message: &str, correlation: &str) -> ApiError {
+    ApiError {
+        code: "CONFIRMATION_REQUIRED".into(),
+        message: message.into(),
+        version: CONTRACT_VERSION,
+        correlation_id: correlation.into(),
     }
 }

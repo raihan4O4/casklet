@@ -59,7 +59,9 @@ try {
     Assert-Alpha ($history.Count -ge 2) 'Durable cleanup history is unavailable.'
     $status = Invoke-CaskletJson @('cask','removal-status',$cask.id)
     Assert-Alpha $status.canRemove 'Cask still has unexpected dependencies.'
-    $null = Invoke-CaskletJson @('cask','remove',$cask.id,'--yes')
+    $removal = Invoke-CaskletJson @('cask','remove',$cask.id,'--yes')
+    Assert-Alpha (-not $removal.warning) 'Empty Cask storage retirement reported a warning.'
+    Assert-Alpha (-not (Test-Path -LiteralPath $cask.managedStorageRoot)) 'Removed Cask storage folder remains.'
     $backup = Invoke-CaskletJson @('diagnostics','backup')
     Assert-Alpha (Test-Path -LiteralPath $backup.path) 'Metadata backup is missing.'
     [ordered]@{ result = 'PASS'; version = (& $binaryPath --version); os = [Environment]::OSVersion.VersionString; startup_cli_ms = $startupMs; root = $root; real_recycle_bin = $true; reference_preserved = $true; unconfirmed_execution_blocked = $true; external_permanent_preserved = $true; cask_removed = $true; backup_verified = $true } | ConvertTo-Json | Set-Content -LiteralPath (Join-Path $root 'result.json')

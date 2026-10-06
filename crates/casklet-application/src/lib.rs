@@ -6,6 +6,7 @@ pub mod backup;
 pub mod diagnostics;
 pub mod installer;
 pub mod library;
+pub mod managed_msi;
 pub mod operation;
 pub mod portable;
 pub mod projection;
@@ -31,6 +32,14 @@ pub trait CaskRepository {
     /// Permanently retires an empty Cask after atomic dependency and revision checks.
     fn remove_empty(&self, id: &str, expected_revision: i64, now_ms: i64) -> Result<bool, String>;
     /// # Errors
+    /// Persists the post-removal storage outcome separately from the tombstone.
+    fn record_storage_retirement(
+        &self,
+        id: &str,
+        warning: Option<&str>,
+        now_ms: i64,
+    ) -> Result<(), String>;
+    /// # Errors
     /// Returns a persistence error.
     fn create(&self, cask: &Cask) -> Result<(), String>;
     /// # Errors
@@ -46,6 +55,11 @@ pub trait CaskRepository {
 
 pub trait ManagedStorage {
     fn root_for(&self, id: &str) -> String;
+    /// # Errors
+    /// Retires audit metadata and removes only verified empty Cask directories.
+    fn retire_empty(&self, _cask: &CaskView) -> Result<(), String> {
+        Err("Storage retirement is not supported by this adapter".into())
+    }
     /// # Errors
     /// Returns a storage error.
     fn initialize(&self, cask: &Cask) -> Result<(), String>;

@@ -13,6 +13,8 @@ mod diagnostics;
 mod installer;
 mod installer_source;
 pub mod inventory;
+mod managed_msi;
+mod msi_uninstaller;
 mod operations;
 #[cfg(all(test, windows))]
 mod ownership_tests;
@@ -48,6 +50,8 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../../../migrations/0011_cask_metadata.sql"),
     include_str!("../../../migrations/0012_ownership_and_cleanup.sql"),
     include_str!("../../../migrations/0013_cask_removal.sql"),
+    include_str!("../../../migrations/0014_managed_msi.sql"),
+    include_str!("../../../migrations/0015_installer_provenance.sql"),
 ];
 
 impl SqliteCasks {
@@ -188,8 +192,8 @@ fn cask_removal_status(
     let (eligible,resources,applications,unfinished): (bool,i64,i64,i64) = connection.query_row(
         "SELECT EXISTS(SELECT 1 FROM casks WHERE id=?1 AND state IN ('ACTIVE','ARCHIVED','PARTIALLY_DESTROYED','DESTROYED') AND NOT EXISTS(SELECT 1 FROM cask_removals WHERE cask_id=?1)),
         (SELECT COUNT(*) FROM resource_associations WHERE cask_id=?1 AND removed_at_ms IS NULL),
-        (SELECT COUNT(*) FROM cask_installations WHERE cask_id=?1 AND removed_at_ms IS NULL) + (SELECT COUNT(*) FROM windows_cask_associations WHERE cask_id=?1 AND removed_at_ms IS NULL) + (SELECT COUNT(*) FROM winget_installations WHERE cask_id=?1 AND state!='REMOVED'),
-        (SELECT COUNT(*) FROM operation_locks WHERE lock_key='cask:'||?1||':mutation') + (SELECT COUNT(*) FROM removal_locks WHERE cask_id=?1) + (SELECT COUNT(*) FROM installer_locks WHERE cask_id=?1) + (SELECT COUNT(*) FROM winget_locks WHERE cask_id=?1) + (SELECT COUNT(*) FROM operations WHERE cask_id=?1 AND state IN ('RUNNING','RECOVERY_REQUIRED')) + (SELECT COUNT(*) FROM installer_operations WHERE cask_id=?1 AND state IN ('RUNNING','REVIEW_REQUIRED','RECOVERY_REQUIRED')) + (SELECT COUNT(*) FROM winget_operations WHERE cask_id=?1 AND state IN ('RUNNING','RECOVERY_REQUIRED')) + (SELECT COUNT(*) FROM removal_runs WHERE cask_id=?1 AND state IN ('RUNNING','RECOVERY_REQUIRED'))", [id], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?))).map_err(|e|e.to_string())?;
+        (SELECT COUNT(*) FROM managed_msi_installations m WHERE cask_id=?1 AND state='OWNED' AND NOT EXISTS(SELECT 1 FROM windows_cask_associations a WHERE a.cask_id=m.cask_id AND a.installation_id=m.installation_id AND a.removed_at_ms IS NULL)) + (SELECT COUNT(*) FROM cask_installations WHERE cask_id=?1 AND removed_at_ms IS NULL) + (SELECT COUNT(*) FROM windows_cask_associations WHERE cask_id=?1 AND removed_at_ms IS NULL) + (SELECT COUNT(*) FROM winget_installations WHERE cask_id=?1 AND state!='REMOVED'),
+        (SELECT COUNT(*) FROM operation_locks WHERE lock_key='cask:'||?1||':mutation') + (SELECT COUNT(*) FROM removal_locks WHERE cask_id=?1) + (SELECT COUNT(*) FROM installer_locks WHERE cask_id=?1) + (SELECT COUNT(*) FROM winget_locks WHERE cask_id=?1) + (SELECT COUNT(*) FROM operations WHERE cask_id=?1 AND state IN ('RUNNING','RECOVERY_REQUIRED')) + (SELECT COUNT(*) FROM installer_operations WHERE cask_id=?1 AND state IN ('RUNNING','REVIEW_REQUIRED','RECOVERY_REQUIRED')) + (SELECT COUNT(*) FROM winget_operations WHERE cask_id=?1 AND state IN ('RUNNING','RECOVERY_REQUIRED')) + (SELECT COUNT(*) FROM removal_runs WHERE cask_id=?1 AND state IN ('RUNNING','RECOVERY_REQUIRED')) + (SELECT COUNT(*) FROM msi_cleanup_locks WHERE cask_id=?1)", [id], |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?,row.get(3)?))).map_err(|e|e.to_string())?;
     Ok(casklet_contracts::CaskRemovalStatus {
         version: casklet_contracts::CONTRACT_VERSION,
         can_remove: eligible && resources == 0 && applications == 0 && unfinished == 0,
@@ -200,6 +204,15 @@ fn cask_removal_status(
 }
 
 impl CaskRepository for SqliteCasks {
+    fn record_storage_retirement(
+        &self,
+        id: &str,
+        warning: Option<&str>,
+        now_ms: i64,
+    ) -> Result<(), String> {
+        self.connection()?.execute("UPDATE cask_removals SET storage_warning=?2,storage_retired_at_ms=CASE WHEN ?2 IS NULL THEN ?3 ELSE NULL END WHERE cask_id=?1",params![id,warning,now_ms]).map_err(|e|e.to_string())?;
+        Ok(())
+    }
     fn removal_status(&self, id: &str) -> Result<casklet_contracts::CaskRemovalStatus, String> {
         cask_removal_status(&self.connection()?, id)
     }
@@ -227,7 +240,7 @@ impl CaskRepository for SqliteCasks {
     fn update(&self, cask: &Cask, expected_revision: i64) -> Result<bool, String> {
         let mut connection = self.connection()?;
         let transaction = connection.transaction().map_err(|e| e.to_string())?;
-        let changed = transaction.execute("UPDATE casks SET name=?1,description=?2,state=?3,updated_at_ms=?4,revision=?5 WHERE id=?6 AND revision=?7 AND NOT EXISTS (SELECT 1 FROM cask_removals WHERE cask_id=?6) AND NOT EXISTS (SELECT 1 FROM operation_locks WHERE lock_key=?8) AND NOT EXISTS (SELECT 1 FROM removal_locks WHERE cask_id=?6) AND NOT EXISTS (SELECT 1 FROM installer_locks WHERE cask_id=?6)", params![cask.name,cask.description,cask.state.code(),cask.updated_at_ms,cask.revision,cask.id,expected_revision,format!("cask:{}:mutation",cask.id)]).map_err(|e|e.to_string())?;
+        let changed = transaction.execute("UPDATE casks SET name=?1,description=?2,state=?3,updated_at_ms=?4,revision=?5 WHERE id=?6 AND revision=?7 AND NOT EXISTS (SELECT 1 FROM cask_removals WHERE cask_id=?6) AND NOT EXISTS (SELECT 1 FROM operation_locks WHERE lock_key=?8) AND NOT EXISTS (SELECT 1 FROM removal_locks WHERE cask_id=?6) AND NOT EXISTS (SELECT 1 FROM installer_locks WHERE cask_id=?6) AND NOT EXISTS (SELECT 1 FROM msi_cleanup_locks WHERE cask_id=?6)", params![cask.name,cask.description,cask.state.code(),cask.updated_at_ms,cask.revision,cask.id,expected_revision,format!("cask:{}:mutation",cask.id)]).map_err(|e|e.to_string())?;
         if changed == 1 {
             transaction.execute("INSERT INTO projection_jobs(cask_id,target_revision,state,updated_at_ms) VALUES (?1,?2,'PENDING',?3) ON CONFLICT(cask_id) DO UPDATE SET target_revision=excluded.target_revision,state='PENDING',updated_at_ms=excluded.updated_at_ms", params![cask.id,cask.revision,cask.updated_at_ms]).map_err(|e|e.to_string())?;
         }
@@ -301,7 +314,96 @@ impl casklet_application::library::StorageBrowser for LocalStorage {
         }
     }
 }
+fn hold_retirement_directory(path: &Path) -> Result<Option<fs::File>, String> {
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::OpenOptionsExt;
+        // Deny directory rename/removal while enumerating its children. User bytes
+        // are never removed; a newly created entry simply makes remove_dir fail.
+        fs::OpenOptions::new()
+            .read(true)
+            .share_mode(3)
+            .custom_flags(0x0200_0000)
+            .open(path)
+            .map(Some)
+            .map_err(|e| e.to_string())
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = path;
+        Ok(None)
+    }
+}
+fn prune_empty(path: &Path) -> Result<(), String> {
+    let held = hold_retirement_directory(path)?;
+    resource_storage::check_components(path)?;
+    for entry in fs::read_dir(path).map_err(|e| e.to_string())? {
+        let entry = entry.map_err(|e| e.to_string())?;
+        let kind = entry.file_type().map_err(|e| e.to_string())?;
+        if !kind.is_dir() || kind.is_symlink() {
+            return Err(
+                "Unexpected files or recovery data remain; inspect the storage folder".into(),
+            );
+        }
+        prune_empty(&entry.path())?;
+    }
+    drop(held);
+    fs::remove_dir(path).map_err(|e| e.to_string())
+}
 impl ManagedStorage for LocalStorage {
+    fn retire_empty(&self, cask: &casklet_contracts::CaskView) -> Result<(), String> {
+        uuid::Uuid::parse_str(&cask.id).map_err(|_| "Invalid Cask storage identity")?;
+        let expected = self.root.join(&cask.id);
+        let path = Path::new(&cask.managed_storage_root);
+        resource_storage::check_components(path)?;
+        if !path.exists() {
+            return Ok(());
+        }
+        if path.canonicalize().map_err(|e| e.to_string())?
+            != expected.canonicalize().map_err(|e| e.to_string())?
+        {
+            return Err("Storage location does not match this Cask".into());
+        }
+        let held_root = hold_retirement_directory(path)?;
+        resource_storage::check_components(path)?;
+        // Never recursively delete content: links, unknown bytes, staging, and quarantine
+        // are legitimate reasons to retain storage for inspection.
+
+        for entry in fs::read_dir(path).map_err(|e| e.to_string())? {
+            let entry = entry.map_err(|e| e.to_string())?;
+            if entry.file_name() == ".casklet" {
+                continue;
+            }
+            prune_empty(&entry.path())?;
+        }
+        let metadata = path.join(".casklet");
+        if metadata.exists() {
+            resource_storage::check_components(&metadata)?;
+            for entry in fs::read_dir(&metadata).map_err(|e| e.to_string())? {
+                let entry = entry.map_err(|e| e.to_string())?;
+                resource_storage::check_components(&entry.path())?;
+                if entry.file_type().map_err(|e| e.to_string())?.is_dir() {
+                    prune_empty(&entry.path())?;
+                } else if entry.file_name() != "manifest.json"
+                    && entry.file_name() != "manifest.sha256"
+                {
+                    return Err(
+                        "Recovery or unexpected metadata remain; inspect the storage folder".into(),
+                    );
+                }
+            }
+            let audit = self
+                .root
+                .parent()
+                .ok_or("Storage parent unavailable")?
+                .join("retired-casks");
+            fs::create_dir_all(&audit).map_err(|e| e.to_string())?;
+            resource_storage::check_components(&audit)?;
+            fs::rename(&metadata, audit.join(&cask.id)).map_err(|e| e.to_string())?;
+        }
+        drop(held_root);
+        fs::remove_dir(path).map_err(|e| e.to_string())
+    }
     fn root_for(&self, id: &str) -> String {
         self.root.join(id).to_string_lossy().into_owned()
     }
@@ -634,8 +736,10 @@ mod tests {
             include_str!("../../../migrations/0011_cask_metadata.sql"),
             include_str!("../../../migrations/0012_ownership_and_cleanup.sql"),
             include_str!("../../../migrations/0013_cask_removal.sql"),
+            include_str!("../../../migrations/0014_managed_msi.sql"),
+            include_str!("../../../migrations/0015_installer_provenance.sql"),
         ];
-        for version in 1..=12 {
+        for version in 1..=14 {
             let root = std::env::temp_dir().join(format!(
                 "casklet-upgrade-{version}-{}",
                 uuid::Uuid::new_v4()
@@ -655,7 +759,7 @@ mod tests {
             let reopened = SqliteCasks::open(db).unwrap();
             assert_eq!(reopened.list().unwrap()[0].name, "Existing");
             assert!(reopened.list().unwrap()[0].description.is_empty());
-            if version < 13 {
+            if version < 15 {
                 let backups = fs::read_dir(root.join("backups"))
                     .unwrap()
                     .collect::<Result<Vec<_>, _>>()
@@ -1064,7 +1168,7 @@ mod tests {
             .unwrap()
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(schema_version, 13);
+        assert_eq!(schema_version, 15);
         assert_eq!(
             reopened
                 .list(

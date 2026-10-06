@@ -43,3 +43,9 @@ corepack pnpm --filter @casklet/desktop tauri dev --features alpha-cleanup
 ```
 
 To package the Windows x64 candidate, set `SYFT_PATH` to a checksum-verified official Syft executable, then run `cargo xtask package-alpha`. Local validation of uncommitted work can explicitly use `cargo xtask package-alpha --allow-dirty`; provenance records exact source checksums and dirty status. Verify with `pwsh -NoProfile -File scripts/verify-release.ps1 -OutputDirectory release/alpha`. `scripts/alpha-smoke.ps1` tests real cleanup only on newly created isolated workspace fixtures. Independent review, signing, and clean-machine gates remain outstanding; no public release is claimed.
+
+### Alpha installer cleanup
+
+Alpha builds support explicitly managed, verified new MSI installations and separate application cleanup preview, approval, and execution. Existing/associated applications and arbitrary EXE results remain references. WinGet uninstall is still gated. See [Alpha follow-up](docs/engineering/alpha-cleanup-followup.md) for commands, migration, and remaining validation.
+
+Installer selection now inspects automatically; **Install** copies, launches and resolves supported results through one shared GUI/CLI command. Verified new MSI ownership is automatic, while EXE uninstall authority remains unsupported. See [ADR 0023](docs/adr/0023-one-action-installer-flow.md).

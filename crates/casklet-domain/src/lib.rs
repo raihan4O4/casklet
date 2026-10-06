@@ -1,6 +1,7 @@
 //! Platform-neutral Cask rules.
 
 use uuid::Uuid;
+pub mod installer;
 pub mod operation;
 pub mod portable;
 pub mod removal;

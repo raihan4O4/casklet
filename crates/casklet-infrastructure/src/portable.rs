@@ -47,6 +47,17 @@ impl PortableRepository for SqliteCasks {
     ) -> Result<(), String> {
         let mut connection = self.connection()?;
         let tx = connection.transaction().map_err(|e| e.to_string())?;
+        let msi_busy: bool = tx
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM msi_cleanup_locks WHERE cask_id=?1)",
+                [&cask.id],
+                |r| r.get(0),
+            )
+            .map_err(|e| e.to_string())?;
+        if msi_busy {
+            return Err("Application cleanup is active".into());
+        }
+
         let state: String = tx
             .query_row("SELECT state FROM casks WHERE id=?1", [&cask.id], |r| {
                 r.get(0)

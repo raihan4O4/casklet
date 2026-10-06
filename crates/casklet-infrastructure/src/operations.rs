@@ -306,7 +306,7 @@ pub(super) fn owner_process_alive(owner: &str) -> bool {
         else {
             return true;
         };
-        let output = Command::new(powershell)
+        let output = super::windows_process::hide_console(&mut Command::new(powershell))
             .args(["-NoProfile", "-NonInteractive", "-Command", &format!("if (Get-Process -Id {pid} -ErrorAction SilentlyContinue) {{ 'ALIVE' }} else {{ 'DEAD' }}")])
             .output();
         let Ok(output) = output else {

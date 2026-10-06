@@ -9,6 +9,8 @@ Windows 11 x64 · local/limited testing candidate · unsigned
 - Cleanup creation, review, exact approval, and journaled execution in the Alpha profile.
 - Recycle Bin for eligible owned files/directories; permanent deletion only for eligible internal files with extra confirmation.
 - Durable cleanup history and interrupted-run inspection/preserved closure.
+- Select and Install workflow with automatic verified new MSI ownership, application uninstall preview/approval/execution, and durable uncertain-result recovery.
+- Modal Cask removal, immediate library updates, completed Activity display clearing, and safe empty-storage retirement with audit metadata retained separately.
 - Portable ZIP workflows, Windows application association, WinGet install, cautious MSI/EXE artifact workflows, manifests/exports, and database metadata backup.
 
 ## Before testing
@@ -18,6 +20,7 @@ Back up resource data and database metadata. Use dedicated test files first. Ref
 ## Limitations
 
 - WinGet uninstall is disabled pending independent provider/elevation review; uninstall externally and review associations.
+- Arbitrary EXE installations and legacy installer associations cannot gain automatic uninstall authority. Manage only a supported, verified new MSI; other software remains a reference and needs Windows/provider removal.
 - Copy/Move user intake remains temporarily disabled; legacy resources/recovery remain supported.
 - Permanent deletion is unavailable for folders and files managed at their current location.
 - No sandbox, arbitrary installer tracing, automatic update, cloud sync, or Linux/macOS release.

@@ -76,7 +76,7 @@ fn lock(
     assert_no_mutation(tx, cask_id)?;
     let installer_busy: i64 = tx
         .query_row(
-            "SELECT (SELECT COUNT(*) FROM installer_locks)+(SELECT COUNT(*) FROM winget_locks)",
+            "SELECT (SELECT COUNT(*) FROM installer_locks)+(SELECT COUNT(*) FROM msi_cleanup_locks)+(SELECT COUNT(*) FROM winget_locks)",
             [],
             |r| r.get(0),
         )

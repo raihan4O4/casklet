@@ -119,7 +119,7 @@ impl WingetCli {
     ) -> Result<String, String> {
         let initial = self.hash()?;
         let cwd = self.executable.parent().ok_or("Invalid WinGet path")?;
-        let mut child = Command::new(&self.executable)
+        let mut child = super::windows_process::hide_console(&mut Command::new(&self.executable))
             .args(args)
             .current_dir(cwd)
             .stdin(Stdio::null())

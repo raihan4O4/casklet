@@ -418,7 +418,7 @@ a {
 }
 .table-heading {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 60px 88px 98px 28px;
+  grid-template-columns: minmax(0, 1fr) 60px 88px 98px;
   gap: 8px;
   padding: 9px 16px;
   background: #fafafa;
@@ -1005,25 +1005,6 @@ dialog p {
   font-size: 9px;
   color: #888;
 }
-.workflow-picker {
-  margin: 20px 0;
-  padding: 13px;
-  border: 1px solid #e6e6e6;
-  border-radius: 7px;
-  background: #fafafa;
-}
-.workflow-picker > summary {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  cursor: pointer;
-  list-style: none;
-  font-size: 12px;
-  font-weight: 500;
-}
-.workflow-picker > summary > svg:last-child {
-  margin-left: auto;
-}
 .workflow-options {
   display: grid;
   grid-template-columns: 1fr 1fr;
@@ -1048,9 +1029,248 @@ dialog p {
   color: #888;
   font-weight: 400;
 }
-.workflow-heading {
+.workspace-content > .application-section {
+  border: 0;
+  padding-bottom: 0;
+}
+.applications-toolbar {
+  position: sticky;
+  top: -22px;
+  z-index: 3;
+  padding: 30px 0 14px;
+  margin-top: -22px;
+  margin-bottom: 18px;
+  background: #fff;
+  border-bottom: 1px solid var(--border);
+}
+.applications-heading > .primary,
+.application-workflow-panel .primary {
+  background: #222;
+  color: #fff;
+  border-color: #222;
+}
+.applications-heading > .primary:hover,
+.application-workflow-panel .primary:hover {
+  background: #444;
+}
+.applications-heading,
+.applications-tools,
+.application-results-heading,
+.application-attention {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+.applications-heading h2 {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0;
+}
+.applications-heading p {
+  margin: 5px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+}
+.applications-tools {
+  margin-top: 16px;
+  flex-wrap: wrap;
+}
+.applications-tools .search-field {
+  flex: 1;
+  min-width: 200px;
+}
+.applications-tools input {
+  width: 100%;
+  min-width: 0;
+}
+.application-filters {
+  display: flex;
+  gap: 3px;
+  padding: 3px;
+  border-radius: 7px;
+  background: var(--surface);
+}
+.application-filters button {
+  min-height: 30px;
+  border-color: transparent;
+  background: transparent;
   font-size: 11px;
-  color: #888;
+  padding: 5px 10px;
+  color: var(--muted);
+}
+.application-filters button.chosen {
+  color: #222;
+  background: #fff;
+  border-color: #dedede;
+  box-shadow: 0 1px 2px #00000006;
+}
+.application-add-picker,
+.application-workflow-panel {
+  padding: 20px;
+  margin-bottom: 24px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  scroll-margin-top: 150px;
+}
+.application-add-picker {
+  background: #fafafa;
+}
+.application-add-picker h3,
+.application-workflow-panel h3,
+.application-results-heading h3 {
+  margin: 0;
+  font-size: 13px;
+}
+.application-add-picker .workflow-options button {
+  padding: 16px;
+  min-height: 110px;
+  background: #fff;
+}
+.application-add-picker .workflow-options button:hover {
+  border-color: #999;
+  background: #f5f5f5;
+}
+.application-add-picker .workflow-options strong {
+  font-size: 12px;
+}
+.application-add-picker .workflow-options span {
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--muted);
+}
+.application-workflow-panel:focus {
+  outline: 2px solid #737373;
+  outline-offset: 3px;
+}
+.application-results-heading {
+  margin: 20px 0 8px;
+}
+.application-results-heading > span {
+  color: var(--muted);
+  font-size: 11px;
+}
+.managed-application-list li {
+  display: grid;
+  grid-template-columns: 38px minmax(0, 1fr) auto auto;
+  gap: 14px;
+  padding: 16px 8px;
+  border-radius: 6px;
+}
+.managed-application-list li:hover {
+  background: #fafafa;
+}
+.application-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 38px;
+  height: 38px;
+  flex: none;
+  border: 1px solid var(--border);
+  border-radius: 9px;
+  background: var(--surface);
+}
+.managed-application-list .item-text span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.application-badge {
+  padding: 4px 7px;
+  border: 1px solid #e5e5e5;
+  border-radius: 5px;
+  color: #777;
+  font-size: 10px;
+  white-space: nowrap;
+}
+.application-badge.owned {
+  color: #333;
+  background: #f3f3f3;
+}
+.application-row-actions {
+  display: flex;
+  gap: 6px;
+}
+.application-empty {
+  padding: 50px 24px;
+}
+.application-attention {
+  padding: 12px;
+  background: #faf7ef;
+  border: 1px solid #eee6d5;
+  border-radius: 8px;
+  font-size: 12px;
+  margin-bottom: 16px;
+}
+.application-attention span {
+  flex: 1;
+}
+.installer-selection,
+.installation-result {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+.installer-selection > div:nth-child(2) {
+  flex: 1;
+  min-width: 0;
+}
+.installer-selection h4 {
+  margin: 0;
+}
+.installation-result {
+  padding: 16px;
+  margin-top: 16px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #fafafa;
+}
+.installation-result p {
+  margin: 0 0 6px;
+  font-size: 12px;
+  overflow-wrap: anywhere;
+}
+.installation-result svg {
+  flex: none;
+}
+.installer-attention-actions {
+  margin-top: 16px;
+  font-size: 12px;
+}
+@media (max-width: 720px) {
+  .applications-heading {
+    align-items: flex-start;
+  }
+  .applications-heading p {
+    max-width: 210px;
+  }
+  .managed-application-list li {
+    grid-template-columns: 38px minmax(0, 1fr) auto;
+    gap: 8px 10px;
+  }
+  .managed-application-list .application-icon {
+    grid-row: 1 / span 2;
+  }
+  .managed-application-list .application-badge {
+    grid-column: 2;
+    grid-row: 2;
+    justify-self: start;
+  }
+  .managed-application-list .application-row-actions {
+    grid-column: 3;
+    grid-row: 1 / span 2;
+    flex-direction: column;
+  }
+  .installer-selection {
+    flex-wrap: wrap;
+  }
+}
+@media (max-width: 480px) {
+  .application-add-picker .workflow-options {
+    grid-template-columns: 1fr;
+  }
 }
 .review {
   padding: 16px;
@@ -1872,4 +2092,16 @@ textarea:focus {
   .resource-chevron {
     transition: none;
   }
+}
+
+.cleanup-details > button {
+  display: block;
+  margin: 8px 0;
+}
+.remove-dialog {
+  max-width: 440px;
+}
+.information-panel > summary {
+  padding: 12px;
+  cursor: pointer;
 }

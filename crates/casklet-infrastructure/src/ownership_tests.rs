@@ -463,7 +463,15 @@ fn permanent_empty_removal_requires_confirmation_and_cannot_restore_or_recover()
         "CASK_NOT_REMOVABLE"
     );
     request.expected_revision = f.cask.revision;
-    f.service.remove_cask(&request, "test").unwrap();
+    assert!(f.service.remove_cask(&request, "test").unwrap().is_none());
+    assert!(!Path::new(&f.cask.managed_storage_root).exists());
+    assert!(
+        f.root
+            .join("retired-casks")
+            .join(&f.cask.id)
+            .join("manifest.json")
+            .exists()
+    );
     assert!(f.service.repository.get(&f.cask.id).unwrap().is_none());
     assert!(f.service.repository.list().unwrap().is_empty());
     assert_eq!(
@@ -516,6 +524,36 @@ fn permanent_empty_removal_requires_confirmation_and_cannot_restore_or_recover()
             .is_err()
     );
     assert_eq!(fs::read(&f.source).unwrap(), b"user data");
+}
+
+#[test]
+fn cask_removal_preserves_unknown_files_and_recovery_bytes_with_a_durable_warning() {
+    for relative in ["content/unknown.txt", ".casklet/quarantine/uncertain.txt"] {
+        let f = Fixture::new();
+        let unknown = Path::new(&f.cask.managed_storage_root).join(relative);
+        fs::create_dir_all(unknown.parent().unwrap()).unwrap();
+        fs::write(&unknown, b"preserve me").unwrap();
+        let warning = f
+            .service
+            .remove_cask(&remove_request(&f, true), "test")
+            .unwrap()
+            .unwrap();
+        assert!(warning.contains("preserved"));
+        assert_eq!(fs::read(&unknown).unwrap(), b"preserve me");
+        assert!(f.service.repository.get(&f.cask.id).unwrap().is_none());
+        let persisted: String = f
+            .service
+            .repository
+            .connection()
+            .unwrap()
+            .query_row(
+                "SELECT storage_warning FROM cask_removals WHERE cask_id=?1",
+                [&f.cask.id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(persisted, warning);
+    }
 }
 #[test]
 fn remaining_resources_or_applications_are_not_empty() {

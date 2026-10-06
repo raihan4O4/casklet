@@ -15,7 +15,7 @@
   import logo from "../assets/casklet-logo.png";
   import Icon from "./Icon.svelte";
   import Workspace from "./Workspace.svelte";
-  import PopupMenu from "./PopupMenu.svelte";
+  // Cask row actions intentionally hidden for Alpha; typed handlers retained.
   import { notify } from "./notifications";
   let { onReady = () => {} }: { onReady?: () => void } = $props();
   $effect(() => {
@@ -36,6 +36,7 @@
     $state("casks");
   let library: CaskLibraryView | null = $state(null);
   let loading = $state(true);
+  let refreshSequence = 0;
   let error = $state("");
   let notice = $state("");
   let search = $state("");
@@ -77,10 +78,13 @@
       : String(cause);
   }
   async function refresh(quiet = false) {
+    const sequence = ++refreshSequence;
     try {
-      library = await invoke<CaskLibraryView>("cask_library", {
+      const result = await invoke<CaskLibraryView>("cask_library", {
         request: { version: CONTRACT_VERSION },
       });
+      if (sequence !== refreshSequence) return;
+      library = result;
       if (!quiet) error = "";
     } catch (cause) {
       if (!quiet) error = message(cause);
@@ -108,6 +112,8 @@
       error = message(cause);
     }
   }
+  // Retained while the Cask row menu is intentionally hidden for Alpha.
+  // eslint-disable-next-line @typescript-eslint/no-unused-vars
   async function exportReport(item: CaskSummaryView) {
     try {
       const outputPath = await save({ defaultPath: `${item.cask.name}.md` });
@@ -190,6 +196,20 @@
     }, 5000);
     let disposed = false;
     let unlisten: (() => void) | undefined;
+    let unlistenRemoved: (() => void) | undefined;
+    void listen<string>("casks.removed", (event) => {
+      ++refreshSequence;
+      if (library)
+        library = {
+          ...library,
+          casks: library.casks.filter((item) => item.cask.id !== event.payload),
+        };
+      if (activeCask === event.payload) activeCask = "";
+      void refresh(true);
+    }).then((fn) => {
+      if (disposed) fn();
+      else unlistenRemoved = fn;
+    });
     void listen("casks.changed", () => {
       void refresh(true);
     }).then((fn) => {
@@ -200,6 +220,7 @@
       disposed = true;
       window.clearInterval(poll);
       unlisten?.();
+      unlistenRemoved?.();
     };
   });
 </script>
@@ -337,7 +358,6 @@
                 />{/if}</button
             >
           {/each}
-          <span class="sr-only">Actions</span>
         </div>
         <div class="cask-table-scroll">
           {#if loading}<div class="empty-state" role="status">
@@ -405,29 +425,6 @@
                       >{relativeTime(item.cask.updatedAtMs)}</time
                     ></button
                   >
-                  <div class="row-actions">
-                    <PopupMenu
-                      id={`cask-actions-${item.cask.id}`}
-                      label={`Actions for ${item.cask.name}`}
-                    >
-                      <button
-                        role="menuitem"
-                        type="button"
-                        onclick={() => void openCask(item.cask.id)}
-                        >Open workspace</button
-                      ><button
-                        role="menuitem"
-                        type="button"
-                        onclick={() => void openStorage(item.cask.id)}
-                        >Open storage folder</button
-                      ><button
-                        role="menuitem"
-                        type="button"
-                        onclick={() => void exportReport(item)}
-                        >Export report</button
-                      >
-                    </PopupMenu>
-                  </div>
                 </li>{/each}
             </ul>
           {/if}

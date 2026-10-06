@@ -42,7 +42,7 @@ impl<
         &self,
         request: &casklet_contracts::RemoveCask,
         correlation_id: &str,
-    ) -> Result<(), ApiError> {
+    ) -> Result<Option<String>, ApiError> {
         check_version(request.version, correlation_id)?;
         if !request.confirm {
             return Err(api_error(
@@ -51,7 +51,7 @@ impl<
                 correlation_id,
             ));
         }
-        self.get(
+        let cask = self.get(
             &GetCask {
                 version: request.version,
                 id: request.id.clone(),
@@ -72,7 +72,23 @@ impl<
         {
             return Err(api_error("CASK_NOT_REMOVABLE", "This Cask changed, still has dependencies, or has unfinished work. Refresh and review before removing it.".into(), correlation_id));
         }
-        Ok(())
+        // The tombstone is committed first: concurrent intake cannot resurrect this Cask.
+        // A storage failure must not misreport successful logical removal as a failure.
+        let mut warning = self
+            .storage
+            .retire_empty(&cask)
+            .err()
+            .map(|reason| format!("Cask removed, but its storage was preserved: {reason}"));
+        if let Err(reason) =
+            self.repository
+                .record_storage_retirement(&request.id, warning.as_deref(), now)
+        {
+            warning = Some(format!(
+                "{} Storage outcome could not be recorded: {reason}",
+                warning.unwrap_or_else(|| "Cask and its empty storage were removed.".into())
+            ));
+        }
+        Ok(warning)
     }
     /// Archives or restores metadata while preserving all associated data.
     /// # Errors
@@ -189,7 +205,8 @@ impl<
         + ProjectionRepository
         + PortableRepository
         + InstalledInventoryRepository
-        + WingetRepository,
+        + WingetRepository
+        + crate::installer::InstallerRepository,
     S: ResourceStorage + ManifestProjection + StorageBrowser,
 > CaskService<R, S>
 {
@@ -236,11 +253,17 @@ impl<
                 .repository
                 .list_winget_installations(&cask.id)
                 .map_err(|e| api_error("PERSISTENCE", e, correlation_id))?;
+            let artifacts = self
+                .repository
+                .list_installers(&cask.id)
+                .map_err(|e| api_error("PERSISTENCE", e, correlation_id))?;
             let application_resources: HashSet<_> = portable
                 .iter()
                 .map(|item| item.resource_id.as_str())
+                .chain(artifacts.iter().map(|item| item.resource_id.as_str()))
                 .collect();
             all_application_resources.extend(portable.iter().map(|item| item.resource_id.clone()));
+            all_application_resources.extend(artifacts.iter().map(|item| item.resource_id.clone()));
             let installations: HashSet<_> = portable
                 .iter()
                 .map(|item| item.installation_id.clone())
