@@ -8,8 +8,10 @@ Per-Cask registry-view aliases are counted once and owned status takes precedenc
 
 The desktop performs measurement on a blocking worker, keeping the native event loop responsive. Installation completion, cleanup completion/failure reconciliation and association/detach reload current state. Reopening a Cask remeasures sizes, including external size changes.
 
-The supplied cask-icon.png is the source for the bundled PNG, multiresolution Windows ICO (16Ã¢â‚¬â€œ256 px), and GUI logo. NSIS shortcuts target the desktop executable and inherit its embedded icon.
+The supplied cask-icon.png supplies only the Windows package PNG and multi-resolution ICO (16-256 px). The GUI logo is restored byte-for-byte from 37ccf0b and remains a separate asset. NSIS shortcuts target the desktop executable and inherit its embedded icon.
 
 Validation: the full quality gate passes 117 all-feature Rust tests, default/Alpha profile tests, 30 GUI tests, strict Clippy, formatting, frontend lint/types/contracts and production build. The native fixture covers estimated and measured size changes, alias deduplication, reference detach, owned classification, installer-copy exclusion and missing registration while preserving uninstall evidence. Logs: target/storage-quality.log, target/storage-native-final.log and target/storage-clippy-final.log. Packaging and installed launch evidence use target/storage-package.log and target/storage-installed-smoke.log.
 
 Embedded-icon verification exposed cached Windows resources: the Tauri build script did not track icon files. Explicit Cargo rerun dependencies now regenerate native resources when either icon changes. Verification compares all embedded image resolutions with the supplied ICO, rather than trusting asset paths. The isolated installer test also has an explicit option for preserving unregistered program leftovers; registered installations and running processes still block it.
+
+Windows shell icon correction: the original in-app logo is restored exactly. The supplied image remains only in native Windows/package assets. An NSIS post-install hook notifies Explorer with SHChangeNotify(SHCNE_ASSOCCHANGED), allowing existing same-path executable/shortcut icons to refresh without deleting user caches or restarting Explorer.
