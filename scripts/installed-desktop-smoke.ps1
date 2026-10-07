@@ -1,4 +1,7 @@
-param([switch] $AllowUnregisteredProgramFiles)
+param(
+    [switch] $AllowUnregisteredProgramFiles,
+    [string] $InstallerPath = 'release/alpha/Casklet_0.1.0-alpha.1_x64-setup.exe'
+)
 $ErrorActionPreference = 'Stop'
 $repo = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $uninstallKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\Casklet'
@@ -23,7 +26,9 @@ New-Item -ItemType Directory -Path $root | Out-Null
 $program = [IO.Path]::GetFullPath((Join-Path $root 'program'))
 $allowed = [IO.Path]::GetFullPath((Join-Path $repo 'target')) + [IO.Path]::DirectorySeparatorChar
 if (-not $program.StartsWith($allowed,[StringComparison]::OrdinalIgnoreCase)) { throw 'Program path escaped workspace.' }
-$installer = Join-Path $repo 'release/alpha/Casklet_0.1.0-alpha.1_x64-setup.exe'
+$installer = (Resolve-Path -LiteralPath (Join-Path $repo $InstallerPath)).Path
+$expectedVersion = (Get-Content (Join-Path $repo 'apps/desktop/src-tauri/tauri.conf.json') -Raw | ConvertFrom-Json).version
+$installerHash = (Get-FileHash -LiteralPath $installer -Algorithm SHA256).Hash
 function Test-InstalledDesktop {
     param([string] $Executable)
     # PE Optional Header Subsystem must be Windows GUI (2), not Console (3).
@@ -65,7 +70,7 @@ $oldProfile = $env:USERPROFILE
 try {
     $installed = Start-Process -FilePath $installer -ArgumentList @('/S','/NS',"/D=$program") -WindowStyle Hidden -PassThru -Wait
     if ($installed.ExitCode -ne 0 -or -not (Test-Path (Join-Path $program 'casklet-desktop.exe'))) { throw 'Silent install failed.' }
-    if ((Get-ItemProperty $uninstallKey).DisplayVersion -ne '0.1.0-alpha.1') { throw 'Installed version differs.' }
+    if ((Get-ItemProperty $uninstallKey).DisplayVersion -ne $expectedVersion) { throw 'Installed version differs from current source; this may be a stale setup file.' }
     $env:LOCALAPPDATA = Join-Path $root 'profile/local'
     $env:USERPROFILE = Join-Path $root 'profile'
     New-Item -ItemType Directory -Force -Path $env:LOCALAPPDATA,$env:USERPROFILE | Out-Null
@@ -90,7 +95,7 @@ try {
     if ($LASTEXITCODE -ne 0 -or $reopened.id -ne $seed.id) { throw 'Database was not preserved.' }
     if (Test-Path $uninstallKey) { throw 'Uninstall registration remains.' }
     if ($existingHash -and ((Get-FileHash -LiteralPath $existingExecutable -Algorithm SHA256).Hash -ne $existingHash)) { throw 'Unregistered existing executable changed.' }
-    @{ result='PASS'; first_launch=$firstLaunch; reinstall_launch=$secondLaunch; version='0.1.0-alpha.1'; install_exit=$installed.ExitCode; reinstall_exit=$reinstalled.ExitCode; uninstall_exit=$uninstalled.ExitCode; data_reopened=$true; managed_content_preserved=$true; program_removed=$true; existing_unregistered_program_preserved=[bool]$existingHash; root=$root; scope='Local installed-desktop launch, console-subsystem guard, silent install/reinstall/uninstall; not clean-machine upgrade or Windows Settings' } | ConvertTo-Json | Set-Content (Join-Path $root 'result.json')
+    @{ result='PASS'; first_launch=$firstLaunch; reinstall_launch=$secondLaunch; version=$expectedVersion; installer=$installer; installer_sha256=$installerHash; install_exit=$installed.ExitCode; reinstall_exit=$reinstalled.ExitCode; uninstall_exit=$uninstalled.ExitCode; data_reopened=$true; managed_content_preserved=$true; program_removed=$true; existing_unregistered_program_preserved=[bool]$existingHash; root=$root; scope='Local installed-desktop launch against current-schema data, console-subsystem guard, silent install/reinstall/uninstall; not clean-machine upgrade or Windows Settings' } | ConvertTo-Json | Set-Content (Join-Path $root 'result.json')
     Get-Content (Join-Path $root 'result.json')
 } finally {
     $env:LOCALAPPDATA = $oldLocal

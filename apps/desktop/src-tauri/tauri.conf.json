@@ -41,6 +41,7 @@
       "../../../LICENSES/README.md": "THIRD-PARTY-NOTICES.md"
     },
     "windows": {
+      "allowDowngrades": false,
       "nsis": {
         "installMode": "currentUser",
         "installerHooks": "installer-hooks.nsh"
