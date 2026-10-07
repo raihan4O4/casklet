@@ -26,6 +26,7 @@ pub fn run() {
             cask_library,
             open_cask_window,
             window_ready,
+            set_window_theme,
             open_cask_storage,
             open_storage_root,
             export_cask,
@@ -176,19 +177,21 @@ async fn open_cask_window(
     let size = main.inner_size().map_err(|e| window_error(e.to_string()))?;
     let x = f64::from(position.x) / scale + (f64::from(size.width) / scale - DETAIL_WIDTH) / 2.0;
     let y = f64::from(position.y) / scale + (f64::from(size.height) / scale - DETAIL_HEIGHT) / 2.0;
+    let theme = main.theme().unwrap_or(tauri::Theme::Light);
     let window = tauri::WebviewWindowBuilder::new(
         &app,
         label,
         tauri::WebviewUrl::App(format!("index.html?cask={}", cask.id).into()),
     )
-    .title(format!("{} â€” Casklet", cask.name))
+    .title(format!("{} \u{2014} Casklet", cask.name))
     .inner_size(DETAIL_WIDTH, DETAIL_HEIGHT)
     .resizable(false)
     .decorations(false)
     .maximizable(false)
     .minimizable(true)
     .visible(false)
-    .background_color(tauri::window::Color(255, 255, 255, 255))
+    .theme(Some(theme))
+    .background_color(theme_background(theme))
     .position(x, y.max(0.0))
     .parent(&main)
     .map_err(|e| window_error(e.to_string()))?
@@ -210,6 +213,39 @@ async fn open_cask_window(
 async fn window_ready(window: tauri::WebviewWindow) -> Result<(), casklet_contracts::ApiError> {
     window.show().map_err(|e| window_error(e.to_string()))?;
     window.set_focus().map_err(|e| window_error(e.to_string()))
+}
+
+// Appearance is shell presentation state, not Cask domain data.
+#[derive(Clone, Copy, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+enum DesktopTheme {
+    Light,
+    Dark,
+}
+
+const fn theme_background(theme: tauri::Theme) -> tauri::window::Color {
+    match theme {
+        tauri::Theme::Dark => tauri::window::Color(32, 34, 38, 255),
+        _ => tauri::window::Color(255, 255, 255, 255),
+    }
+}
+
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+async fn set_window_theme(
+    window: tauri::WebviewWindow,
+    theme: DesktopTheme,
+) -> Result<(), casklet_contracts::ApiError> {
+    let native = match theme {
+        DesktopTheme::Light => tauri::Theme::Light,
+        DesktopTheme::Dark => tauri::Theme::Dark,
+    };
+    window
+        .set_theme(Some(native))
+        .map_err(|e| window_error(e.to_string()))?;
+    window
+        .set_background_color(Some(theme_background(native)))
+        .map_err(|e| window_error(e.to_string()))
 }
 
 fn window_error(message: impl Into<String>) -> casklet_contracts::ApiError {
@@ -303,7 +339,7 @@ fn update_cask(
 ) -> Result<casklet_contracts::CaskView, casklet_contracts::ApiError> {
     let result = service.update_cask(&request, "desktop")?;
     if let Some(window) = app.get_webview_window(&format!("cask-{}", result.id)) {
-        let _ = window.set_title(&format!("{} â€” Casklet", result.name));
+        let _ = window.set_title(&format!("{} \u{2014} Casklet", result.name));
     }
     let _ = app.emit("casks.changed", &result.id);
     Ok(result)

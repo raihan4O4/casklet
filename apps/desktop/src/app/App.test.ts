@@ -31,13 +31,20 @@ HTMLDialogElement.prototype.close = function () {
 
 const calls = vi.hoisted(() => ({
   invoke: vi.fn(),
+  nativeTheme: vi.fn<(request: unknown) => Promise<void>>(async () => {}),
   events: new Map<string, (event: { payload: unknown }) => void>(),
   drop: null as
     | null
     | ((event: { payload: { type: string; paths: string[] } }) => void),
 }));
-vi.mock("@tauri-apps/api/core", () => calls);
+vi.mock("@tauri-apps/api/core", () => ({
+  invoke: (command: string, ...args: unknown[]) =>
+    command === "set_window_theme"
+      ? calls.nativeTheme(args[0])
+      : calls.invoke(command, ...args),
+}));
 vi.mock("@tauri-apps/api/event", () => ({
+  emit: vi.fn(async () => {}),
   listen: vi.fn(
     async (name: string, handler: (event: { payload: unknown }) => void) => {
       calls.events.set(name, handler);
@@ -65,6 +72,7 @@ vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn(), save: vi.fn() }));
 afterEach(() => {
   cleanup();
   localStorage.clear();
+  calls.nativeTheme.mockClear();
   calls.events.clear();
   clearNotices();
   vi.useRealTimers();
