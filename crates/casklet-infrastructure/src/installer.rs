@@ -425,6 +425,16 @@ mod tests {
         }
     }
     impl ResourceStorage for FakeStorage {
+        fn application_sizes(
+            &self,
+            entries: &[casklet_application::resource::ApplicationStorageEntry],
+        ) -> Result<Vec<casklet_application::resource::ApplicationSize>, String> {
+            Ok(vec![
+                casklet_application::resource::ApplicationSize::Unknown;
+                entries.len()
+            ])
+        }
+
         fn inspect(
             &self,
             source: &str,

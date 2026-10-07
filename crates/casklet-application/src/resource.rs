@@ -43,7 +43,29 @@ pub struct IntakePaths {
     pub final_path: String,
 }
 
+#[derive(Debug, Clone)]
+pub struct ApplicationStorageEntry {
+    pub source_key: String,
+    pub owned: bool,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum ApplicationSize {
+    Missing,
+    Known { bytes: u64, estimated: bool },
+    Unknown,
+}
+
 pub trait ResourceRepository {
+    /// # Errors
+    /// Reads active application associations and installer resource identities.
+    fn application_storage_entries(
+        &self,
+        cask_id: &str,
+    ) -> Result<Vec<ApplicationStorageEntry>, String>;
+    /// # Errors
+    /// Returns typed installer artifacts, which are not installed applications.
+    fn installer_resource_ids(&self, cask_id: &str) -> Result<Vec<String>, String>;
     /// # Errors
     /// Atomically records explicit in-place authority, rejecting locks and overlapping resources.
     fn commit_adoption(&self, resource: &Resource) -> Result<(), String>;
@@ -97,6 +119,12 @@ pub trait ResourceRepository {
 }
 
 pub trait ResourceStorage {
+    /// # Errors
+    /// Returns current read-only application size observations, independently of ownership.
+    fn application_sizes(
+        &self,
+        entries: &[ApplicationStorageEntry],
+    ) -> Result<Vec<ApplicationSize>, String>;
     /// # Errors
     /// Rejects broad, linked, protected, or insufficiently verified external locations.
     fn validate_owned_location(&self, _observed: &Observation) -> Result<(), String> {
@@ -580,7 +608,14 @@ impl<
         let mut managed = 0_u64;
         let mut referenced = 0_u64;
         let mut unknown = 0_u64;
+        let artifacts = self
+            .repository
+            .installer_resource_ids(&request.cask_id)
+            .map_err(|e| err("PERSISTENCE", e, correlation_id))?;
         for item in items {
+            if artifacts.contains(&item.id) {
+                continue;
+            }
             unknown = unknown.saturating_add(item.unknown_entries);
             if item.availability != "PRESENT" {
                 unknown = unknown.saturating_add(1);
@@ -596,7 +631,35 @@ impl<
                 unknown = unknown.saturating_add(1);
             }
         }
+        let entries = self
+            .repository
+            .application_storage_entries(&request.cask_id)
+            .map_err(|e| err("PERSISTENCE", e, correlation_id))?;
+        let sizes = self
+            .storage
+            .application_sizes(&entries)
+            .map_err(|e| err("STORAGE", e, correlation_id))?;
+        let mut owned_applications = 0_u64;
+        let mut reference_applications = 0_u64;
+        let mut estimated_applications = 0_u64;
+        for (entry, size) in entries.iter().zip(sizes) {
+            match size {
+                ApplicationSize::Missing => {}
+                ApplicationSize::Unknown => unknown = unknown.saturating_add(1),
+                ApplicationSize::Known { bytes, estimated } => {
+                    if entry.owned {
+                        owned_applications = owned_applications.saturating_add(bytes);
+                    } else {
+                        reference_applications = reference_applications.saturating_add(bytes);
+                    }
+                    estimated_applications += u64::from(estimated);
+                }
+            }
+        }
         Ok(StorageSummary {
+            owned_application_bytes: owned_applications,
+            reference_application_bytes: reference_applications,
+            estimated_applications,
             version: CONTRACT_VERSION,
             managed_logical_bytes: managed,
             referenced_logical_bytes: referenced,

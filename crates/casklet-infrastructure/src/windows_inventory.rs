@@ -134,6 +134,36 @@ fn registry_scan() -> Result<Vec<ObservedInstallation>, String> {
     Ok(found)
 }
 
+/// Size metadata is deliberately outside the immutable uninstall evidence hash.
+pub(super) fn registration_size(source_key: &str) -> Option<u64> {
+    #[cfg(windows)]
+    {
+        use winreg::{
+            RegKey,
+            enums::{
+                HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, KEY_READ, KEY_WOW64_32KEY, KEY_WOW64_64KEY,
+            },
+        };
+        let (view, path) = source_key.split_once('\\')?;
+        let (hive, flags) = match view {
+            "HKCU64" => (HKEY_CURRENT_USER, KEY_WOW64_64KEY),
+            "HKCU32" => (HKEY_CURRENT_USER, KEY_WOW64_32KEY),
+            "HKLM64" => (HKEY_LOCAL_MACHINE, KEY_WOW64_64KEY),
+            "HKLM32" => (HKEY_LOCAL_MACHINE, KEY_WOW64_32KEY),
+            _ => return None,
+        };
+        let key = RegKey::predef(hive)
+            .open_subkey_with_flags(path, KEY_READ | flags)
+            .ok()?;
+        Some(u64::from(key.get_value::<u32, _>("EstimatedSize").ok()?).saturating_mul(1024))
+    }
+    #[cfg(not(windows))]
+    {
+        let _ = source_key;
+        None
+    }
+}
+
 impl InstalledInventorySource for LocalStorage {
     fn scan_installed(&self) -> Result<Vec<ObservedInstallation>, String> {
         #[cfg(windows)]
@@ -293,7 +323,12 @@ mod tests {
     }
     #[cfg(windows)]
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "native lifecycle fixture keeps its registry cleanup guard in one scope"
+    )]
     fn native_shared_user_views_identify_the_same_fixture_registration() {
+        use casklet_contracts::GetStorageSummary;
         use winreg::{
             RegKey,
             enums::{HKEY_CURRENT_USER, KEY_READ, KEY_WRITE},
@@ -322,7 +357,21 @@ mod tests {
         key.set_value("DisplayName", &"Casklet registry-alias fixture")
             .unwrap();
         key.set_value("Publisher", &"Casklet test").unwrap();
-        drop(key);
+        key.set_value("EstimatedSize", &12_u32).unwrap();
+        let test_root = std::env::temp_dir().join(format!("casklet-storage-{}", Uuid::new_v4()));
+        let service = CaskService {
+            repository: SqliteCasks::open(test_root.join("state.db")).unwrap(),
+            storage: LocalStorage::new(test_root.join("casks")),
+        };
+        let cask = service
+            .create(
+                &CreateCask {
+                    version: CONTRACT_VERSION,
+                    name: "Storage".into(),
+                },
+                "test",
+            )
+            .unwrap();
         let inventory = registry_scan().unwrap();
         let entries: Vec<_> = inventory
             .iter()
@@ -332,7 +381,94 @@ mod tests {
         assert_ne!(entries[0].installation_id, entries[1].installation_id);
         assert!(entries[0].is_user_registration_alias_of(entries[1]));
         assert!(entries[1].is_user_registration_alias_of(entries[0]));
+        let request = GetStorageSummary {
+            version: CONTRACT_VERSION,
+            cask_id: cask.id.clone(),
+        };
+        let summary = || service.storage_summary(&request, "test").unwrap();
+        assert_eq!(summary().reference_application_bytes, 0);
+        service
+            .repository
+            .associate_installed(&cask.id, entries[0], 1)
+            .unwrap();
+        service
+            .repository
+            .associate_installed(&cask.id, entries[1], 1)
+            .unwrap();
+        assert_eq!(summary().reference_application_bytes, 12 * 1024); // shared views counted once
+        assert_eq!(summary().estimated_applications, 1);
+        // Persistent ownership changes classification; a failed uninstall keeps these bytes.
+        let connection = service.repository.connection().unwrap();
+        let resource = Uuid::new_v4().to_string();
+        let artifact = Uuid::new_v4().to_string();
+        let operation = Uuid::new_v4().to_string();
+        connection.execute("INSERT INTO resources(id,kind,display_name,management,provenance,availability,size_bytes,size_measurement,unknown_entries,created_at_ms) VALUES (?1,'FILE','fixture','MANAGED','COPIED_BY_CASKLET','PRESENT',9000,'EXACT',0,1)", [&resource]).unwrap();
+        connection.execute("INSERT INTO installer_artifacts(id,cask_id,resource_id,source_path,path,format,sha256,size_bytes,inspection_json,registered_at_ms) VALUES (?1,?2,?3,'fixture','fixture','EXE','fixture',9000,'{}',1)", params![artifact,cask.id,resource]).unwrap();
+        connection.execute("INSERT INTO installer_operations(id,artifact_id,cask_id,state,started_at_ms,updated_at_ms) VALUES (?1,?2,?3,'CONFIRMED_ASSOCIATION',1,1)", params![operation,artifact,cask.id]).unwrap();
+        let installer_path = test_root.join("installer.exe");
+        std::fs::write(&installer_path, vec![0_u8; 9000]).unwrap();
+        connection.execute("INSERT INTO resource_locations(id,resource_id,path_display,path_key,containment,is_primary,first_seen_at_ms) VALUES (?1,?2,?3,?3,'INTERNAL',1,1)", params![Uuid::new_v4().to_string(),resource,installer_path.to_string_lossy()]).unwrap();
+        connection.execute("INSERT INTO resource_associations(id,cask_id,resource_id,category_key,relationship,removal_policy,added_at_ms) VALUES (?1,?2,?3,'applications','OWNED','DELETE_WHEN_UNREFERENCED',1)", params![Uuid::new_v4().to_string(),cask.id,resource]).unwrap();
+        assert_eq!(summary().managed_logical_bytes, 0); // retained installer copy excluded
+        assert_eq!(summary().owned_application_bytes, 0); // artifact/operation alone grants no installed bytes
+        connection.execute("INSERT INTO managed_msi_installations(installation_id,cask_id,operation_id,product_code,evidence_sha256,display_name,state,claimed_at_ms) VALUES (?1,?2,?3,'fixture',?4,'fixture','OWNED',1)", params![entries[0].installation_id,cask.id,operation,entries[0].evidence_sha256]).unwrap();
+        assert_eq!(summary().owned_application_bytes, 12 * 1024);
+        assert_eq!(summary().reference_application_bytes, 0);
+        connection
+            .execute(
+                "UPDATE managed_msi_installations SET state='REMOVED' WHERE installation_id=?1",
+                [&entries[0].installation_id],
+            )
+            .unwrap();
+        assert_eq!(summary().owned_application_bytes, 0);
+        drop(connection);
+        let evidence = registry_scan()
+            .unwrap()
+            .into_iter()
+            .find(|item| item.installation_id == entries[0].installation_id)
+            .unwrap()
+            .evidence_sha256;
+        key.set_value("EstimatedSize", &24_u32).unwrap();
+        assert_eq!(summary().reference_application_bytes, 24 * 1024);
+        assert_eq!(
+            registry_scan()
+                .unwrap()
+                .into_iter()
+                .find(|item| item.installation_id == entries[0].installation_id)
+                .unwrap()
+                .evidence_sha256,
+            evidence
+        );
+        service
+            .repository
+            .disassociate_installed(&cask.id, &entries[0].installation_id, 2)
+            .unwrap();
+        service
+            .repository
+            .disassociate_installed(&cask.id, &entries[1].installation_id, 2)
+            .unwrap();
+        assert_eq!(summary().reference_application_bytes, 0);
+        assert!(fixture.root.open_subkey(&name).is_ok()); // detach never uninstalls
+        service
+            .repository
+            .associate_installed(&cask.id, entries[0], 3)
+            .unwrap();
+        let installation_folder = test_root.join("installed-app");
+        std::fs::create_dir_all(&installation_folder).unwrap();
+        let payload = installation_folder.join("app.bin");
+        std::fs::write(&payload, b"1234567").unwrap();
+        key.set_value(
+            "InstallLocation",
+            &installation_folder.to_string_lossy().as_ref(),
+        )
+        .unwrap();
+        assert_eq!(summary().reference_application_bytes, 7);
+        assert_eq!(summary().estimated_applications, 0);
+        std::fs::write(&payload, b"12345678901").unwrap();
+        assert_eq!(summary().reference_application_bytes, 11);
+        drop(key);
         drop(fixture);
+        assert_eq!(summary().reference_application_bytes, 0); // actual absence overrides history
         assert_eq!(
             RegKey::predef(HKEY_CURRENT_USER)
                 .open_subkey(format!("{path}\\{name}"))
