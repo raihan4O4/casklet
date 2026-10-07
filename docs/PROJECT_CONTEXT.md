@@ -1,6 +1,6 @@
 # Casklet Project Context
 
-Last updated: 2026-10-06
+Last updated: 2026-10-07
 
 This is the canonical handoff for humans and new Codex tasks. Keep it concise and current. Detailed specifications belong in linked documents.
 
@@ -14,17 +14,17 @@ Core principle:
 
 ## Current phase
 
-The initial design program is approved. Milestones 0–10 are integrated into `develop`. The desktop GUI redesign was merged in PR #14. A follow-up UI polish pass adds consistent menus, focus states, floating notifications, resource/application picker hierarchy, and hidden-window readiness. Manual Windows release gates remain open. Default builds remain review-only. The user-authorized Alpha profile explicitly enables file cleanup through `alpha-cleanup`; WinGet uninstall remains behind `reviewed-removal`. Independent review and clean-machine/publication gates remain open. See ADR 0021.
+The initial design program is approved. Milestones 0â€“10 are integrated into `develop`. The desktop GUI redesign was merged in PR #14. A follow-up UI polish pass adds consistent menus, focus states, floating notifications, resource/application picker hierarchy, and hidden-window readiness. Manual Windows release gates remain open. Default builds remain review-only. The user-authorized Alpha profile explicitly enables file cleanup through `alpha-cleanup`; WinGet uninstall remains behind `reviewed-removal`. Independent review and clean-machine/publication gates remain open. See ADR 0021.
 
-- Phase 1 — Requirements: approved.
-- Phase 2 — Cross-platform and installation workflow: approved.
-- Phase 3 — Domain model and state transitions: approved and normalized into `docs/architecture/domain-model.md`; `domain model.txt` is retained temporarily as the source record for review.
-- Phase 4 — Component architecture and API boundaries: approved.
-- Phase 5 — Persistence, schema, manifests, and recovery: approved.
-- Phase 6 — Security threat model: approved.
-- Phase 7 — Repository structure and engineering toolchain: approved.
+- Phase 1 â€” Requirements: approved.
+- Phase 2 â€” Cross-platform and installation workflow: approved.
+- Phase 3 â€” Domain model and state transitions: approved and normalized into `docs/architecture/domain-model.md`; `domain model.txt` is retained temporarily as the source record for review.
+- Phase 4 â€” Component architecture and API boundaries: approved.
+- Phase 5 â€” Persistence, schema, manifests, and recovery: approved.
+- Phase 6 â€” Security threat model: approved.
+- Phase 7 â€” Repository structure and engineering toolchain: approved.
 - System design synthesis: approved as the living visual map of the v0.1 design.
-- Phase 8 — Delivery and implementation roadmap: approved on 2026-09-15.
+- Phase 8 â€” Delivery and implementation roadmap: approved on 2026-09-15.
 
 ## Approved v0.1 scope
 
@@ -126,32 +126,32 @@ Exact dependencies will be approved during repository/tooling design; do not add
 
 ## Documentation map
 
-- `AGENTS.md` — automatically loaded project instructions and safety rules.
-- `docs/PROJECT_CONTEXT.md` — current status and durable handoff.
-- `docs/architecture/component-architecture.md` — Phase 4 component and API-boundary design.
-- `docs/architecture/domain-model.md` — normalized Phase 3 domain language, aggregates, states, and invariants.
-- `docs/architecture/persistence-design.md` — Phase 5 SQLite, manifest, migration, consistency, and recovery design.
-- `docs/security/threat-model-v0.1.md` — Phase 6 assets, trust boundaries, threats, mitigations, and security release gate.
-- `docs/engineering/repository-and-tooling.md` — Phase 7 repository layout, dependencies, tool versions, CI/CD, and workflow.
-- `docs/architecture/system-design-v0.1.md` — approved consolidated system design with context, component, data-flow, ER, trust-boundary, and sequence diagrams.
-- `docs/engineering/delivery-roadmap-v0.1.md` — Phase 8 vertical slices, acceptance gates, learning sequence, and release progression.
-- `docs/engineering/milestone-5-export-recovery.md` — export profiles, CLI and GUI workflows, compatibility, and conservative recovery boundary.
-- `docs/engineering/milestone-6-portable-apps.md` — ZIP validation, installation identity, launch verification, and removal integration.
-- `docs/engineering/milestone-7-windows-inventory.md` — Windows registration discovery, reconciliation, and detach-only association.
-- `docs/engineering/milestone-8-winget-lifecycle.md` — WinGet provider, exact ownership evidence, journal, and uninstall plan.
-- `docs/engineering/milestone-9-installer-artifacts.md` — MSI/EXE inspection, reviewed launch, candidate correlation, and acceptance evidence.
-- `docs/engineering/milestone-10-release-gates.md` — build traceability, automated evidence, and pending manual release checks.
-- `docs/product/user-guide.md` — user workflows, safety, privacy, and troubleshooting.
-- `docs/security/milestone-10-review.md` — internal boundary audit and outstanding independent security review.
-- `docs/adr/0016-apache-2-project-license.md` — Apache-2.0 project-license decision and release consequences.
-- `docs/adr/0017-windows-install-and-data-paths.md` — separation of per-user NSIS program files and persistent data.
-- `docs/adr/0019-resource-ownership-and-cleanup.md` — explicit ownership at external locations and separation of Cask lifecycle from cleanup.
-- `docs/engineering/ownership-cleanup-ux.md` — shared commands, interface behavior, schema 12 migration, and acceptance evidence.
-- `domain model.txt` — original detailed Phase 3 source; preserve through normalization review.
+- `AGENTS.md` â€” automatically loaded project instructions and safety rules.
+- `docs/PROJECT_CONTEXT.md` â€” current status and durable handoff.
+- `docs/architecture/component-architecture.md` â€” Phase 4 component and API-boundary design.
+- `docs/architecture/domain-model.md` â€” normalized Phase 3 domain language, aggregates, states, and invariants.
+- `docs/architecture/persistence-design.md` â€” Phase 5 SQLite, manifest, migration, consistency, and recovery design.
+- `docs/security/threat-model-v0.1.md` â€” Phase 6 assets, trust boundaries, threats, mitigations, and security release gate.
+- `docs/engineering/repository-and-tooling.md` â€” Phase 7 repository layout, dependencies, tool versions, CI/CD, and workflow.
+- `docs/architecture/system-design-v0.1.md` â€” approved consolidated system design with context, component, data-flow, ER, trust-boundary, and sequence diagrams.
+- `docs/engineering/delivery-roadmap-v0.1.md` â€” Phase 8 vertical slices, acceptance gates, learning sequence, and release progression.
+- `docs/engineering/milestone-5-export-recovery.md` â€” export profiles, CLI and GUI workflows, compatibility, and conservative recovery boundary.
+- `docs/engineering/milestone-6-portable-apps.md` â€” ZIP validation, installation identity, launch verification, and removal integration.
+- `docs/engineering/milestone-7-windows-inventory.md` â€” Windows registration discovery, reconciliation, and detach-only association.
+- `docs/engineering/milestone-8-winget-lifecycle.md` â€” WinGet provider, exact ownership evidence, journal, and uninstall plan.
+- `docs/engineering/milestone-9-installer-artifacts.md` â€” MSI/EXE inspection, reviewed launch, candidate correlation, and acceptance evidence.
+- `docs/engineering/milestone-10-release-gates.md` â€” build traceability, automated evidence, and pending manual release checks.
+- `docs/product/user-guide.md` â€” user workflows, safety, privacy, and troubleshooting.
+- `docs/security/milestone-10-review.md` â€” internal boundary audit and outstanding independent security review.
+- `docs/adr/0016-apache-2-project-license.md` â€” Apache-2.0 project-license decision and release consequences.
+- `docs/adr/0017-windows-install-and-data-paths.md` â€” separation of per-user NSIS program files and persistent data.
+- `docs/adr/0019-resource-ownership-and-cleanup.md` â€” explicit ownership at external locations and separation of Cask lifecycle from cleanup.
+- `docs/engineering/ownership-cleanup-ux.md` â€” shared commands, interface behavior, schema 12 migration, and acceptance evidence.
+- `domain model.txt` â€” original detailed Phase 3 source; preserve through normalization review.
 
 ## Current implementation milestone
 
-Milestones 0–10 are integrated into `develop`. Milestone 10 adds release-profile storage separation, database integrity checks and pre-migration backup, initial accessibility improvements, packaging tooling, and product/release documentation. Its release gate remains open for Windows manual testing, installer uninstall evidence, performance profiling, and independent security review. Real installer/UAC behavior still needs isolated manual validation. Keep `main` unchanged until planned milestone integration.
+Milestones 0â€“10 are integrated into `develop`. Milestone 10 adds release-profile storage separation, database integrity checks and pre-migration backup, initial accessibility improvements, packaging tooling, and product/release documentation. Its release gate remains open for Windows manual testing, installer uninstall evidence, performance profiling, and independent security review. Real installer/UAC behavior still needs isolated manual validation. Keep `main` unchanged until planned milestone integration.
 The project license is Apache-2.0 (selected during Milestone 10). CLI and GUI expose metadata-only SQLite backup through the shared application core. The GUI now uses fixed native main and owned Cask windows, monochrome styling, the supplied logo, bundled Inter, and Lucide icons. Cask workspaces retain all resource/provider/recovery/removal workflows across Overview, Files & Folders, Applications, Activity, and Settings. Schema 11 adds descriptions and revision-checked metadata/archive commands shared by CLI and GUI. See `docs/adr/0018-desktop-cask-workspaces.md` and `docs/engineering/desktop-gui-design.md`. The Windows host has no isolated test machine or independent reviewer, so release gates remain open.
 The per-user NSIS installer uses `%LOCALAPPDATA%\Casklet` for program files. A local install test exposed that the original release database path collided with this directory; the empty test install was uninstalled and operational state moved to `%LOCALAPPDATA%\CaskletData`. The corrected package passed a local silent install/create/uninstall preservation test; Windows Settings, upgrade, and clean-machine tests remain pending.
 The October ownership/cleanup follow-up adds direct reversible archive/restore, explicit in-place resource ownership grants, stable reuse of equivalent current cleanup plans, and resource-only cleanup that preserves the Cask. Reference and explicit in-place ownership remain available; generic user Copy/Move intake is temporarily disabled under ADR 0020 while legacy/provider code and recovery remain supported. Schema 12 preserves existing resource data and invalidates unexecuted legacy plans. External owned resources require exact grant and identity verification, block on overlapping dependencies, and support journaled Recycle Bin disposal only behind `reviewed-removal`. Recovered manifests never recreate deletion authority.
@@ -185,3 +185,7 @@ The application lifecycle quality gate passed `cargo xtask check`: 107 all-featu
 The October 6 develop integration retains the Windows GUI subsystem fix from 126663b (alpha-readiness itself had a console entry point). The previously reported installed build was already uninstalled, so its historical launch failure cannot be reproduced or assigned a confirmed cause. The retained local package passed actual installed launches, console-subsystem checks, reinstall/uninstall and data preservation. A committed installed-desktop smoke test now checks launch instead of only installer exit codes; CI push gates include develop. See docs/engineering/develop-integration.md for branch and verification evidence.
 
 Local develop now contains remote develop f277847 plus the preserved application lifecycle changes and installed-launch guard, without conflicts. Its full local quality gate, bootstrap, frozen dependency install, secret scan and dependency policy passed. The source-map-js advisory was patched with pinned 1.2.2; the frontend audit is clear. The final clean-source Alpha package and installed/fixture verification use target/develop-package.log, target/develop-installed-smoke.log and target/develop-alpha-smoke.log. Historical failure of the already-uninstalled build remains unconfirmed; current console suppression is verified at the PE subsystem level.
+
+Native develop validation found shared HKCU registry-view aliases that made single per-user MSI/EXE installs ambiguous. ADR 0025 now handles exact aliases through correlation, ownership/dependency revalidation and uninstall verification while retaining stable IDs and prior authority. The updated full local gate passed 117 Rust and 29 GUI tests; native registry fixture cleanup and strict Clippy passed. The first hosted run exposed a 15-second success-test deadline on its cold Windows runner; the completion budget is now 60 seconds, with timeout/cancellation and production behavior unchanged. Normal installed GUI/shortcuts and schema-15 to 16 data preservation were verified. Final package/CI evidence is tracked in docs/engineering/develop-integration.md and target/develop-\*-final logs.
+
+The October 7 storage follow-up derives registered owned/reference application bytes from active SQLite associations and current Windows presence. Typed installer copies are excluded from the displayed total; complete folder scans and labelled Windows estimates remain independent of uninstall authority. Reference association/detach refresh storage immediately. The supplied cask-icon.png supplies only Windows package/desktop icons; the original in-app logo is restored byte-for-byte from 37ccf0b. See docs/engineering/application-storage.md; validation is in target/storage-quality.log.

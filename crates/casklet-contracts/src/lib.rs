@@ -656,6 +656,9 @@ pub struct GetStorageSummary {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StorageSummary {
+    pub owned_application_bytes: u64,
+    pub reference_application_bytes: u64,
+    pub estimated_applications: u64,
     pub version: u32,
     pub managed_logical_bytes: u64,
     pub referenced_logical_bytes: u64,
@@ -931,7 +934,7 @@ export type ListCategories = { version: number; caskId: string };
 export type CategoryView = { version: number; key: string; name: string; isBuiltin: boolean };
 export type CategorizeResource = { version: number; resourceId: string; categoryKey: string };
 export type GetStorageSummary = { version: number; caskId: string };
-export type StorageSummary = { version: number; managedLogicalBytes: number; referencedLogicalBytes: number; physicalBytes: number | null; reclaimableMinBytes: number; reclaimableMaxBytes: number; unknownEntries: number };
+export type StorageSummary = { ownedApplicationBytes: number; referenceApplicationBytes: number; estimatedApplications: number; version: number; managedLogicalBytes: number; referencedLogicalBytes: number; physicalBytes: number | null; reclaimableMinBytes: number; reclaimableMaxBytes: number; unknownEntries: number };
 export type ListOperations = { version: number; caskId: string | null };
 export type GetOperation = { version: number; id: string };
 export type RecoverOperation = { version: number; id: string };

@@ -82,6 +82,50 @@ fn resource_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ResourceView> {
 }
 
 impl ResourceRepository for SqliteCasks {
+    fn application_storage_entries(
+        &self,
+        cask_id: &str,
+    ) -> Result<Vec<casklet_application::resource::ApplicationStorageEntry>, String> {
+        let connection = self.connection()?;
+        let mut query = connection.prepare("SELECT w.source_key, EXISTS(SELECT 1 FROM managed_msi_installations m WHERE m.installation_id=w.id AND m.cask_id=a.cask_id AND m.state='OWNED') FROM windows_cask_associations a JOIN windows_installations w ON w.id=a.installation_id WHERE a.cask_id=?1 AND a.removed_at_ms IS NULL UNION ALL SELECT w.source_key,1 FROM winget_installations g JOIN windows_installations w ON w.id=g.registry_installation_id WHERE g.cask_id=?1 AND g.state IN ('INSTALLED','CHANGED','RECOVERY_REQUIRED') ORDER BY source_key").map_err(|e| e.to_string())?;
+        let mut entries: Vec<casklet_application::resource::ApplicationStorageEntry> = Vec::new();
+        for row in query
+            .query_map([cask_id], |row| {
+                Ok(casklet_application::resource::ApplicationStorageEntry {
+                    source_key: row.get(0)?,
+                    owned: row.get(1)?,
+                })
+            })
+            .map_err(|e| e.to_string())?
+        {
+            let entry = row.map_err(|e| e.to_string())?;
+            let alias =
+                casklet_application::windows_inventory::user_registration_alias(&entry.source_key);
+            if let Some(existing) = entries.iter_mut().find(|other| {
+                other.source_key.eq_ignore_ascii_case(&entry.source_key)
+                    || alias
+                        .as_ref()
+                        .is_some_and(|key| key.eq_ignore_ascii_case(&other.source_key))
+            }) {
+                existing.owned |= entry.owned;
+            } else {
+                entries.push(entry);
+            }
+        }
+        Ok(entries)
+    }
+    fn installer_resource_ids(&self, cask_id: &str) -> Result<Vec<String>, String> {
+        let connection = self.connection()?;
+        let mut query = connection
+            .prepare("SELECT resource_id FROM installer_artifacts WHERE cask_id=?1")
+            .map_err(|e| e.to_string())?;
+        query
+            .query_map([cask_id], |row| row.get(0))
+            .map_err(|e| e.to_string())?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|e| e.to_string())
+    }
+
     fn commit_adoption(&self, resource: &Resource) -> Result<(), String> {
         let mut connection = self.connection()?;
         let transaction = connection.transaction().map_err(|e| e.to_string())?;

@@ -1683,9 +1683,12 @@ fn render_category_created(item: &CategoryView, output: Output) -> String {
 fn render_storage_summary(item: &StorageSummary, output: Output) -> String {
     match output {
         Output::Table => format!(
-            "Managed logical: {} bytes\nReferenced logical: {} bytes\nPhysical: unknown\nReclaimable: {}–{} bytes\nUnknown entries: {}\n",
+            "Managed logical: {} bytes\nReferenced logical: {} bytes\nOwned applications: {} bytes\nReference applications: {} bytes\nEstimated applications: {}\nPhysical: unknown\nReclaimable: {}â€“{} bytes\nUnknown entries: {}\n",
             item.managed_logical_bytes,
             item.referenced_logical_bytes,
+            item.owned_application_bytes,
+            item.reference_application_bytes,
+            item.estimated_applications,
             item.reclaimable_min_bytes,
             item.reclaimable_max_bytes,
             item.unknown_entries

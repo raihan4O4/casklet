@@ -10,6 +10,7 @@ license.workspace = true
 reviewed-removal = []
 
 [dependencies]
+serde_json = "1.0.151"
 casklet-contracts = { path = "../casklet-contracts", version = "=0.1.0-alpha.1" }
 casklet-domain = { path = "../casklet-domain", version = "=0.1.0-alpha.1" }
 uuid = { version = "1.26.1", features = ["v4"] }

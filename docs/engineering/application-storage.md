@@ -1,0 +1,17 @@
+# Application storage accounting
+
+Cask storage is a shared-core query over active resource and application associations, not a UI counter. Installer artifacts are excluded from the displayed files/applications total; their retained copies remain inspectable and eligible for separately reviewed cleanup. Selecting or launching an installer never adds application bytes. Only a committed association after verified installation contributes. Historical ownership and removed associations contribute no bytes.
+
+Registered MSI/EXE and WinGet instances use the current complete Windows inventory for presence. Complete bounded scans of a specific registered installation directory supply logical file bytes; links, inaccessible entries and broad roots prevent a complete measurement. Windows EstimatedSize (KiB) is a labelled fallback, kept outside immutable uninstall evidence. Unknown size is counted as unknown, never silently reported as a zero-byte installation. Missing registrations contribute no application bytes. Changing size does not invalidate uninstall authority.
+
+Per-Cask registry-view aliases are counted once and owned status takes precedence. Portable applications remain in managed resource bytes and are not added a second time. References contribute independently of uninstall eligibility and detach immediately refreshes the summary. The optional reference-size preference is deferred: references are included by default. Physical usage and reclaimable application space remain unknown; estimates never expand destructive authority.
+
+The desktop performs measurement on a blocking worker, keeping the native event loop responsive. Installation completion, cleanup completion/failure reconciliation and association/detach reload current state. Reopening a Cask remeasures sizes, including external size changes.
+
+The supplied cask-icon.png supplies only the Windows package PNG and multi-resolution ICO (16-256 px). The GUI logo is restored byte-for-byte from 37ccf0b and remains a separate asset. NSIS shortcuts target the desktop executable and inherit its embedded icon.
+
+Validation: the full quality gate passes 117 all-feature Rust tests, default/Alpha profile tests, 30 GUI tests, strict Clippy, formatting, frontend lint/types/contracts and production build. The native fixture covers estimated and measured size changes, alias deduplication, reference detach, owned classification, installer-copy exclusion and missing registration while preserving uninstall evidence. Logs: target/storage-quality.log, target/storage-native-final.log and target/storage-clippy-final.log. Packaging and installed launch evidence use target/storage-package.log and target/storage-installed-smoke.log.
+
+Embedded-icon verification exposed cached Windows resources: the Tauri build script did not track icon files. Explicit Cargo rerun dependencies now regenerate native resources when either icon changes. Verification compares all embedded image resolutions with the supplied ICO, rather than trusting asset paths. The isolated installer test also has an explicit option for preserving unregistered program leftovers; registered installations and running processes still block it.
+
+Windows shell icon correction: the original in-app logo is restored exactly. The supplied image remains only in native Windows/package assets. An NSIS post-install hook notifies Explorer with SHChangeNotify(SHCNE_ASSOCCHANGED), allowing existing same-path executable/shortcut icons to refresh without deleting user caches or restarting Explorer.

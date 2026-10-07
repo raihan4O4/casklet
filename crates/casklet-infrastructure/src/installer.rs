@@ -257,8 +257,12 @@ mod tests {
     enum Mode {
         Success,
         ManagedMsi,
+        ManagedMsiAlias,
         ExeSuccess,
         ExeTreeSuccess,
+        ExeTreeAlias,
+        ExeTreeAliasLeavesAlias,
+        ExeTreeChangedAlias,
         ExeTreeAmbiguous,
         Ambiguous,
         Failure,
@@ -318,7 +322,7 @@ mod tests {
                 product_name: Some("Example App".into()),
                 publisher: Some("Example Ltd".into()),
                 product_version: Some("1.0".into()),
-                product_code: if matches!(self.mode, Mode::ManagedMsi) {
+                product_code: if matches!(self.mode, Mode::ManagedMsi | Mode::ManagedMsiAlias) {
                     Some("{12345678-1234-1234-1234-123456789ABC}".into())
                 } else {
                     None
@@ -345,13 +349,49 @@ mod tests {
                     "HKCU64\\Uninstall\\{12345678-1234-1234-1234-123456789ABC}".into();
                 registry[0].evidence_json = "{\"windowsInstaller\":1}".into();
             }
+            if matches!(
+                self.mode,
+                Mode::ExeTreeAlias
+                    | Mode::ExeTreeChangedAlias
+                    | Mode::ManagedMsiAlias
+                    | Mode::ExeTreeAliasLeavesAlias
+            ) {
+                let key = if matches!(self.mode, Mode::ManagedMsiAlias) {
+                    "{12345678-1234-1234-1234-123456789ABC}"
+                } else {
+                    "Example"
+                };
+                registry[0].source_key = format!(
+                    "HKCU64\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\{key}"
+                );
+                registry[0].evidence_json = serde_json::json!({"sourceKey": registry[0].source_key, "scope": "USER", "displayName": "Example App", "windowsInstaller": u32::from(matches!(self.mode, Mode::ManagedMsiAlias)), "uninstallString": "verified-uninstaller"}).to_string();
+                let mut alias = registry[0].clone();
+                alias.application_id = "app-alias".into();
+                alias.installation_id = "alias".into();
+                alias.source_key = format!(
+                    "HKCU32\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\{key}"
+                );
+                let mut evidence: serde_json::Value =
+                    serde_json::from_str(&alias.evidence_json).unwrap();
+                evidence["sourceKey"] = alias.source_key.clone().into();
+                if matches!(self.mode, Mode::ExeTreeChangedAlias) {
+                    evidence["uninstallString"] = "changed-uninstaller".into();
+                }
+                alias.evidence_json = evidence.to_string();
+                alias.evidence_sha256 = "alias-evidence".into();
+                registry.push(alias);
+            }
             match self.mode {
-                Mode::ExeTreeSuccess | Mode::ExeTreeAmbiguous => {
-                    Ok(InstallerOutcome::ProcessTreeExited(0))
-                }
-                Mode::Success | Mode::ManagedMsi | Mode::ExeSuccess | Mode::Ambiguous => {
-                    Ok(InstallerOutcome::Exited(0))
-                }
+                Mode::ExeTreeSuccess
+                | Mode::ExeTreeAlias
+                | Mode::ExeTreeAliasLeavesAlias
+                | Mode::ExeTreeChangedAlias
+                | Mode::ExeTreeAmbiguous => Ok(InstallerOutcome::ProcessTreeExited(0)),
+                Mode::Success
+                | Mode::ManagedMsi
+                | Mode::ManagedMsiAlias
+                | Mode::ExeSuccess
+                | Mode::Ambiguous => Ok(InstallerOutcome::Exited(0)),
                 Mode::Failure => Err("fake process failure".into()),
                 Mode::Cancelled => Ok(InstallerOutcome::Cancelled),
                 Mode::TimedOut => Ok(InstallerOutcome::TimedOut),
@@ -372,10 +412,11 @@ mod tests {
             hash: &str,
         ) -> Result<i32, String> {
             assert_eq!(hash, "uninstaller-hash");
-            self.registry
-                .lock()
-                .unwrap()
-                .retain(|entry| entry.installation_id != item.installation_id);
+            self.registry.lock().unwrap().retain(|entry| {
+                entry.installation_id != item.installation_id
+                    && (matches!(self.mode, Mode::ExeTreeAliasLeavesAlias)
+                        || !entry.is_user_registration_alias_of(item))
+            });
             Ok(0)
         }
         fn uninstall_msi(&self, _code: &str) -> Result<i32, String> {
@@ -384,6 +425,16 @@ mod tests {
         }
     }
     impl ResourceStorage for FakeStorage {
+        fn application_sizes(
+            &self,
+            entries: &[casklet_application::resource::ApplicationStorageEntry],
+        ) -> Result<Vec<casklet_application::resource::ApplicationSize>, String> {
+            Ok(vec![
+                casklet_application::resource::ApplicationSize::Unknown;
+                entries.len()
+            ])
+        }
+
         fn inspect(
             &self,
             source: &str,
@@ -433,7 +484,10 @@ mod tests {
         let root = std::env::temp_dir().join(format!("casklet-m9-{}", uuid::Uuid::new_v4()));
         fs::create_dir_all(&root).unwrap();
         let source = root.join(
-            if matches!(mode, Mode::Success | Mode::ManagedMsi | Mode::Ambiguous) {
+            if matches!(
+                mode,
+                Mode::Success | Mode::ManagedMsi | Mode::ManagedMsiAlias | Mode::Ambiguous
+            ) {
                 "setup.msi"
             } else {
                 "setup.exe"
@@ -645,6 +699,249 @@ mod tests {
                 .list_associated_installed(&cask_id)
                 .unwrap()
                 .is_empty()
+        );
+    }
+    #[test]
+    fn changed_alternate_view_blocks_existing_owned_uninstall_preview() {
+        let (service, cask_id, path) = setup(Mode::ExeTreeAlias);
+        install(&service, &cask_id, &path);
+        let mut registry = service.storage.registry.lock().unwrap();
+        let mut value: serde_json::Value =
+            serde_json::from_str(&registry[1].evidence_json).unwrap();
+        value["uninstallString"] = "changed-after-claim".into();
+        registry[1].evidence_json = value.to_string();
+        drop(registry);
+        let plan = service
+            .create_application_removal(
+                &casklet_contracts::DisassociateInstalledApplication {
+                    version: CONTRACT_VERSION,
+                    cask_id,
+                    installation_id: "one".into(),
+                },
+                "test",
+            )
+            .unwrap();
+        assert_eq!(plan.items[0].action, "PRESERVE");
+    }
+    #[test]
+    fn surviving_alternate_view_prevents_false_uninstall_success() {
+        let (service, cask_id, path) = setup(Mode::ExeTreeAliasLeavesAlias);
+        install(&service, &cask_id, &path);
+        let plan = service
+            .create_application_removal(
+                &casklet_contracts::DisassociateInstalledApplication {
+                    version: CONTRACT_VERSION,
+                    cask_id: cask_id.clone(),
+                    installation_id: "one".into(),
+                },
+                "test",
+            )
+            .unwrap();
+        let request = casklet_contracts::ApproveRemovalPlan {
+            version: CONTRACT_VERSION,
+            id: plan.id,
+            plan_hash: plan.plan_hash,
+        };
+        service.approve_msi_cleanup(&request, "test").unwrap();
+        let result = service.execute_msi_cleanup(&request, "test").unwrap();
+        assert_eq!(result.items[0].state, "FAILED");
+        assert_eq!(
+            result.items[0].result.as_deref(),
+            Some("UNINSTALL_NOT_VERIFIED")
+        );
+        assert_eq!(
+            service
+                .repository
+                .list_associated_installed(&cask_id)
+                .unwrap()[0]
+                .removal_policy,
+            "CASKLET_OWNED"
+        );
+    }
+    #[test]
+    fn changed_alternate_view_blocks_claim_after_candidate_detection() {
+        let (service, cask_id, path) = setup(Mode::ExeTreeAlias);
+        let artifact = register(&service, &cask_id, &path);
+        let operation = launch(&service, &artifact);
+        let mut registry = service.storage.registry.lock().unwrap();
+        let mut value: serde_json::Value =
+            serde_json::from_str(&registry[1].evidence_json).unwrap();
+        value["uninstallString"] = "changed-after-detection".into();
+        registry[1].evidence_json = value.to_string();
+        drop(registry);
+        assert!(
+            service
+                .claim_managed_msi(
+                    &ConfirmInstallerCandidate {
+                        version: CONTRACT_VERSION,
+                        operation_id: operation.id,
+                        installation_id: "one".into(),
+                    },
+                    "test"
+                )
+                .is_err()
+        );
+        assert!(
+            service
+                .repository
+                .list_associated_installed(&cask_id)
+                .unwrap()
+                .is_empty()
+        );
+    }
+    #[test]
+    fn a_preexisting_user_key_never_becomes_new_through_its_other_view() {
+        let (service, cask_id, path) = setup(Mode::ExeTreeAlias);
+        let mut old = observed("old-id");
+        old.source_key =
+            "HKCU32\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\Example".into();
+        // Even changed metadata after an upgrade does not make the shared key new.
+        old.evidence_json = "{}".into();
+        service.storage.registry.lock().unwrap().push(old);
+        let operation = install(&service, &cask_id, &path);
+        assert_eq!(operation.state, "REVIEW_REQUIRED");
+        assert!(operation.candidates.is_empty());
+        assert!(
+            service
+                .repository
+                .list_associated_installed(&cask_id)
+                .unwrap()
+                .is_empty()
+        );
+    }
+    #[test]
+    fn a_reference_through_the_alternate_user_view_blocks_an_ownership_claim() {
+        let (service, cask_id, path) = setup(Mode::ExeTreeAlias);
+        let artifact = register(&service, &cask_id, &path);
+        let operation = launch(&service, &artifact);
+        let alias = service.storage.registry.lock().unwrap()[1].clone();
+        service
+            .repository
+            .associate_installed(&cask_id, &alias, 2)
+            .unwrap();
+        assert!(
+            service
+                .claim_managed_msi(
+                    &ConfirmInstallerCandidate {
+                        version: CONTRACT_VERSION,
+                        operation_id: operation.id,
+                        installation_id: "one".into(),
+                    },
+                    "test"
+                )
+                .is_err()
+        );
+        let associated = service
+            .repository
+            .list_associated_installed(&cask_id)
+            .unwrap();
+        assert_eq!(associated.len(), 1);
+        assert_eq!(associated[0].removal_policy, "DETACH_ONLY");
+        assert_eq!(associated[0].installation_id, "alias");
+    }
+    #[test]
+    fn shared_user_registry_views_are_one_owned_installation_and_uninstall_once() {
+        for mode in [Mode::ExeTreeAlias, Mode::ManagedMsiAlias] {
+            let (service, cask_id, path) = setup(mode);
+            let operation = install(&service, &cask_id, &path);
+            assert_eq!(operation.state, "CONFIRMED_ASSOCIATION");
+            assert_eq!(operation.candidates.len(), 1);
+            assert_eq!(operation.confirmed_installation_id.as_deref(), Some("one"));
+            assert_eq!(service.storage.registry.lock().unwrap().len(), 2);
+            let plan = service
+                .create_application_removal(
+                    &casklet_contracts::DisassociateInstalledApplication {
+                        version: CONTRACT_VERSION,
+                        cask_id,
+                        installation_id: "one".into(),
+                    },
+                    "test",
+                )
+                .unwrap();
+            assert_eq!(plan.items.len(), 1);
+            assert_eq!(plan.items[0].action, "UNINSTALL");
+            let request = casklet_contracts::ApproveRemovalPlan {
+                version: CONTRACT_VERSION,
+                id: plan.id,
+                plan_hash: plan.plan_hash,
+            };
+            service.approve_msi_cleanup(&request, "test").unwrap();
+            let result = service.execute_msi_cleanup(&request, "test").unwrap();
+            assert_eq!(result.items[0].state, "SUCCEEDED");
+            assert!(service.storage.registry.lock().unwrap().is_empty());
+        }
+    }
+    #[test]
+    fn differing_user_view_evidence_remains_ambiguous() {
+        let (service, cask_id, path) = setup(Mode::ExeTreeChangedAlias);
+        let operation = install(&service, &cask_id, &path);
+        assert_eq!(operation.state, "REVIEW_REQUIRED");
+        assert_eq!(operation.candidates.len(), 2);
+        assert!(
+            service
+                .repository
+                .list_associated_installed(&cask_id)
+                .unwrap()
+                .is_empty()
+        );
+    }
+    #[test]
+    fn a_reference_through_the_alternate_user_view_blocks_owned_uninstall() {
+        let (service, cask_id, path) = setup(Mode::ExeTreeAlias);
+        install(&service, &cask_id, &path);
+        let plan = service
+            .create_application_removal(
+                &casklet_contracts::DisassociateInstalledApplication {
+                    version: CONTRACT_VERSION,
+                    cask_id: cask_id.clone(),
+                    installation_id: "one".into(),
+                },
+                "test",
+            )
+            .unwrap();
+        let request = casklet_contracts::ApproveRemovalPlan {
+            version: CONTRACT_VERSION,
+            id: plan.id,
+            plan_hash: plan.plan_hash,
+        };
+        service.approve_msi_cleanup(&request, "test").unwrap();
+        let other = Cask::new(
+            "Other",
+            PathBuf::from(&path)
+                .parent()
+                .unwrap()
+                .join("other-cask")
+                .to_string_lossy()
+                .into_owned(),
+            1,
+        )
+        .unwrap();
+        service.repository.create(&other).unwrap();
+        let alias = service.storage.registry.lock().unwrap()[1].clone();
+        service
+            .repository
+            .associate_installed(&other.id, &alias, 2)
+            .unwrap();
+        assert!(service.execute_msi_cleanup(&request, "test").is_err());
+        let preserved = service
+            .create_application_removal(
+                &casklet_contracts::DisassociateInstalledApplication {
+                    version: CONTRACT_VERSION,
+                    cask_id,
+                    installation_id: "one".into(),
+                },
+                "test",
+            )
+            .unwrap();
+        assert_eq!(preserved.items[0].action, "PRESERVE");
+        assert_eq!(service.storage.registry.lock().unwrap().len(), 2);
+        assert_eq!(
+            service
+                .repository
+                .list_associated_installed(&other.id)
+                .unwrap()[0]
+                .removal_policy,
+            "DETACH_ONLY"
         );
     }
     #[test]

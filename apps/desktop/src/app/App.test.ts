@@ -1679,3 +1679,50 @@ test("installer artifacts stay out of Files and Cask-installed EXE provenance st
     ),
   ).toBe(false);
 });
+
+test("Cask storage includes current owned and reference applications", async () => {
+  const cask = {
+    version: 1,
+    id: "storage-cask",
+    name: "Storage test",
+    state: "ACTIVE",
+    managedStorageRoot: "C:/Casklets/storage",
+    createdAtMs: 1,
+    updatedAtMs: 1,
+    revision: 0,
+  };
+  calls.invoke.mockImplementation(async (command: string) => {
+    if (command === "get_cask") return cask;
+    if (command === "list_casks") return [cask];
+    if (command === "recovery_status")
+      return { version: 1, operations: [], pendingManifestCasks: [] };
+    if (command === "cask_removal_status")
+      return {
+        canRemove: false,
+        resourceCount: 0,
+        applicationCount: 2,
+        unfinishedOperations: 0,
+      };
+    if (command === "storage_summary")
+      return {
+        version: 1,
+        managedLogicalBytes: 1024,
+        referencedLogicalBytes: 1024,
+        ownedApplicationBytes: 2048,
+        referenceApplicationBytes: 4096,
+        estimatedApplications: 1,
+        unknownEntries: 0,
+        physicalBytes: null,
+        reclaimableMinBytes: 0,
+        reclaimableMaxBytes: 1024,
+      };
+    if (command === "removal_capability") return false;
+    return [];
+  });
+  render(Workspace, { caskId: cask.id });
+  await screen.findByRole("heading", { name: cask.name });
+  await screen.findByText("8 KB");
+  expect(screen.getByText("2 KB")).toBeTruthy();
+  expect(screen.getByText("5 KB")).toBeTruthy();
+  expect(screen.getByText(/1 use Windows size estimates/)).toBeTruthy();
+});

@@ -1,8 +1,15 @@
+param([switch] $AllowUnregisteredProgramFiles)
 $ErrorActionPreference = 'Stop'
 $repo = (Resolve-Path (Join-Path $PSScriptRoot '..')).Path
 $uninstallKey = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Uninstall\Casklet'
 $productKey = 'HKCU:\Software\casklet\Casklet'
-if ((Test-Path $uninstallKey) -or @(Get-Process casklet-desktop -ErrorAction SilentlyContinue).Count -or (Test-Path (Join-Path $env:LOCALAPPDATA 'Casklet/casklet-desktop.exe'))) { throw 'Existing install/process detected.' }
+$existingExecutable = Join-Path $env:LOCALAPPDATA 'Casklet/casklet-desktop.exe'
+if ((Test-Path $uninstallKey) -or @(Get-Process casklet-desktop -ErrorAction SilentlyContinue).Count) { throw 'Existing registered install/process detected.' }
+$existingHash = $null
+if (Test-Path -LiteralPath $existingExecutable) {
+    if (-not $AllowUnregisteredProgramFiles) { throw 'Unregistered program files detected; preserve them unless the explicit fixture option is selected.' }
+    $existingHash = (Get-FileHash -LiteralPath $existingExecutable -Algorithm SHA256).Hash
+}
 $oldValues = @()
 $hadProductKey = Test-Path $productKey
 if ($hadProductKey) {
@@ -82,7 +89,8 @@ try {
     $reopened = & $cli --output json cask get $seed.id | ConvertFrom-Json
     if ($LASTEXITCODE -ne 0 -or $reopened.id -ne $seed.id) { throw 'Database was not preserved.' }
     if (Test-Path $uninstallKey) { throw 'Uninstall registration remains.' }
-    @{ result='PASS'; first_launch=$firstLaunch; reinstall_launch=$secondLaunch; version='0.1.0-alpha.1'; install_exit=$installed.ExitCode; reinstall_exit=$reinstalled.ExitCode; uninstall_exit=$uninstalled.ExitCode; data_reopened=$true; managed_content_preserved=$true; program_removed=$true; root=$root; scope='Local installed-desktop launch, console-subsystem guard, silent install/reinstall/uninstall; not clean-machine upgrade or Windows Settings' } | ConvertTo-Json | Set-Content (Join-Path $root 'result.json')
+    if ($existingHash -and ((Get-FileHash -LiteralPath $existingExecutable -Algorithm SHA256).Hash -ne $existingHash)) { throw 'Unregistered existing executable changed.' }
+    @{ result='PASS'; first_launch=$firstLaunch; reinstall_launch=$secondLaunch; version='0.1.0-alpha.1'; install_exit=$installed.ExitCode; reinstall_exit=$reinstalled.ExitCode; uninstall_exit=$uninstalled.ExitCode; data_reopened=$true; managed_content_preserved=$true; program_removed=$true; existing_unregistered_program_preserved=[bool]$existingHash; root=$root; scope='Local installed-desktop launch, console-subsystem guard, silent install/reinstall/uninstall; not clean-machine upgrade or Windows Settings' } | ConvertTo-Json | Set-Content (Join-Path $root 'result.json')
     Get-Content (Join-Path $root 'result.json')
 } finally {
     $env:LOCALAPPDATA = $oldLocal

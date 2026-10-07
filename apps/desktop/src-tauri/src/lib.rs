@@ -181,7 +181,7 @@ async fn open_cask_window(
         label,
         tauri::WebviewUrl::App(format!("index.html?cask={}", cask.id).into()),
     )
-    .title(format!("{} — Casklet", cask.name))
+    .title(format!("{} â€” Casklet", cask.name))
     .inner_size(DETAIL_WIDTH, DETAIL_HEIGHT)
     .resizable(false)
     .decorations(false)
@@ -303,7 +303,7 @@ fn update_cask(
 ) -> Result<casklet_contracts::CaskView, casklet_contracts::ApiError> {
     let result = service.update_cask(&request, "desktop")?;
     if let Some(window) = app.get_webview_window(&format!("cask-{}", result.id)) {
-        let _ = window.set_title(&format!("{} — Casklet", result.name));
+        let _ = window.set_title(&format!("{} â€” Casklet", result.name));
     }
     let _ = app.emit("casks.changed", &result.id);
     Ok(result)
@@ -871,11 +871,14 @@ fn categorize_resource(
 }
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
-fn storage_summary(
+async fn storage_summary(
     service: tauri::State<'_, Service>,
     request: casklet_contracts::GetStorageSummary,
 ) -> Result<casklet_contracts::StorageSummary, casklet_contracts::ApiError> {
-    service.storage_summary(&request, "desktop")
+    let service = service.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || service.storage_summary(&request, "desktop"))
+        .await
+        .map_err(|e| window_error(e.to_string()))?
 }
 
 #[tauri::command]

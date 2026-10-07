@@ -242,7 +242,9 @@
   let totalKnownBytes = $derived.by(
     () =>
       (summary?.managedLogicalBytes ?? 0) +
-      (summary?.referencedLogicalBytes ?? 0),
+      (summary?.referencedLogicalBytes ?? 0) +
+      (summary?.ownedApplicationBytes ?? 0) +
+      (summary?.referenceApplicationBytes ?? 0),
   );
   async function inspectInstaller() {
     if (installerBusy) return;
@@ -610,6 +612,9 @@
         },
       });
       await refreshAssociated();
+      summary = await invoke<StorageSummary>("storage_summary", {
+        request: { version: CONTRACT_VERSION, caskId: selected.id },
+      });
       progress =
         "Associated existing installation. Casklet did not install or own it.";
       error = "";
@@ -631,6 +636,9 @@
         },
       });
       await refreshAssociated();
+      summary = await invoke<StorageSummary>("storage_summary", {
+        request: { version: CONTRACT_VERSION, caskId: selected.id },
+      });
       progress = "Association removed. The installation is unchanged.";
       error = "";
     } catch (cause) {
@@ -1530,10 +1538,10 @@
             style:width={`${totalKnownBytes ? (managedFileBytes / totalKnownBytes) * 100 : 0}%`}
           ></span><span
             class="storage-apps"
-            style:width={`${totalKnownBytes ? (portableBytes / totalKnownBytes) * 100 : 0}%`}
+            style:width={`${totalKnownBytes ? ((portableBytes + (summary?.ownedApplicationBytes ?? 0)) / totalKnownBytes) * 100 : 0}%`}
           ></span><span
             class="storage-refs"
-            style:width={`${totalKnownBytes ? ((summary?.referencedLogicalBytes ?? 0) / totalKnownBytes) * 100 : 0}%`}
+            style:width={`${totalKnownBytes ? (((summary?.referencedLogicalBytes ?? 0) + (summary?.referenceApplicationBytes ?? 0)) / totalKnownBytes) * 100 : 0}%`}
           ></span>
         </div>
         <div class="storage-legend">
@@ -1543,21 +1551,27 @@
             >
           </div>
           <div>
-            <span class="swatch apps"></span>Portable applications<strong
-              >{bytes(portableBytes)}</strong
+            <span class="swatch apps"></span>Owned applications<strong
+              >{bytes(
+                portableBytes + (summary?.ownedApplicationBytes ?? 0),
+              )}</strong
             >
           </div>
           <div>
             <span class="swatch refs"></span>References<strong
-              >{bytes(summary?.referencedLogicalBytes ?? 0)}</strong
+              >{bytes(
+                (summary?.referencedLogicalBytes ?? 0) +
+                  (summary?.referenceApplicationBytes ?? 0),
+              )}</strong
             >
           </div>
         </div>
         <p class="footnote">
           Known logical size · {summary?.unknownEntries
             ? `${summary.unknownEntries} unmeasured or unavailable entries`
-            : "Physical size is not measured"}. Associated application sizes are
-          not included.
+            : "Physical size is not measured"}. Application sizes reflect
+          current registrations and complete folder scans;
+          {summary?.estimatedApplications ?? 0} use Windows size estimates.
         </p>
       </section>
       <div class="compact-stats">

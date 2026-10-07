@@ -328,6 +328,7 @@ version = "0.1.0-alpha.1"
 dependencies = [
  "casklet-contracts",
  "casklet-domain",
+ "serde_json",
  "sha2",
  "uuid",
 ]

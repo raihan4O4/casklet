@@ -503,6 +503,84 @@ fn copy_tree(
 }
 
 impl ResourceStorage for LocalStorage {
+    fn application_sizes(
+        &self,
+        entries: &[casklet_application::resource::ApplicationStorageEntry],
+    ) -> Result<Vec<casklet_application::resource::ApplicationSize>, String> {
+        use casklet_application::{
+            resource::ApplicationSize, windows_inventory::InstalledInventorySource,
+        };
+        if entries.is_empty() {
+            return Ok(Vec::new());
+        }
+        let inventory = self.scan_installed()?;
+        Ok(entries
+            .iter()
+            .map(|entry| {
+                let Some(observed) = inventory
+                    .iter()
+                    .find(|item| item.source_key.eq_ignore_ascii_case(&entry.source_key))
+                else {
+                    return ApplicationSize::Missing;
+                };
+                if let Some(location) = observed.install_location.as_deref() {
+                    let path = fs::canonicalize(location)
+                        .unwrap_or_else(|_| Path::new(location).to_path_buf());
+                    // A registration may point to a shared root. Never report a whole drive,
+                    // Program Files, Windows or a profile as one application's size.
+                    let protected = [
+                        "USERPROFILE",
+                        "LOCALAPPDATA",
+                        "APPDATA",
+                        "ProgramFiles",
+                        "ProgramFiles(x86)",
+                        "ProgramData",
+                        "SystemRoot",
+                    ]
+                    .iter()
+                    .filter_map(std::env::var_os)
+                    .filter_map(|root| fs::canonicalize(root).ok())
+                    .any(|root| {
+                        path.to_string_lossy()
+                            .trim_end_matches(['\\', '/'])
+                            .eq_ignore_ascii_case(&Path::new(&root).to_string_lossy())
+                    });
+                    let shared = inventory.iter().any(|other| {
+                        other.source_key != observed.source_key
+                            && !other.is_user_registration_alias_of(observed)
+                            && other
+                                .install_location
+                                .as_deref()
+                                .is_some_and(|other_location| {
+                                    super::removal::paths_overlap(location, other_location)
+                                })
+                    });
+                    if !protected
+                        && !shared
+                        && path.is_absolute()
+                        && path.components().count() >= 4
+                        && path.is_dir()
+                        && let Ok(measured) = inspect_path(location, &|_, _| {})
+                        && measured.unknown_entries == 0
+                        && let Some(bytes) = measured.size_bytes
+                    {
+                        return ApplicationSize::Known {
+                            bytes,
+                            estimated: false,
+                        };
+                    }
+                }
+                super::windows_inventory::registration_size(&entry.source_key).map_or(
+                    ApplicationSize::Unknown,
+                    |bytes| ApplicationSize::Known {
+                        bytes,
+                        estimated: true,
+                    },
+                )
+            })
+            .collect())
+    }
+
     fn validate_owned_location(&self, observed: &Observation) -> Result<(), String> {
         validate_owned_path(&self.root, Path::new(&observed.source_path))?;
         if observed.unknown_entries != 0 || observed.recordable_identity.is_none() {
