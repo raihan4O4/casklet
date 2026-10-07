@@ -1,4 +1,7 @@
 <script lang="ts">
+  import { onMount } from "svelte";
+  import { startThemeSync } from "./theme";
+  onMount(startThemeSync);
   import MainWindow from "./MainWindow.svelte";
   import Workspace from "./Workspace.svelte";
   import WindowChrome from "./WindowChrome.svelte";

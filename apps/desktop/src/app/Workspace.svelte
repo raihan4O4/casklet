@@ -1,4 +1,5 @@
 <script lang="ts">
+  import ThemeSettings from "./ThemeSettings.svelte";
   import { invoke } from "@tauri-apps/api/core";
   import { listen } from "@tauri-apps/api/event";
   import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -2736,6 +2737,7 @@
       </section>
     {/if}
     {#if mode === "settings"}
+      <ThemeSettings />
       <section id="settings" aria-label="Settings and privacy">
         <h2>Settings and privacy</h2>
         <p>

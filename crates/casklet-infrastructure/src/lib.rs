@@ -63,7 +63,9 @@ impl SqliteCasks {
             fs::create_dir_all(parent).map_err(|e| e.to_string())?;
         }
         let this = Self { db_path };
-        let mut connection = this.connection()?;
+        // Inspect compatibility before changing journal mode or migrating. A
+        // newer database must remain untouched when an older build opens it.
+        let connection = Connection::open(&this.db_path).map_err(|e| e.to_string())?;
         let stored_version: i64 = connection
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .map_err(|e| e.to_string())?;
@@ -76,8 +78,13 @@ impl SqliteCasks {
             return Err(format!("database integrity check failed: {integrity}"));
         }
         if version > MIGRATIONS.len() {
-            return Err(format!("unsupported database schema version: {version}"));
+            return Err(format!(
+                "unsupported database schema version: {version}; this Casklet build supports up to {}. Install the matching or newer Casklet setup. The database has not been downgraded",
+                MIGRATIONS.len()
+            ));
         }
+        drop(connection);
+        let mut connection = this.connection()?;
         if version > 0 && version < MIGRATIONS.len() {
             backup_before_migration(
                 &connection,
@@ -776,6 +783,26 @@ mod tests {
             drop(reopened);
             fs::remove_dir_all(root).unwrap();
         }
+    }
+
+    #[test]
+    fn newer_database_is_rejected_without_downgrading_or_changing_data() {
+        let root = std::env::temp_dir().join(format!("casklet-newer-{}", uuid::Uuid::new_v4()));
+        fs::create_dir_all(&root).unwrap();
+        let db = root.join("state.db");
+        let connection = Connection::open(&db).unwrap();
+        connection.execute_batch("CREATE TABLE preserved(value TEXT); INSERT INTO preserved VALUES ('user metadata');").unwrap();
+        let future_version = MIGRATIONS.len() + 1;
+        connection
+            .pragma_update(None, "user_version", i64::try_from(future_version).unwrap())
+            .unwrap();
+        drop(connection);
+        let original = fs::read(&db).unwrap();
+        let error = SqliteCasks::open(db.clone()).unwrap_err();
+        assert!(error.contains(&format!("schema version: {future_version}")));
+        assert!(error.contains("matching or newer Casklet setup"));
+        assert_eq!(fs::read(&db).unwrap(), original);
+        fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

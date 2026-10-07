@@ -24,6 +24,7 @@ casklet-contracts = { path = "../../../crates/casklet-contracts", version = "0.1
 casklet-infrastructure = { path = "../../../crates/casklet-infrastructure", version = "=0.1.0-alpha.1" }
 tauri = { version = "=2.11.1", features = [] }
 tauri-plugin-dialog = "=2.6.0"
+serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
 
 [lints]

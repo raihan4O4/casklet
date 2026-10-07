@@ -360,6 +360,7 @@ dependencies = [
  "casklet-application",
  "casklet-contracts",
  "casklet-infrastructure",
+ "serde",
  "serde_json",
  "tauri",
  "tauri-build",

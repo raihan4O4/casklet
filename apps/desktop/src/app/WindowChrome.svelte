@@ -2,7 +2,7 @@
   import { onMount } from "svelte";
   import { getCurrentWindow } from "@tauri-apps/api/window";
   import { listen } from "@tauri-apps/api/event";
-  import logo from "../assets/casklet-logo.png";
+  import BrandLogo from "./BrandLogo.svelte";
   let title = $state("Casklet");
   let error = $state("");
   async function action(kind: "close" | "minimize") {
@@ -36,9 +36,7 @@
 
 <div class="window-chrome" data-tauri-drag-region>
   <div class="window-caption" data-tauri-drag-region>
-    <img src={logo} alt="" draggable="false" /><span data-tauri-drag-region
-      >{title}</span
-    >
+    <BrandLogo alt="" /><span data-tauri-drag-region>{title}</span>
   </div>
   <div class="window-controls">
     <button

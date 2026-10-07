@@ -12,7 +12,7 @@
     RecoveryStatus,
   } from "../contracts/generated/casklet";
   import { CONTRACT_VERSION } from "../contracts/generated/casklet";
-  import logo from "../assets/casklet-logo.png";
+  import BrandLogo from "./BrandLogo.svelte";
   import Icon from "./Icon.svelte";
   import Workspace from "./Workspace.svelte";
   // Cask row actions intentionally hidden for Alpha; typed handlers retained.
@@ -229,7 +229,7 @@
 <div class="main-window">
   <aside class="sidebar" aria-label="Main navigation">
     <div class="brand">
-      <img src={logo} alt="Casklet logo" /><span>Casklet</span>
+      <BrandLogo /><span>Casklet</span>
     </div>
     <nav aria-label="Main sections">
       {#each [{ key: "casks", title: "Casks" }, { key: "installations", title: "Installations" }, { key: "activity", title: "Activity" }, { key: "settings", title: "Settings" }] as item (item.key)}
