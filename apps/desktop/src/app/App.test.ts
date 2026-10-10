@@ -510,64 +510,64 @@ test("Applications keeps Add above a large library and supports focused navigati
   ).toBeNull();
 });
 
-test("interrupted installation remains recoverable without exposing installer diagnostics", async () => {
-  let kept = false;
-  const operation = {
-    version: 1,
-    id: "private-operation-id",
-    artifactId: "artifact",
-    caskId: "ownership-cask",
-    state: "RECOVERY_REQUIRED",
-    exitCode: null,
-    errorCode: "LAUNCH_UNCERTAIN",
-    confirmedInstallationId: null,
-    candidates: [],
-    startedAtMs: 1,
-    warnings: ["secret implementation detail"],
-  };
-  ownershipWorkspace([], (command) => {
-    if (command === "list_installer_operations") return kept ? [] : [operation];
-    if (command === "get_installer_operation")
-      return {
-        ...operation,
-        state: kept ? "CLOSED_PRESERVED" : operation.state,
-      };
-    if (command === "close_installer_operation") {
-      kept = true;
-      return null;
-    }
-    return undefined;
-  });
-  await screen.findByRole("heading", { name: "Ownership" });
-  await fireEvent.click(screen.getByRole("button", { name: "Applications" }));
-  await fireEvent.click(
-    await screen.findByRole("button", { name: "View installation" }),
-  );
-  expect(
-    screen.queryByText(
-      /private-operation-id|LAUNCH_UNCERTAIN|secret implementation/,
-    ),
-  ).toBeNull();
-  expect(screen.queryByText("Technical details")).toBeNull();
-  const keep = screen.getByRole("button", { name: "Keep installed changes" });
-  expect((keep as HTMLButtonElement).disabled).toBe(true);
-  await fireEvent.click(
-    screen.getByRole("checkbox", {
-      name: "The installer and any apps it opened have finished.",
-    }),
-  );
-  await fireEvent.click(keep);
-  await waitFor(() =>
-    expect(calls.invoke).toHaveBeenCalledWith("close_installer_operation", {
-      request: { version: 1, id: "private-operation-id" },
-    }),
-  );
-  expect(
-    calls.invoke.mock.calls.some(
-      ([command]) => command === "install_application",
-    ),
-  ).toBe(false);
-});
+test.each(["LAUNCH_UNCERTAIN", "INSTALLER_CANCELLED", "INSTALLER_EXIT_1602"])(
+  "unconfirmed installation shows only the short message (%s)",
+  async (errorCode) => {
+    const operation = {
+      version: 1,
+      id: "private-operation-id",
+      artifactId: "artifact",
+      caskId: "ownership-cask",
+      state: "RECOVERY_REQUIRED",
+      exitCode: null,
+      errorCode,
+      confirmedInstallationId: null,
+      candidates: [],
+      startedAtMs: 1,
+      warnings: ["secret implementation detail"],
+    };
+    ownershipWorkspace([], (command) => {
+      if (command === "list_installer_operations") return [operation];
+      if (command === "get_installer_operation") return operation;
+      return undefined;
+    });
+    await screen.findByRole("heading", { name: "Ownership" });
+    await fireEvent.click(screen.getByRole("button", { name: "Applications" }));
+    await fireEvent.click(
+      await screen.findByRole("button", { name: "View installation" }),
+    );
+    expect(
+      screen.queryByText(
+        /private-operation-id|LAUNCH_UNCERTAIN|secret implementation/,
+      ),
+    ).toBeNull();
+    expect(screen.queryByText("Technical details")).toBeNull();
+    expect(
+      screen.getByText(
+        "Installation could not be confirmed. Check the Windows installer.",
+      ),
+    ).toBeTruthy();
+    expect(
+      screen.queryByRole("button", { name: "Keep installed changes" }),
+    ).toBeNull();
+    expect(
+      screen.queryByRole("checkbox", {
+        name: "The installer and any apps it opened have finished.",
+      }),
+    ).toBeNull();
+    expect(screen.queryByText(/Keeping changes leaves software/)).toBeNull();
+    expect(
+      calls.invoke.mock.calls.some(
+        ([command]) => command === "close_installer_operation",
+      ),
+    ).toBe(false);
+    expect(
+      calls.invoke.mock.calls.some(
+        ([command]) => command === "install_application",
+      ),
+    ).toBe(false);
+  },
+);
 
 test("clearing completed Activity preserves active and recovery work across reload", async () => {
   const entries = ["COMPLETE", "RUNNING", "RECOVERY_REQUIRED"].map(

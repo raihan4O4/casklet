@@ -267,6 +267,7 @@ mod tests {
         Ambiguous,
         Failure,
         Cancelled,
+        CancelledAfterExit,
         TimedOut,
         Reboot,
     }
@@ -394,6 +395,7 @@ mod tests {
                 | Mode::Ambiguous => Ok(InstallerOutcome::Exited(0)),
                 Mode::Failure => Err("fake process failure".into()),
                 Mode::Cancelled => Ok(InstallerOutcome::Cancelled),
+                Mode::CancelledAfterExit => Ok(InstallerOutcome::ProcessTreeExited(1602)),
                 Mode::TimedOut => Ok(InstallerOutcome::TimedOut),
                 Mode::Reboot => Ok(InstallerOutcome::Exited(3010)),
             }
@@ -429,10 +431,23 @@ mod tests {
             &self,
             entries: &[casklet_application::resource::ApplicationStorageEntry],
         ) -> Result<Vec<casklet_application::resource::ApplicationSize>, String> {
-            Ok(vec![
-                casklet_application::resource::ApplicationSize::Unknown;
-                entries.len()
-            ])
+            let inventory = self.scan_installed()?;
+            Ok(entries
+                .iter()
+                .map(|entry| {
+                    if inventory
+                        .iter()
+                        .any(|item| item.source_key == entry.source_key)
+                    {
+                        casklet_application::resource::ApplicationSize::Known {
+                            bytes: 4096,
+                            estimated: false,
+                        }
+                    } else {
+                        casklet_application::resource::ApplicationSize::Missing
+                    }
+                })
+                .collect())
         }
 
         fn inspect(
@@ -467,6 +482,14 @@ mod tests {
             observed: &Observation,
         ) -> Result<Option<String>, String> {
             self.local.finish_staged(cask, resource, paths, observed)
+        }
+    }
+    impl casklet_application::library::StorageBrowser for FakeStorage {
+        fn storage_root(&self) -> String {
+            casklet_application::library::StorageBrowser::storage_root(&self.local)
+        }
+        fn open_directory(&self, path: &str) -> Result<(), String> {
+            casklet_application::library::StorageBrowser::open_directory(&self.local, path)
         }
     }
     impl ManifestProjection for FakeStorage {
@@ -603,6 +626,57 @@ mod tests {
             )
             .unwrap();
         assert!(service.storage.elevation.load(Ordering::SeqCst));
+    }
+    #[test]
+    fn library_and_workspace_storage_exclude_installer_bytes_until_verified_success() {
+        use casklet_contracts::{GetStorageSummary, ListCasks};
+        for mode in [
+            Mode::Cancelled,
+            Mode::CancelledAfterExit,
+            Mode::Failure,
+            Mode::ExeSuccess,
+            Mode::ExeTreeSuccess,
+            Mode::ManagedMsi,
+        ] {
+            let (service, cask_id, source) = setup(mode);
+            let _artifact = register(&service, &cask_id, &source);
+            let query = GetStorageSummary {
+                version: CONTRACT_VERSION,
+                cask_id: cask_id.clone(),
+            };
+            let list = ListCasks {
+                version: CONTRACT_VERSION,
+            };
+            let before = service.cask_library(&list, "test").unwrap();
+            assert_eq!(before.managed_bytes, 0);
+            assert_eq!(before.casks[0].managed_bytes, 0);
+            assert_eq!(
+                service
+                    .storage_summary(&query, "test")
+                    .unwrap()
+                    .managed_logical_bytes,
+                0
+            );
+            let operation = install(&service, &cask_id, &source);
+            let workspace = service.storage_summary(&query, "test").unwrap();
+            let main = service.cask_library(&list, "test").unwrap();
+            let success = matches!(mode, Mode::ExeTreeSuccess | Mode::ManagedMsi);
+            assert_eq!(
+                workspace.owned_application_bytes,
+                if success { 4096 } else { 0 }
+            );
+            assert_eq!(
+                main.managed_bytes,
+                workspace.managed_logical_bytes + workspace.owned_application_bytes
+            );
+            assert_eq!(main.casks[0].managed_bytes, main.managed_bytes);
+            assert_eq!(
+                main.casks[0].referenced_bytes,
+                workspace.referenced_logical_bytes + workspace.reference_application_bytes
+            );
+            assert_eq!(main.casks[0].application_count, usize::from(success));
+            assert_eq!(operation.confirmed_installation_id.is_some(), success);
+        }
     }
     #[test]
     fn one_action_install_automatically_owns_verified_new_msi() {
@@ -1095,6 +1169,7 @@ mod tests {
             Mode::ExeSuccess,
             Mode::Failure,
             Mode::Cancelled,
+            Mode::CancelledAfterExit,
             Mode::TimedOut,
             Mode::Reboot,
         ] {

@@ -194,7 +194,6 @@
   let installerOperation: InstallerOperationView | null = $state(null);
   let installerOperationId = $state("");
   let installerBusy = $state(false);
-  let installerKeepConfirmed = $state(false);
   let installerRefreshRevision = 0;
   let fileResources = $derived(
     resources.filter(
@@ -294,7 +293,6 @@
       installerRefreshRevision += 1;
       installerOperation = pending;
       installerOperationId = pending.id;
-      installerKeepConfirmed = false;
     }
   }
   async function installApplication() {
@@ -321,7 +319,6 @@
       if (selected?.id !== caskId) return;
       installerRefreshRevision += 1;
       installerOperation = result;
-      installerKeepConfirmed = false;
       installerOperationId = result.id;
       installerPreview = null;
       await refreshResources();
@@ -349,10 +346,10 @@
     if (operation.errorCode === "ELEVATION_DECLINED")
       return "Installation cancelled. Windows permission was declined.";
     if (operation.errorCode?.includes("CANCELLED"))
-      return "Installation cancelled. Some changes may remain.";
+      return "Installation could not be confirmed. Check the Windows installer.";
     if (operation.state === "CLOSED_PRESERVED")
       return "Installed changes have been kept. Casklet could not identify one matching application; no application was claimed.";
-    return "Installation could not be confirmed. Check the Windows installer. If it has finished, you can keep its changes below.";
+    return "Installation could not be confirmed. Check the Windows installer.";
   }
   async function refreshInstallerOperation() {
     if (installerOperationId) {
@@ -368,7 +365,6 @@
         result.caskId === selected?.id
       )
         installerOperation = result;
-      installerKeepConfirmed = false;
     }
   }
   async function cancelInstaller() {
@@ -382,30 +378,11 @@
       error = message(cause);
     }
   }
-  async function closeInstaller() {
-    if (!installerOperation || installerBusy || !installerKeepConfirmed) return;
-    installerBusy = true;
-    try {
-      await invoke("close_installer_operation", {
-        request: { version: CONTRACT_VERSION, id: installerOperation.id },
-      });
-      await refreshInstallerOperation();
-      await refreshInstallers();
-      installerKeepConfirmed = false;
-      progress =
-        "Installed software has been kept. The installer will not run again.";
-    } catch (cause) {
-      error = message(cause);
-    } finally {
-      installerBusy = false;
-    }
-  }
   function resetInstallerReview() {
     installerRefreshRevision += 1;
     installerPreview = null;
     installerOperation = null;
     installerOperationId = "";
-    installerKeepConfirmed = false;
   }
   async function searchWinget() {
     wingetBusy = true;
@@ -2103,26 +2080,6 @@
                   onclick={() => void cancelInstaller()}
                   >Cancel installation</button
                 >
-              {:else if installerNeedsAttention}
-                <div class="installer-attention-actions">
-                  <p>
-                    Keeping changes leaves software installed and never runs the
-                    installer again.
-                  </p>
-                  <label class="checkbox-label"
-                    ><input
-                      type="checkbox"
-                      bind:checked={installerKeepConfirmed}
-                      disabled={installerBusy}
-                    />The installer and any apps it opened have finished.</label
-                  >
-                  <button
-                    type="button"
-                    disabled={installerBusy || !installerKeepConfirmed}
-                    onclick={() => void closeInstaller()}
-                    >Keep installed changes</button
-                  >
-                </div>
               {/if}
             {/if}
           </section>
