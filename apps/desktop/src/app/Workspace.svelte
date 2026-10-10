@@ -56,6 +56,13 @@
     onReady?: () => void;
   } = $props();
   let loading = $state(true);
+  let dragActive = $state(false);
+  function clearDragFeedback() {
+    dragActive = false;
+  }
+  function cancelDragFeedback(event: KeyboardEvent) {
+    if (event.key === "Escape") clearDragFeedback();
+  }
   let adding = $state(false);
   let applicationWorkflow:
     | "portable"
@@ -63,18 +70,26 @@
     | "installer"
     | "existing"
     | null = $state(null);
+  function reviewDroppedPaths(paths: string[]) {
+    clearDragFeedback();
+    if (paths.length !== 1) {
+      error = "Drop one item at a time.";
+      return;
+    }
+    if (!selected || removed) return;
+    detailTab = "files";
+    adding = true;
+    pendingPath = paths[0];
+    pendingMode = "";
+    ownershipConfirmed = false;
+  }
   let editName = $state("");
   let editDescription = $state("");
   let editArchived = $state(false);
   let metadataBusy = $state(false);
   let selected: CaskView | null = $state(null);
-  let detailTab:
-    | "overview"
-    | "files"
-    | "apps"
-    | "activity"
-    | "settings"
-    | "cleanup" = $state("overview");
+  let detailTab: "overview" | "files" | "apps" | "settings" | "cleanup" =
+    $state("overview");
   let error = $state("");
   let busy = $state(false);
   let backupBusy = $state(false);
@@ -92,11 +107,37 @@
   let recoveryInspection: RecoveryInspection | null = $state(null);
   let activeOperation = $state("");
   let operations: OperationView[] = $state([]);
+  let activityCasks: CaskView[] = $state([]);
+  function activityDescription(operation: OperationView) {
+    const action =
+      operation.step === "INSTALL_APPLICATION"
+        ? "Application installation"
+        : label(operation.step);
+    if (operation.state === "CANCELLED")
+      return `${action} was cancelled by the user.`;
+    if (
+      ["COMPLETE", "SUCCEEDED", "CONFIRMED_ASSOCIATION"].includes(
+        operation.state,
+      )
+    )
+      return `${action} completed successfully.`;
+    if (operation.state === "CLOSED_PRESERVED")
+      return `${action} was closed with changes preserved.`;
+    if (operation.state === "RUNNING") return `${action} is in progress.`;
+    return `${action} needs review${operation.errorCode ? `: ${label(operation.errorCode)}` : ""}.`;
+  }
   const recentOperations = $derived(
     [...operations]
       .filter(
         (item) =>
-          !["COMPLETE", "CANCELLED", "FAILED"].includes(item.state) ||
+          ![
+            "COMPLETE",
+            "SUCCEEDED",
+            "CANCELLED",
+            "FAILED",
+            "CLOSED_PRESERVED",
+            "CONFIRMED_ASSOCIATION",
+          ].includes(item.state) ||
           activityHidden[item.id] !== item.updatedAtMs,
       )
       .sort((a, b) => b.updatedAtMs - a.updatedAtMs),
@@ -126,7 +167,14 @@
     activityHidden = Object.fromEntries(
       operations
         .filter((item) =>
-          ["COMPLETE", "CANCELLED", "FAILED"].includes(item.state),
+          [
+            "COMPLETE",
+            "SUCCEEDED",
+            "CANCELLED",
+            "FAILED",
+            "CLOSED_PRESERVED",
+            "CONFIRMED_ASSOCIATION",
+          ].includes(item.state),
         )
         .map((item) => [item.id, item.updatedAtMs]),
     );
@@ -194,7 +242,6 @@
   let installerOperation: InstallerOperationView | null = $state(null);
   let installerOperationId = $state("");
   let installerBusy = $state(false);
-  let installerKeepConfirmed = $state(false);
   let installerRefreshRevision = 0;
   let fileResources = $derived(
     resources.filter(
@@ -294,7 +341,6 @@
       installerRefreshRevision += 1;
       installerOperation = pending;
       installerOperationId = pending.id;
-      installerKeepConfirmed = false;
     }
   }
   async function installApplication() {
@@ -321,7 +367,6 @@
       if (selected?.id !== caskId) return;
       installerRefreshRevision += 1;
       installerOperation = result;
-      installerKeepConfirmed = false;
       installerOperationId = result.id;
       installerPreview = null;
       await refreshResources();
@@ -349,10 +394,10 @@
     if (operation.errorCode === "ELEVATION_DECLINED")
       return "Installation cancelled. Windows permission was declined.";
     if (operation.errorCode?.includes("CANCELLED"))
-      return "Installation cancelled. Some changes may remain.";
+      return "Installation could not be confirmed. Check the Windows installer.";
     if (operation.state === "CLOSED_PRESERVED")
       return "Installed changes have been kept. Casklet could not identify one matching application; no application was claimed.";
-    return "Installation could not be confirmed. Check the Windows installer. If it has finished, you can keep its changes below.";
+    return "Installation could not be confirmed. Check the Windows installer.";
   }
   async function refreshInstallerOperation() {
     if (installerOperationId) {
@@ -368,7 +413,6 @@
         result.caskId === selected?.id
       )
         installerOperation = result;
-      installerKeepConfirmed = false;
     }
   }
   async function cancelInstaller() {
@@ -382,30 +426,11 @@
       error = message(cause);
     }
   }
-  async function closeInstaller() {
-    if (!installerOperation || installerBusy || !installerKeepConfirmed) return;
-    installerBusy = true;
-    try {
-      await invoke("close_installer_operation", {
-        request: { version: CONTRACT_VERSION, id: installerOperation.id },
-      });
-      await refreshInstallerOperation();
-      await refreshInstallers();
-      installerKeepConfirmed = false;
-      progress =
-        "Installed software has been kept. The installer will not run again.";
-    } catch (cause) {
-      error = message(cause);
-    } finally {
-      installerBusy = false;
-    }
-  }
   function resetInstallerReview() {
     installerRefreshRevision += 1;
     installerPreview = null;
     installerOperation = null;
     installerOperationId = "";
-    installerKeepConfirmed = false;
   }
   async function searchWinget() {
     wingetBusy = true;
@@ -1026,6 +1051,10 @@
       };
   }
   async function refreshOperations() {
+    if (mode === "activity")
+      activityCasks = await invoke<CaskView[]>("list_casks", {
+        request: { version: CONTRACT_VERSION },
+      });
     operations = await invoke<OperationView[]>("list_operations", {
       request: { version: CONTRACT_VERSION, caskId: selected?.id ?? null },
     });
@@ -1332,19 +1361,22 @@
       void refreshWingetOperation().catch(() => {});
       void refreshInstallerOperation().catch(() => {});
     }, 3000);
+    window.addEventListener("blur", clearDragFeedback);
+    window.addEventListener("keydown", cancelDragFeedback);
     void getCurrentWindow()
       .onDragDropEvent((event) => {
+        if (event.payload.type === "enter") {
+          dragActive =
+            mode === "detail" &&
+            selected !== null &&
+            !removed &&
+            event.payload.paths.length === 1;
+          return;
+        }
+        if (event.payload.type === "over") return;
+        clearDragFeedback();
         if (event.payload.type === "drop" && event.payload.paths.length > 0) {
-          if (event.payload.paths.length > 1) {
-            error = "Drop one item at a time.";
-            return;
-          }
-          if (!selected) return;
-          detailTab = "files";
-          adding = true;
-          pendingPath = event.payload.paths[0];
-          pendingMode = "";
-          ownershipConfirmed = false;
+          reviewDroppedPaths(event.payload.paths);
         }
       })
       .then((unlisten) => {
@@ -1354,7 +1386,7 @@
       .catch((cause) => {
         error = message(cause);
       });
-    void listen<[number, number]>("resource.progress", (event) => {
+    void listen<[number, number]>("resource-progress", (event) => {
       const [done, total] = event.payload;
       progress =
         total === 0
@@ -1364,13 +1396,13 @@
       if (disposed) unlisten();
       else unlistenProgress = unlisten;
     });
-    void listen<string>("operation.started", (event) => {
+    void listen<string>("operation-started", (event) => {
       activeOperation = event.payload;
     }).then((unlisten) => {
       if (disposed) unlisten();
       else unlistenStarted = unlisten;
     });
-    void listen<[number, number]>("portable.progress", (event) => {
+    void listen<[number, number]>("portable-progress", (event) => {
       const [done, total] = event.payload;
       progress =
         total === 0
@@ -1380,14 +1412,14 @@
       if (disposed) unlisten();
       else unlistenPortableProgress = unlisten;
     });
-    void listen<string>("winget.operation.started", (event) => {
+    void listen<string>("winget-operation-started", (event) => {
       wingetOperationId = event.payload;
       void refreshWingetOperation();
     }).then((unlisten) => {
       if (disposed) unlisten();
       else unlistenWinget = unlisten;
     });
-    void listen<string>("installer.operation.started", (event) => {
+    void listen<string>("installer-operation-started", (event) => {
       installerOperationId = event.payload;
       void refreshInstallerOperation();
     }).then((unlisten) => {
@@ -1397,6 +1429,9 @@
     return () => {
       disposed = true;
       window.clearInterval(poll);
+      clearDragFeedback();
+      window.removeEventListener("blur", clearDragFeedback);
+      window.removeEventListener("keydown", cancelDragFeedback);
       unlistenDrop?.();
       unlistenProgress?.();
       unlistenPortableProgress?.();
@@ -1458,7 +1493,22 @@
   }
 </script>
 
-<div class:detail-window={mode === "detail"} class="workspace">
+<div
+  class:detail-window={mode === "detail"}
+  class:drag-active={dragActive}
+  class="workspace"
+>
+  {#if dragActive}
+    <div class="cask-drop-hint" role="status">
+      <Icon name="folder" size={36} />
+      <span class="cask-drop-title"
+        >Drop a file or folder into {selected?.name}</span
+      >
+      <span class="cask-drop-description"
+        >Review how to add it after dropping.</span
+      >
+    </div>
+  {/if}
   {#if mode === "detail"}
     <header class="workspace-header">
       <div class="workspace-topline">
@@ -1509,7 +1559,7 @@
       </p>
     </header>
     <nav class="detail-tabs" aria-label="Cask sections">
-      {#each [{ key: "overview", title: "Overview" }, { key: "files", title: "Files & Folders" }, { key: "apps", title: "Applications" }, { key: "activity", title: "Activity" }, { key: "settings", title: "Settings" }] as tab (tab.key)}
+      {#each [{ key: "overview", title: "Overview" }, { key: "files", title: "Files & Folders" }, { key: "apps", title: "Applications" }, { key: "settings", title: "Settings" }] as tab (tab.key)}
         <button
           type="button"
           aria-current={detailTab === tab.key ? "page" : undefined}
@@ -1618,7 +1668,7 @@
         </div>
       </details>
     {/if}
-    {#if mode === "activity" || (selected && detailTab === "activity")}
+    {#if mode === "activity"}
       <details class="activity-tools">
         <summary>Manifest recovery tools</summary>
         <div class="tool-actions">
@@ -1652,7 +1702,14 @@
             type="button"
             onclick={clearActivity}
             disabled={!recentOperations.some((item) =>
-              ["COMPLETE", "CANCELLED", "FAILED"].includes(item.state),
+              [
+                "COMPLETE",
+                "SUCCEEDED",
+                "CANCELLED",
+                "FAILED",
+                "CLOSED_PRESERVED",
+                "CONFIRMED_ASSOCIATION",
+              ].includes(item.state),
             )}>Clear history</button
           >
         </div>
@@ -1673,7 +1730,11 @@
                 </li>{/if}
               <li class="activity-entry">
                 <Icon
-                  name={operation.state === "COMPLETE"
+                  name={[
+                    "COMPLETE",
+                    "SUCCEEDED",
+                    "CONFIRMED_ASSOCIATION",
+                  ].includes(operation.state)
                     ? "check"
                     : operation.state === "RECOVERY_REQUIRED"
                       ? "info"
@@ -1700,14 +1761,32 @@
                         : ` of ${operation.progressTotal} processed`}
                     </p>{/if}
                   <div class="activity-actions">
+                    {#if operation.step === "INSTALL_APPLICATION" && ["REVIEW_REQUIRED", "RECOVERY_REQUIRED"].includes(operation.state)}
+                      <button
+                        class="text-button"
+                        type="button"
+                        onclick={() =>
+                          void invoke("open_cask_window", {
+                            request: {
+                              version: CONTRACT_VERSION,
+                              id: operation.caskId,
+                            },
+                          })}>View installation</button
+                      >
+                    {/if}
                     <details class="metadata-disclosure">
                       <summary>Details</summary>
-                      <p class="mono">Operation {operation.id}</p>
-                      {#if operation.errorCode}<p>
-                          {label(operation.errorCode)}
-                        </p>{/if}
+                      <p class="activity-cask">
+                        <strong>Cask:</strong>
+                        {activityCasks.find(
+                          (cask) => cask.id === operation.caskId,
+                        )?.name ?? "Removed Cask"}
+                      </p>
+                      <p class="activity-description">
+                        {activityDescription(operation)}
+                      </p>
                     </details>
-                    {#if operation.state === "RUNNING"}<button
+                    {#if operation.state === "RUNNING" && operation.step !== "INSTALL_APPLICATION"}<button
                         class="text-button"
                         type="button"
                         disabled={operation.cancellationRequested}
@@ -2103,26 +2182,6 @@
                   onclick={() => void cancelInstaller()}
                   >Cancel installation</button
                 >
-              {:else if installerNeedsAttention}
-                <div class="installer-attention-actions">
-                  <p>
-                    Keeping changes leaves software installed and never runs the
-                    installer again.
-                  </p>
-                  <label class="checkbox-label"
-                    ><input
-                      type="checkbox"
-                      bind:checked={installerKeepConfirmed}
-                      disabled={installerBusy}
-                    />The installer and any apps it opened have finished.</label
-                  >
-                  <button
-                    type="button"
-                    disabled={installerBusy || !installerKeepConfirmed}
-                    onclick={() => void closeInstaller()}
-                    >Keep installed changes</button
-                  >
-                </div>
               {/if}
             {/if}
           </section>

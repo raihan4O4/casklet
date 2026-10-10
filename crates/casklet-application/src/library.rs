@@ -12,6 +12,34 @@ use casklet_contracts::{
 use std::collections::HashSet;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+fn add_resource_storage(
+    item: &casklet_contracts::ResourceView,
+    summary: &mut CaskSummaryView,
+    result: &mut CaskLibraryView,
+    counted_resources: &mut HashSet<String>,
+) {
+    let unknown = item.unknown_entries.saturating_add(u64::from(
+        item.availability != "PRESENT" || item.size_bytes.is_none(),
+    ));
+    summary.unknown_entries = summary.unknown_entries.saturating_add(unknown);
+    let size = if item.availability == "PRESENT" {
+        item.size_bytes.unwrap_or(0)
+    } else {
+        0
+    };
+    if item.management == "MANAGED" {
+        summary.managed_bytes = summary.managed_bytes.saturating_add(size);
+    } else {
+        summary.referenced_bytes = summary.referenced_bytes.saturating_add(size);
+    }
+    if counted_resources.insert(item.id.clone()) {
+        result.unknown_entries = result.unknown_entries.saturating_add(unknown);
+        if item.management == "MANAGED" {
+            result.managed_bytes = result.managed_bytes.saturating_add(size);
+        }
+    }
+}
+
 pub trait StorageBrowser {
     fn storage_root(&self) -> String;
     /// # Errors
@@ -210,6 +238,54 @@ impl<
     S: ResourceStorage + ManifestProjection + StorageBrowser,
 > CaskService<R, S>
 {
+    fn add_application_storage(
+        &self,
+        summary: &mut CaskSummaryView,
+        result: &mut CaskLibraryView,
+        counted_owned_sizes: &mut HashSet<String>,
+        correlation_id: &str,
+    ) -> Result<(), ApiError> {
+        let entries = self
+            .repository
+            .application_storage_entries(&summary.cask.id)
+            .map_err(|e| api_error("PERSISTENCE", e, correlation_id))?;
+        let sizes = self
+            .storage
+            .application_sizes(&entries)
+            .map_err(|e| api_error("STORAGE", e, correlation_id))?;
+        for (entry, size) in entries.iter().zip(sizes) {
+            match size {
+                crate::resource::ApplicationSize::Missing => {}
+                crate::resource::ApplicationSize::Unknown => {
+                    summary.unknown_entries = summary.unknown_entries.saturating_add(1);
+                    result.unknown_entries = result.unknown_entries.saturating_add(1);
+                }
+                crate::resource::ApplicationSize::Known { bytes, .. } => {
+                    if entry.owned {
+                        summary.managed_bytes = summary.managed_bytes.saturating_add(bytes);
+                        let key = if entry
+                            .source_key
+                            .to_ascii_uppercase()
+                            .starts_with("HKCU32\\")
+                        {
+                            crate::windows_inventory::user_registration_alias(&entry.source_key)
+                                .unwrap_or_else(|| entry.source_key.clone())
+                        } else {
+                            entry.source_key.clone()
+                        }
+                        .to_ascii_lowercase();
+                        if counted_owned_sizes.insert(key) {
+                            result.managed_bytes = result.managed_bytes.saturating_add(bytes);
+                        }
+                    } else {
+                        summary.referenced_bytes = summary.referenced_bytes.saturating_add(bytes);
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// # Errors
     /// Returns current inventories; missing measurements remain unknown.
     pub fn cask_library(
@@ -232,6 +308,7 @@ impl<
         };
         let mut counted_resources = HashSet::new();
         let mut counted_installations = HashSet::new();
+        let mut counted_owned_sizes = HashSet::new();
         let mut all_application_resources = HashSet::new();
         for cask in casks {
             let resources = self.list_resources(
@@ -287,28 +364,22 @@ impl<
                 referenced_bytes: 0,
                 unknown_entries: 0,
             };
+            let artifact_ids: HashSet<_> = artifacts
+                .iter()
+                .map(|item| item.resource_id.as_str())
+                .collect();
             for item in resources {
-                let unknown = item.unknown_entries.saturating_add(u64::from(
-                    item.availability != "PRESENT" || item.size_bytes.is_none(),
-                ));
-                summary.unknown_entries = summary.unknown_entries.saturating_add(unknown);
-                let size = if item.availability == "PRESENT" {
-                    item.size_bytes.unwrap_or(0)
-                } else {
-                    0
-                };
-                if item.management == "MANAGED" {
-                    summary.managed_bytes = summary.managed_bytes.saturating_add(size);
-                } else {
-                    summary.referenced_bytes = summary.referenced_bytes.saturating_add(size);
+                if artifact_ids.contains(item.id.as_str()) {
+                    continue;
                 }
-                if counted_resources.insert(item.id.clone()) {
-                    result.unknown_entries = result.unknown_entries.saturating_add(unknown);
-                    if item.management == "MANAGED" {
-                        result.managed_bytes = result.managed_bytes.saturating_add(size);
-                    }
-                }
+                add_resource_storage(&item, &mut summary, &mut result, &mut counted_resources);
             }
+            self.add_application_storage(
+                &mut summary,
+                &mut result,
+                &mut counted_owned_sizes,
+                correlation_id,
+            )?;
             counted_installations.extend(installations);
             result.casks.push(summary);
         }

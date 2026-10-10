@@ -23,7 +23,7 @@
         })
         .catch(() => {});
     refresh();
-    void listen("casks.changed", refresh).then((fn) => {
+    void listen("casks-changed", refresh).then((fn) => {
       if (disposed) fn();
       else unlisten = fn;
     });

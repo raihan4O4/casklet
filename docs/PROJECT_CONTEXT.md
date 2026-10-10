@@ -1,6 +1,6 @@
 # Casklet Project Context
 
-Last updated: 2026-10-07
+Last updated: 2026-10-10
 
 This is the canonical handoff for humans and new Codex tasks. Keep it concise and current. Detailed specifications belong in linked documents.
 
@@ -193,3 +193,11 @@ The October 7 storage follow-up derives registered owned/reference application b
 The October 7 appearance pass adds a saved global Light/Dark preference, synchronized Cask workspaces, supplied black/white in-app logos, semantic charcoal palettes, and theme-aware native startup. Light colors remain the component defaults; theme state stays separate from Cask data and safety policy. See docs/adr/0027-desktop-appearance.md.
 
 The October 7 installed-launch investigation reproduced the obsolete September 28 0.0.0 setup exiting with code 101 against schema-16 data; the existing user database has that schema. Current packages retain native startup error reporting, reject newer schemas before journal-mode changes, disable future installer downgrades, and provide verified local setup promotion to replace stale paths. The full gate passed 118 Rust and 37 GUI tests. The repaired exact setup path passed installed launches/reinstall/uninstall preservation; normal per-user install and both shortcuts launched with existing metadata preserved. See docs/engineering/installed-launch-repair.md for reproduction and installed verification evidence.
+
+The October 10 cancellation fix excludes typed installer copies from main-library storage as well as workspace storage and counts only active registered application sizes. Cask list cards include references consistently with workspace totals. Unconfirmed installation presentation now uses one short message without Keep controls; uncertain backend journals/locks remain intact. Successful/cancelled installation regression evidence is in target/cancellation-quality.log.
+
+October 10 Activity follow-up: Activity is now main-window only. Completed display history recognizes core SUCCEEDED/closed states and remains a persisted display filter over durable journals. Main history includes installer outcomes with Cask names and concise descriptions. Confirmed installer cancellation (Windows 1602 after process completion and a complete post-inventory) is terminal preservation, releases its lock, and has no attention action; timeouts, killed/unverified child processes and incomplete inventory retain recovery safeguards. Keyboard focus uses theme tokens across controls. Native validation exposed invalid dotted lifecycle events; producers/listeners now use valid names and matching progress payloads. Full local quality gates and 41 GUI tests pass; light/dark Activity and Cask layout were inspected with isolated native data. See docs/engineering/activity-followup.md.
+
+October 10 drag feedback: individual Cask windows now highlight their existing native drop target with a themed border and compact centered card containing a folder icon, named instruction and review guidance. Drag leave/drop/Escape/focus loss clear the indication; one-item explicit intake and ownership consent are unchanged. Scope is individual Cask windows only; the main-list drop behavior remains unchanged. See docs/engineering/desktop-gui-design.md.
+
+The shared desktop shell suppresses the native WebView context menu across main and Cask windows. Explicit application menus and keyboard focus behavior remain available.

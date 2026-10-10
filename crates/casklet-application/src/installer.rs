@@ -574,6 +574,18 @@ where
                 }),
                 Some("REBOOT_REQUIRED"),
             ),
+            (
+                Ok(InstallerOutcome::ProcessTreeExited(1602) | InstallerOutcome::Exited(1602)),
+                Ok(_),
+            ) if current.format == "MSI"
+                || matches!(run, Ok(InstallerOutcome::ProcessTreeExited(_))) =>
+            {
+                (
+                    "CANCELLED",
+                    Some(1602),
+                    Some("INSTALLER_CANCELLED_CONFIRMED"),
+                )
+            }
             (Ok(InstallerOutcome::Exited(code) | InstallerOutcome::ProcessTreeExited(code)), _) => {
                 (
                     "RECOVERY_REQUIRED",
@@ -590,7 +602,7 @@ where
         };
         let (state, error_code) = if after.is_err() {
             ("RECOVERY_REQUIRED", Some("POST_INVENTORY_UNVERIFIED"))
-        } else if self.repository.installer_cancelled(&id).unwrap_or(true) {
+        } else if state != "CANCELLED" && self.repository.installer_cancelled(&id).unwrap_or(true) {
             ("RECOVERY_REQUIRED", Some("CANCELLED_AFTER_LAUNCH"))
         } else {
             (state, error_code)

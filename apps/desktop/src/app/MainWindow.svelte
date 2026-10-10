@@ -65,7 +65,9 @@
           : sort === "items"
             ? a.itemCount - b.itemCount
             : sort === "storage"
-              ? a.managedBytes - b.managedBytes
+              ? a.managedBytes +
+                a.referencedBytes -
+                (b.managedBytes + b.referencedBytes)
               : a.cask.updatedAtMs - b.cask.updatedAtMs;
       return (
         (ascending ? result : -result) || a.cask.id.localeCompare(b.cask.id)
@@ -197,7 +199,7 @@
     let disposed = false;
     let unlisten: (() => void) | undefined;
     let unlistenRemoved: (() => void) | undefined;
-    void listen<string>("casks.removed", (event) => {
+    void listen<string>("casks-removed", (event) => {
       ++refreshSequence;
       if (library)
         library = {
@@ -210,7 +212,7 @@
       if (disposed) fn();
       else unlistenRemoved = fn;
     });
-    void listen("casks.changed", () => {
+    void listen("casks-changed", () => {
       void refresh(true);
     }).then((fn) => {
       if (disposed) fn();
@@ -416,10 +418,10 @@
                       </div>
                     </div>
                     <span>{item.itemCount}</span><span
-                      title="Known managed logical size"
-                      >{bytes(item.managedBytes)}{item.unknownEntries
-                        ? " +"
-                        : ""}</span
+                      title="Known logical size including references"
+                      >{bytes(
+                        item.managedBytes + item.referencedBytes,
+                      )}{item.unknownEntries ? " +" : ""}</span
                     ><time
                       title={new Date(item.cask.updatedAtMs).toLocaleString()}
                       >{relativeTime(item.cask.updatedAtMs)}</time

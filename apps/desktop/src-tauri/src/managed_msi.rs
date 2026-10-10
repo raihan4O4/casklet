@@ -13,12 +13,12 @@ pub(super) async fn install_application(
     let service = service.inner().clone();
     let result = tauri::async_runtime::spawn_blocking(move || {
         service.install_application(&request, "desktop", &|id| {
-            let _ = window.emit_to(window.label(), "installer.operation.started", id);
+            let _ = window.emit_to(window.label(), "installer-operation-started", id);
         })
     })
     .await
     .map_err(|e| worker_error(&e))?;
-    let _ = app.emit("casks.changed", ());
+    let _ = app.emit("casks-changed", ());
     result
 }
 
@@ -32,7 +32,7 @@ pub(super) async fn launch_managed_msi_artifact(
     let service = service.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
         service.launch_managed_msi_artifact(&request, "desktop", &|id| {
-            let _ = window.emit_to(window.label(), "installer.operation.started", id);
+            let _ = window.emit_to(window.label(), "installer-operation-started", id);
         })
     })
     .await
@@ -99,7 +99,7 @@ pub(super) async fn execute_msi_cleanup(
     })
     .await
     .map_err(|e| worker_error(&e))?;
-    let _ = app.emit("casks.changed", ());
+    let _ = app.emit("casks-changed", ());
     result
 }
 #[tauri::command]
