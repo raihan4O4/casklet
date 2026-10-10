@@ -201,7 +201,7 @@ async fn open_cask_window(
     window.on_window_event(move |event| {
         if matches!(event, tauri::WindowEvent::Destroyed) {
             let _ = owner.set_focus();
-            let _ = owner.emit("casks.changed", ());
+            let _ = owner.emit("casks-changed", ());
         }
     });
     Ok(())
@@ -277,7 +277,7 @@ fn set_cask_archived(
     request: casklet_contracts::SetCaskArchived,
 ) -> Result<casklet_contracts::CaskView, casklet_contracts::ApiError> {
     let result = service.set_cask_archived(&request, "desktop")?;
-    let _ = app.emit("casks.changed", &result.id);
+    let _ = app.emit("casks-changed", &result.id);
     Ok(result)
 }
 
@@ -303,8 +303,8 @@ async fn remove_cask(
         tauri::async_runtime::spawn_blocking(move || service.remove_cask(&request, "desktop"))
             .await
             .map_err(|e| worker_error(&e))??;
-    let _ = app.emit("casks.removed", &id);
-    let _ = app.emit("casks.changed", ());
+    let _ = app.emit("casks-removed", &id);
+    let _ = app.emit("casks-changed", ());
     Ok(warning)
 }
 
@@ -318,12 +318,9 @@ async fn adopt_resource(
     let service = service.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
         let result = service.adopt_resource(&request, "desktop", &|done, total| {
-            let _ = app.emit(
-                "resource.progress",
-                serde_json::json!({"completed":done,"total":total}),
-            );
+            let _ = app.emit("resource-progress", (done, total));
         })?;
-        let _ = app.emit("casks.changed", &result.cask_id);
+        let _ = app.emit("casks-changed", &result.cask_id);
         Ok(result)
     })
     .await
@@ -341,7 +338,7 @@ fn update_cask(
     if let Some(window) = app.get_webview_window(&format!("cask-{}", result.id)) {
         let _ = window.set_title(&format!("{} \u{2014} Casklet", result.name));
     }
-    let _ = app.emit("casks.changed", &result.id);
+    let _ = app.emit("casks-changed", &result.id);
     Ok(result)
 }
 
@@ -407,7 +404,7 @@ async fn launch_installer_artifact(
     let service = service.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
         service.launch_installer_artifact(&request, "desktop", &|id| {
-            let _ = window.emit_to(window.label(), "installer.operation.started", id);
+            let _ = window.emit_to(window.label(), "installer-operation-started", id);
         })
     })
     .await
@@ -493,7 +490,7 @@ async fn install_winget_package(
     let service = service.inner().clone();
     tauri::async_runtime::spawn_blocking(move || {
         service.install_winget_package(&request, "desktop", &|id| {
-            let _ = window.emit_to(window.label(), "winget.operation.started", id);
+            let _ = window.emit_to(window.label(), "winget-operation-started", id);
         })
     })
     .await
@@ -564,7 +561,7 @@ async fn execute_winget_uninstall_plan(
         let service = service.inner().clone();
         tauri::async_runtime::spawn_blocking(move || {
             service.execute_winget_uninstall_plan(&request, "desktop", &|id| {
-                let _ = window.emit_to(window.label(), "winget.operation.started", id);
+                let _ = window.emit_to(window.label(), "winget-operation-started", id);
             })
         })
         .await
@@ -667,10 +664,10 @@ async fn install_portable_zip(
             &request,
             "desktop",
             &|done, total| {
-                let _ = window.emit_to(window.label(), "portable.progress", (done, total));
+                let _ = window.emit_to(window.label(), "portable-progress", (done, total));
             },
             &|id| {
-                let _ = window.emit_to(window.label(), "operation.started", id);
+                let _ = window.emit_to(window.label(), "operation-started", id);
             },
         )
     })
@@ -850,10 +847,10 @@ async fn add_resource(
             &request,
             "desktop",
             &|done, total| {
-                let _ = window.emit_to(window.label(), "resource.progress", (done, total));
+                let _ = window.emit_to(window.label(), "resource-progress", (done, total));
             },
             &|id| {
-                let _ = window.emit_to(window.label(), "operation.started", id);
+                let _ = window.emit_to(window.label(), "operation-started", id);
             },
         )
     })

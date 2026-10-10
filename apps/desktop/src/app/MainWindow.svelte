@@ -199,7 +199,7 @@
     let disposed = false;
     let unlisten: (() => void) | undefined;
     let unlistenRemoved: (() => void) | undefined;
-    void listen<string>("casks.removed", (event) => {
+    void listen<string>("casks-removed", (event) => {
       ++refreshSequence;
       if (library)
         library = {
@@ -212,7 +212,7 @@
       if (disposed) fn();
       else unlistenRemoved = fn;
     });
-    void listen("casks.changed", () => {
+    void listen("casks-changed", () => {
       void refresh(true);
     }).then((fn) => {
       if (disposed) fn();

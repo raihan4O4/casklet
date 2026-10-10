@@ -33,7 +33,7 @@ impl OperationRepository for SqliteCasks {
         let connection = self.connection()?;
         let mut statement = connection
             .prepare(&format!(
-                "{SELECT_OPERATION} WHERE (?1 IS NULL OR cask_id=?1) ORDER BY started_at_ms DESC,id"
+                "{SELECT_OPERATION} WHERE (?1 IS NULL OR cask_id=?1) UNION ALL SELECT id,cask_id,CASE WHEN state='CLOSED_PRESERVED' AND error_code='INSTALLER_CANCELLED_CONFIRMED' THEN 'CANCELLED' ELSE state END,'INSTALL_APPLICATION',0,NULL,cancellation_requested,error_code,updated_at_ms FROM installer_operations WHERE (?1 IS NULL OR cask_id=?1) ORDER BY updated_at_ms DESC,id"
             ))
             .map_err(|e| e.to_string())?;
         statement

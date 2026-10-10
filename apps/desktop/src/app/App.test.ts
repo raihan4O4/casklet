@@ -35,7 +35,12 @@ const calls = vi.hoisted(() => ({
   events: new Map<string, (event: { payload: unknown }) => void>(),
   drop: null as
     | null
-    | ((event: { payload: { type: string; paths: string[] } }) => void),
+    | ((event: {
+        payload: {
+          type: string;
+          paths: string[];
+        };
+      }) => void),
 }));
 vi.mock("@tauri-apps/api/core", () => ({
   invoke: (command: string, ...args: unknown[]) =>
@@ -47,6 +52,8 @@ vi.mock("@tauri-apps/api/event", () => ({
   emit: vi.fn(async () => {}),
   listen: vi.fn(
     async (name: string, handler: (event: { payload: unknown }) => void) => {
+      if (!/^[a-zA-Z0-9_:/-]+$/.test(name))
+        throw new Error(`Invalid Tauri event: ${name}`);
       calls.events.set(name, handler);
       return () => {
         calls.events.delete(name);
@@ -84,6 +91,7 @@ afterEach(() => {
 function ownershipWorkspace(
   resources: object[] = [],
   handler?: (command: string) => unknown,
+  activity = false,
 ) {
   const cask = {
     version: 1,
@@ -127,7 +135,7 @@ function ownershipWorkspace(
     return [];
   });
   render(ToastArea);
-  render(Workspace, { caskId: cask.id });
+  render(Workspace, activity ? { mode: "activity" } : { caskId: cask.id });
   return cask;
 }
 
@@ -233,10 +241,10 @@ test("Cask removal invalidates the library immediately and older queries cannot 
   });
   render(App);
   await screen.findByRole("button", { name: "Open Deleted" });
-  await waitFor(() => expect(calls.events.has("casks.removed")).toBe(true));
-  calls.events.get("casks.changed")?.({ payload: null });
+  await waitFor(() => expect(calls.events.has("casks-removed")).toBe(true));
+  calls.events.get("casks-changed")?.({ payload: null });
   await waitFor(() => expect(completeStale).toBeDefined());
-  calls.events.get("casks.removed")?.({ payload: "deleted" });
+  calls.events.get("casks-removed")?.({ payload: "deleted" });
   await waitFor(() =>
     expect(screen.queryByRole("button", { name: "Open Deleted" })).toBeNull(),
   );
@@ -510,7 +518,7 @@ test("Applications keeps Add above a large library and supports focused navigati
   ).toBeNull();
 });
 
-test.each(["LAUNCH_UNCERTAIN", "INSTALLER_CANCELLED", "INSTALLER_EXIT_1602"])(
+test.each(["LAUNCH_UNCERTAIN"])(
   "unconfirmed installation shows only the short message (%s)",
   async (errorCode) => {
     const operation = {
@@ -570,28 +578,45 @@ test.each(["LAUNCH_UNCERTAIN", "INSTALLER_CANCELLED", "INSTALLER_EXIT_1602"])(
 );
 
 test("clearing completed Activity preserves active and recovery work across reload", async () => {
-  const entries = ["COMPLETE", "RUNNING", "RECOVERY_REQUIRED"].map(
-    (state, index) => ({
-      version: 1,
-      id: `op-${index}`,
-      caskId: "ownership-cask",
-      state,
-      step: `Step ${index}`,
-      updatedAtMs: 1,
-      startedAtMs: 1,
-      progressCompleted: 0,
-      progressTotal: null,
-      errorCode: null,
-      cancellationRequested: false,
-    }),
+  const entries = [
+    "SUCCEEDED",
+    "RUNNING",
+    "RECOVERY_REQUIRED",
+    "CANCELLED",
+    "CLOSED_PRESERVED",
+  ].map((state, index) => ({
+    version: 1,
+    id: `op-${index}`,
+    caskId: "ownership-cask",
+    state,
+    step: `Step ${index}`,
+    updatedAtMs: 1,
+    startedAtMs: 1,
+    progressCompleted: 0,
+    progressTotal: null,
+    errorCode: null,
+    cancellationRequested: false,
+  }));
+  ownershipWorkspace(
+    [],
+    (command) => (command === "list_operations" ? entries : undefined),
+    true,
   );
-  ownershipWorkspace([], (command) =>
-    command === "list_operations" ? entries : undefined,
-  );
-  await screen.findByRole("heading", { name: "Ownership" });
-  await fireEvent.click(screen.getByRole("button", { name: "Activity" }));
+  await screen.findByRole("heading", { name: "Activity" });
   await screen.findByText("Step 0");
+  expect(
+    screen
+      .getByRole("button", { name: "Clear history" })
+      .hasAttribute("disabled"),
+  ).toBe(false);
+  await fireEvent.click(screen.getAllByText("Details")[0]);
+  expect(screen.getAllByText("Ownership").length).toBeGreaterThan(0);
   await fireEvent.click(screen.getByRole("button", { name: "Clear history" }));
+  expect(
+    screen
+      .getByRole("button", { name: "Clear history" })
+      .hasAttribute("disabled"),
+  ).toBe(true);
   expect(screen.queryByText("Step 0")).toBeNull();
   expect(screen.getByText("Step 1")).toBeTruthy();
   expect(screen.getByText("Step 2")).toBeTruthy();
@@ -601,11 +626,12 @@ test("clearing completed Activity preserves active and recovery work across relo
     ),
   ).toBe(false);
   cleanup();
-  ownershipWorkspace([], (command) =>
-    command === "list_operations" ? entries : undefined,
+  ownershipWorkspace(
+    [],
+    (command) => (command === "list_operations" ? entries : undefined),
+    true,
   );
-  await screen.findByRole("heading", { name: "Ownership" });
-  await fireEvent.click(screen.getByRole("button", { name: "Activity" }));
+  await screen.findByRole("heading", { name: "Activity" });
   await screen.findByText("Step 1");
   expect(screen.queryByText("Step 0")).toBeNull();
 });
@@ -1733,4 +1759,142 @@ test("Cask storage includes current owned and reference applications", async () 
   expect(screen.getByText("2 KB")).toBeTruthy();
   expect(screen.getByText("5 KB")).toBeTruthy();
   expect(screen.getByText(/1 use Windows size estimates/)).toBeTruthy();
+});
+
+test("cancelled installations have no attention action and Cask windows have no Activity tab", async () => {
+  ownershipWorkspace([], (command) =>
+    command === "list_installer_operations"
+      ? [
+          {
+            id: "cancelled",
+            state: "CANCELLED",
+            caskId: "ownership-cask",
+            candidates: [],
+          },
+        ]
+      : undefined,
+  );
+  await screen.findByRole("heading", { name: "Ownership" });
+  expect(screen.queryByRole("button", { name: "Activity" })).toBeNull();
+  await fireEvent.click(screen.getByRole("button", { name: "Applications" }));
+  expect(screen.queryByText("An installation needs attention.")).toBeNull();
+  expect(
+    screen.queryByRole("button", { name: "View installation" }),
+  ).toBeNull();
+});
+
+test.each(["CANCELLED", "CONFIRMED_ASSOCIATION", "RECOVERY_REQUIRED"])(
+  "main Activity describes installer outcome %s without misleading actions",
+  async (state) => {
+    const entry = {
+      version: 1,
+      id: "installer-history",
+      caskId: "ownership-cask",
+      state,
+      step: "INSTALL_APPLICATION",
+      updatedAtMs: 1,
+      progressCompleted: 0,
+      progressTotal: null,
+      cancellationRequested: false,
+      errorCode: state === "CANCELLED" ? "INSTALLER_CANCELLED_CONFIRMED" : null,
+    };
+    ownershipWorkspace(
+      [],
+      (command) => (command === "list_operations" ? [entry] : undefined),
+      true,
+    );
+    await screen.findByText("Install application");
+    await fireEvent.click(screen.getByText("Details"));
+    expect(screen.getByText("Ownership")).toBeTruthy();
+    if (state === "CANCELLED") {
+      expect(
+        screen.getByText("Application installation was cancelled by the user."),
+      ).toBeTruthy();
+      expect(
+        screen.queryByRole("button", { name: "View installation" }),
+      ).toBeNull();
+      expect(screen.queryByText("Installer cancelled confirmed")).toBeNull();
+    } else if (state === "CONFIRMED_ASSOCIATION") {
+      expect(
+        screen.getByText("Application installation completed successfully."),
+      ).toBeTruthy();
+      expect(
+        screen.queryByRole("button", { name: "View installation" }),
+      ).toBeNull();
+    } else {
+      expect(
+        screen.getByRole("button", { name: "View installation" }),
+      ).toBeTruthy();
+      expect(
+        screen
+          .getByRole("button", { name: "Clear history" })
+          .hasAttribute("disabled"),
+      ).toBe(true);
+    }
+  },
+);
+
+test.each(["C:/notes.txt", "C:/Projects"])(
+  "native drag feedback follows enter, over, leave and drop for %s",
+  async (path) => {
+    ownershipWorkspace();
+    await screen.findByRole("heading", { name: "Ownership" });
+    await waitFor(() => expect(calls.drop).not.toBeNull());
+    calls.drop?.({ payload: { type: "enter", paths: [path] } });
+    const hint = await screen.findByText(
+      "Drop a file or folder into Ownership",
+    );
+    expect(document.querySelector(".workspace.drag-active")).toBeTruthy();
+    calls.drop?.({ payload: { type: "over", paths: [] } });
+    expect(screen.getByText("Drop a file or folder into Ownership")).toBe(hint);
+    calls.drop?.({ payload: { type: "leave", paths: [] } });
+    await waitFor(() =>
+      expect(
+        screen.queryByText("Drop a file or folder into Ownership"),
+      ).toBeNull(),
+    );
+    calls.drop?.({ payload: { type: "enter", paths: [path] } });
+    await screen.findByText("Drop a file or folder into Ownership");
+    calls.drop?.({ payload: { type: "drop", paths: [path] } });
+    await screen.findByRole("button", { name: "Add resource" });
+    expect(
+      screen.queryByText("Drop a file or folder into Ownership"),
+    ).toBeNull();
+    expect(document.querySelector(".workspace.drag-active")).toBeNull();
+    expect(
+      calls.invoke.mock.calls.some(([command]) =>
+        ["add_resource", "adopt_resource"].includes(command),
+      ),
+    ).toBe(false);
+  },
+);
+test.each(["Escape", "blur"])(
+  "drag feedback resets after %s without opening intake",
+  async (cancellation) => {
+    ownershipWorkspace();
+    await screen.findByRole("heading", { name: "Ownership" });
+    await waitFor(() => expect(calls.drop).not.toBeNull());
+    calls.drop?.({ payload: { type: "enter", paths: ["C:/Folder"] } });
+    await screen.findByText("Drop a file or folder into Ownership");
+    if (cancellation === "Escape")
+      await fireEvent.keyDown(window, { key: "Escape" });
+    else await fireEvent.blur(window);
+    expect(
+      screen.queryByText("Drop a file or folder into Ownership"),
+    ).toBeNull();
+    expect(screen.queryByRole("button", { name: "Add resource" })).toBeNull();
+  },
+);
+test("unsupported multi-item drops clear feedback and preserve the one-item workflow", async () => {
+  ownershipWorkspace();
+  await screen.findByRole("heading", { name: "Ownership" });
+  await waitFor(() => expect(calls.drop).not.toBeNull());
+  calls.drop?.({ payload: { type: "enter", paths: ["C:/file.txt"] } });
+  await screen.findByText("Drop a file or folder into Ownership");
+  calls.drop?.({
+    payload: { type: "drop", paths: ["C:/file.txt", "C:/Folder"] },
+  });
+  await screen.findByText("Drop one item at a time.");
+  expect(document.querySelector(".workspace.drag-active")).toBeNull();
+  expect(screen.queryByRole("button", { name: "Add resource" })).toBeNull();
 });

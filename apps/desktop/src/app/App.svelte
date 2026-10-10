@@ -15,6 +15,9 @@
   const caskId = new URLSearchParams(window.location.search).get("cask");
 </script>
 
+<!-- Suppress the WebView menu in every window; app menus retain their own controls. -->
+<svelte:window oncontextmenu={(event) => event.preventDefault()} />
+
 <WindowChrome />
 <div class="window-body">
   {#if caskId}<Workspace {caskId} onReady={ready} />{:else}<MainWindow

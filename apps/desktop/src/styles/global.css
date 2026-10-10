@@ -61,10 +61,12 @@ button:disabled {
   opacity: 0.45;
   cursor: not-allowed;
 }
-button:focus-visible,
-summary:focus-visible,
-input:focus-visible,
-select:focus-visible {
+:where(button, summary, input, select, textarea, a, [tabindex]):focus:not(
+    :focus-visible
+  ) {
+  outline: none;
+}
+:where(button, summary, input, select, textarea, a, [tabindex]):focus-visible {
   outline: 2px solid var(--focus-border, #878787);
   outline-offset: 3px;
 }
@@ -2252,4 +2254,73 @@ select option {
 html.theme-switching,
 html.theme-switching * {
   transition: none !important;
+}
+
+.metadata-disclosure .activity-cask {
+  font-size: 13px;
+  margin-top: 8px;
+  color: var(--text-primary, #222);
+}
+.metadata-disclosure .activity-description {
+  font-size: 12px;
+  margin-top: 5px;
+  color: var(--text-muted, #737373);
+  line-height: 1.5;
+}
+:where(button, summary, input, select, textarea, a) {
+  -webkit-tap-highlight-color: transparent;
+}
+
+/* Native drag feedback never changes target geometry or captures pointer input. */
+.detail-window {
+  position: relative;
+}
+.detail-window.drag-active::after {
+  content: "";
+  position: absolute;
+  inset: 5px;
+  z-index: 30;
+  border: 2px dashed var(--focus-border, #737373);
+  border-radius: 8px;
+  background: var(--focus-ring, #0000000b);
+  pointer-events: none;
+}
+.cask-drop-hint {
+  position: absolute;
+  z-index: 31;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: min(260px, calc(100% - 52px));
+  min-height: min(240px, calc(100% - 52px));
+  max-height: calc(100% - 52px);
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  padding: 24px;
+  text-align: center;
+  overflow-wrap: anywhere;
+  overflow: hidden;
+  border: 1px dashed var(--focus-border, #737373);
+  border-radius: var(--radius);
+  background: var(--surface-panel, #fff);
+  color: var(--text-primary, #222);
+  box-shadow: 0 4px 16px var(--focus-ring, #0000000b);
+  pointer-events: none;
+}
+.cask-drop-hint > svg {
+  flex-shrink: 0;
+}
+.cask-drop-title {
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 1.4;
+}
+.cask-drop-description {
+  color: var(--text-secondary, #666);
+  font-size: 12px;
+  line-height: 1.5;
 }

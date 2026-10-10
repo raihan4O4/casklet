@@ -31,7 +31,7 @@ fn operation(row: &rusqlite::Row<'_>) -> rusqlite::Result<InstallerOperationView
     Ok(InstallerOperationView{version:CONTRACT_VERSION,id:row.get(0)?,artifact_id:row.get(1)?,cask_id:row.get(2)?,state:row.get(3)?,exit_code:row.get(4)?,error_code:row.get(5)?,confirmed_installation_id:row.get(6)?,candidates,started_at_ms:row.get(8)?,warnings:vec![if row.get::<_,bool>(9)? { "A managed MSI ownership record is present. Current uninstall eligibility is determined by an approved cleanup plan." } else { "Candidates are observations, not owned installations. Reference confirmation creates a detach-only association." }.into()]})
 }
 const ARTIFACT: &str = "SELECT id,cask_id,resource_id,inspection_json,registered_at_ms,source_path FROM installer_artifacts";
-const OPERATION: &str = "SELECT id,artifact_id,cask_id,state,exit_code,error_code,confirmed_installation_id,candidates_json,started_at_ms,EXISTS(SELECT 1 FROM managed_msi_installations m WHERE m.operation_id=installer_operations.id) FROM installer_operations";
+const OPERATION: &str = "SELECT id,artifact_id,cask_id,CASE WHEN state='CLOSED_PRESERVED' AND error_code='INSTALLER_CANCELLED_CONFIRMED' THEN 'CANCELLED' ELSE state END,exit_code,error_code,confirmed_installation_id,candidates_json,started_at_ms,EXISTS(SELECT 1 FROM managed_msi_installations m WHERE m.operation_id=installer_operations.id) FROM installer_operations";
 
 fn mark_stale(connection: &rusqlite::Connection, cask_id: Option<&str>) -> Result<(), String> {
     let now = i64::try_from(
@@ -133,16 +133,23 @@ impl InstallerRepository for SqliteCasks {
         candidates: &[InstallerCandidateView],
         now: i64,
     ) -> Result<(), String> {
-        if !matches!(state, "REVIEW_REQUIRED" | "RECOVERY_REQUIRED") {
+        if !matches!(state, "REVIEW_REQUIRED" | "RECOVERY_REQUIRED" | "CANCELLED") {
             return Err("Invalid installer outcome".into());
         }
         let mut c = self.connection()?;
         let tx = c.transaction().map_err(|e| e.to_string())?;
-        let n=tx.execute("UPDATE installer_operations SET state=?2,exit_code=?3,error_code=?4,candidates_json=?5,updated_at_ms=?6,finished_at_ms=?6,revision=revision+1 WHERE id=?1 AND state='RUNNING'",params![id,state,exit_code,error_code,serde_json::to_string(candidates).map_err(|e|e.to_string())?,now]).map_err(|e|e.to_string())?;
+        // Cancellation is terminal preservation, never proof of rollback. Keep the
+        // existing schema state and expose the cancellation outcome in queries.
+        let persisted_state = if state == "CANCELLED" {
+            "CLOSED_PRESERVED"
+        } else {
+            state
+        };
+        let n=tx.execute("UPDATE installer_operations SET state=?2,exit_code=?3,error_code=?4,candidates_json=?5,updated_at_ms=?6,finished_at_ms=?6,revision=revision+1 WHERE id=?1 AND state='RUNNING'",params![id,persisted_state,exit_code,error_code,serde_json::to_string(candidates).map_err(|e|e.to_string())?,now]).map_err(|e|e.to_string())?;
         if n != 1 {
             return Err("Installer operation no longer running".into());
         }
-        if state == "REVIEW_REQUIRED" {
+        if matches!(state, "REVIEW_REQUIRED" | "CANCELLED") {
             tx.execute("DELETE FROM installer_locks WHERE operation_id=?1", [id])
                 .map_err(|e| e.to_string())?;
         }
@@ -1193,7 +1200,9 @@ mod tests {
             );
             assert_eq!(
                 op.state,
-                if matches!(mode, Mode::Ambiguous) {
+                if matches!(mode, Mode::CancelledAfterExit) {
+                    "CANCELLED"
+                } else if matches!(mode, Mode::Ambiguous) {
                     "REVIEW_REQUIRED"
                 } else {
                     "RECOVERY_REQUIRED"
@@ -1219,6 +1228,21 @@ mod tests {
                         )
                         .is_err()
                 );
+            }
+            if op.state == "CANCELLED" {
+                let history = casklet_application::operation::OperationRepository::list_operations(
+                    &service.repository,
+                    Some(&cask_id),
+                )
+                .unwrap();
+                assert!(history.iter().any(|entry| entry.id == op.id
+                    && entry.state == "CANCELLED"
+                    && entry.step == "INSTALL_APPLICATION"));
+                service
+                    .repository
+                    .begin_installer("retry-cancelled", &item.id, &cask_id, 2)
+                    .unwrap();
+                continue;
             }
             service
                 .close_installer_operation(

@@ -107,7 +107,7 @@ impl<
             .list_operations(None)
             .map_err(|e| api_error("PERSISTENCE", e, correlation_id))?
             .into_iter()
-            .filter(|item| item.state == "RECOVERY_REQUIRED")
+            .filter(|item| item.state == "RECOVERY_REQUIRED" && item.step != "INSTALL_APPLICATION")
             .collect();
         let pending_manifest_casks = self
             .repository
