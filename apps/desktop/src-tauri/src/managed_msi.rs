@@ -42,14 +42,18 @@ pub(super) async fn launch_managed_msi_artifact(
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
 pub(super) async fn claim_managed_msi(
+    app: tauri::AppHandle,
     service: tauri::State<'_, Service>,
     request: casklet_contracts::ConfirmInstallerCandidate,
 ) -> Result<(), casklet_contracts::ApiError> {
     let service = service.inner().clone();
     tauri::async_runtime::spawn_blocking(move || service.claim_managed_msi(&request, "desktop"))
         .await
-        .map_err(|e| worker_error(&e))?
+        .map_err(|e| worker_error(&e))??;
+    let _ = app.emit("casks-changed", ());
+    Ok(())
 }
+
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
 pub(super) async fn create_msi_cleanup(

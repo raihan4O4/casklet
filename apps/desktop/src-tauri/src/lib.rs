@@ -7,6 +7,7 @@ use tauri_plugin_dialog::DialogExt;
 /// # Panics
 ///
 /// Panics if Tauri cannot initialize or run the desktop window.
+#[expect(clippy::too_many_lines, reason = "Explicit desktop command registry")]
 pub fn run() {
     let service = if cfg!(debug_assertions) {
         casklet_infrastructure::development_service()
@@ -98,6 +99,10 @@ pub fn run() {
             create_diagnostics_bundle,
             backup_database,
             create_removal_plan,
+            create_category_cleanup,
+            get_category_cleanup,
+            approve_category_cleanup,
+            execute_category_cleanup,
             get_removal_plan,
             list_removal_plans,
             removal_capability,
@@ -1136,5 +1141,89 @@ mod alpha_tests {
             super::removal_capability(),
             cfg!(any(feature = "alpha-cleanup", feature = "reviewed-removal"))
         );
+    }
+}
+
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+async fn create_category_cleanup(
+    app: tauri::AppHandle,
+    service: tauri::State<'_, Service>,
+    request: casklet_contracts::CreateCategoryCleanup,
+) -> Result<casklet_contracts::CategoryCleanupPlan, casklet_contracts::ApiError> {
+    let worker = service.inner().clone();
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        worker.create_category_cleanup(&request, "desktop")
+    })
+    .await
+    .map_err(|e| worker_error(&e))?;
+    let _ = app.emit("casks-changed", ());
+    result
+}
+
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+async fn get_category_cleanup(
+    app: tauri::AppHandle,
+    service: tauri::State<'_, Service>,
+    request: casklet_contracts::CategoryCleanupPlan,
+) -> Result<casklet_contracts::CategoryCleanupPlan, casklet_contracts::ApiError> {
+    let worker = service.inner().clone();
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        worker.get_category_cleanup(&request, "desktop")
+    })
+    .await
+    .map_err(|e| worker_error(&e))?;
+    let _ = app.emit("casks-changed", ());
+    result
+}
+
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+async fn approve_category_cleanup(
+    app: tauri::AppHandle,
+    service: tauri::State<'_, Service>,
+    request: casklet_contracts::CategoryCleanupPlan,
+) -> Result<casklet_contracts::CategoryCleanupPlan, casklet_contracts::ApiError> {
+    #[cfg(any(feature = "reviewed-removal", feature = "alpha-cleanup"))]
+    {
+        let worker = service.inner().clone();
+        let result = tauri::async_runtime::spawn_blocking(move || {
+            worker.approve_category_cleanup(&request, "desktop")
+        })
+        .await
+        .map_err(|e| worker_error(&e))?;
+        let _ = app.emit("casks-changed", ());
+        result
+    }
+    #[cfg(not(any(feature = "reviewed-removal", feature = "alpha-cleanup")))]
+    {
+        let _ = (app, service, request);
+        Err(removal_review_pending())
+    }
+}
+
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+async fn execute_category_cleanup(
+    app: tauri::AppHandle,
+    service: tauri::State<'_, Service>,
+    request: casklet_contracts::ExecuteCategoryCleanup,
+) -> Result<casklet_contracts::CategoryCleanupPlan, casklet_contracts::ApiError> {
+    #[cfg(any(feature = "reviewed-removal", feature = "alpha-cleanup"))]
+    {
+        let worker = service.inner().clone();
+        let result = tauri::async_runtime::spawn_blocking(move || {
+            worker.execute_category_cleanup(&request, "desktop")
+        })
+        .await
+        .map_err(|e| worker_error(&e))?;
+        let _ = app.emit("casks-changed", ());
+        result
+    }
+    #[cfg(not(any(feature = "reviewed-removal", feature = "alpha-cleanup")))]
+    {
+        let _ = (app, service, request);
+        Err(removal_review_pending())
     }
 }

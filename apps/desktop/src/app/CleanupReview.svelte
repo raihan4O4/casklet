@@ -162,10 +162,12 @@
     </p>{/if}
 </details>
 
-{#if removalEnabled && plan.state === "PARTIAL" && plan.runId}
+{#if removalEnabled && plan.state === "PARTIAL"}
   <label class="checkbox-label"
-    ><input type="checkbox" bind:checked={preserveConfirmed} /> I inspected the recovery
-    locations and will keep unresolved items</label
+    ><input type="checkbox" bind:checked={preserveConfirmed} />
+    {plan.items.some((item) => item.reasonCode === "APPLICATION_OWNERSHIP")
+      ? "I inspected the applications and will preserve unresolved results"
+      : "I inspected the recovery locations and will keep unresolved items"}</label
   >
   <button
     type="button"

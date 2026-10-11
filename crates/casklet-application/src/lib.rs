@@ -3,6 +3,7 @@ use casklet_contracts::{ApiError, CONTRACT_VERSION, CaskView, CreateCask, GetCas
 use casklet_domain::Cask;
 use std::time::{SystemTime, UNIX_EPOCH};
 pub mod backup;
+pub mod category_cleanup;
 pub mod diagnostics;
 pub mod installer;
 pub mod library;
@@ -91,7 +92,7 @@ impl<
         let mut cask = Cask::new(&request.name, id_root, now).map_err(|_| {
             api_error(
                 "INVALID_NAME",
-                "Name must contain 1–120 non-control characters".into(),
+                "Name must contain 1â€“120 non-control characters".into(),
                 correlation_id,
             )
         })?;

@@ -499,6 +499,53 @@ mod tests {
             casklet_application::library::StorageBrowser::open_directory(&self.local, path)
         }
     }
+    impl casklet_application::removal::RemovalInspection for FakeStorage {
+        fn verify_managed(
+            &self,
+            root: &str,
+            candidate: &casklet_application::removal::RemovalCandidate,
+        ) -> Option<String> {
+            casklet_application::removal::RemovalInspection::verify_managed(
+                &self.local,
+                root,
+                candidate,
+            )
+        }
+        fn trash_verified(
+            &self,
+            root: &str,
+            candidate: &casklet_application::removal::RemovalCandidate,
+            identity: &str,
+            run: &str,
+            item: &str,
+        ) -> Result<(), String> {
+            casklet_application::removal::RemovalInspection::trash_verified(
+                &self.local,
+                root,
+                candidate,
+                identity,
+                run,
+                item,
+            )
+        }
+        fn delete_permanently_verified(
+            &self,
+            root: &str,
+            candidate: &casklet_application::removal::RemovalCandidate,
+            identity: &str,
+            run: &str,
+            item: &str,
+        ) -> Result<(), String> {
+            casklet_application::removal::RemovalInspection::delete_permanently_verified(
+                &self.local,
+                root,
+                candidate,
+                identity,
+                run,
+                item,
+            )
+        }
+    }
     impl ManifestProjection for FakeStorage {
         fn project(
             &self,
@@ -782,6 +829,251 @@ mod tests {
                 .is_empty()
         );
     }
+    #[test]
+    fn verified_reinstalls_reuse_retired_identity_and_remain_uninstallable() {
+        use casklet_application::managed_msi::MsiRepository;
+        for mode in [Mode::ExeTreeSuccess, Mode::ManagedMsiAlias] {
+            let (service, cask_id, path) = setup(mode);
+            let first = install(&service, &cask_id, &path);
+            let installation_id = first.confirmed_installation_id.clone().unwrap();
+            for _ in 0..2 {
+                let plan = service
+                    .create_msi_cleanup(
+                        &casklet_contracts::GetCask {
+                            version: CONTRACT_VERSION,
+                            id: cask_id.clone(),
+                        },
+                        "test",
+                    )
+                    .unwrap();
+                let approval = casklet_contracts::ApproveRemovalPlan {
+                    version: CONTRACT_VERSION,
+                    id: plan.id,
+                    plan_hash: plan.plan_hash,
+                };
+                service.approve_msi_cleanup(&approval, "test").unwrap();
+                let result = service.execute_msi_cleanup(&approval, "test").unwrap();
+                assert_eq!(result.items[0].state, "SUCCEEDED");
+                assert!(
+                    service
+                        .repository
+                        .list_associated_installed(&cask_id)
+                        .unwrap()
+                        .is_empty()
+                );
+                // Recover the completed, detected result without launching again.
+                let artifact = register(&service, &cask_id, &path);
+                let pending = launch(&service, &artifact);
+                let runs = service.storage.runs.load(Ordering::SeqCst);
+                service
+                    .claim_managed_msi(
+                        &ConfirmInstallerCandidate {
+                            version: CONTRACT_VERSION,
+                            operation_id: pending.id.clone(),
+                            installation_id: installation_id.clone(),
+                        },
+                        "test",
+                    )
+                    .unwrap();
+                assert_eq!(service.storage.runs.load(Ordering::SeqCst), runs);
+                let recovered = service
+                    .repository
+                    .get_installer_operation(&pending.id)
+                    .unwrap()
+                    .unwrap();
+                assert_eq!(recovered.state, "CONFIRMED_ASSOCIATION");
+                assert_eq!(
+                    recovered.confirmed_installation_id.as_deref(),
+                    Some(installation_id.as_str())
+                );
+                assert_eq!(service.repository.owned_msi(&cask_id).unwrap().len(), 1);
+                assert_eq!(
+                    service
+                        .repository
+                        .get_installer_operation(&first.id)
+                        .unwrap()
+                        .unwrap()
+                        .state,
+                    "CONFIRMED_ASSOCIATION"
+                );
+            }
+        }
+    }
+
+    #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "Keep the complete category lifecycle and preservation assertions inspectable together"
+    )]
+    fn category_cleanup_scopes_resources_and_ownership_without_touching_references() {
+        use casklet_contracts::{
+            AddMode, AddResource, CreateCategoryCleanup, CreateRemovalPlan, ExecuteCategoryCleanup,
+        };
+        for category in [Some("documents"), Some("applications"), None] {
+            let (service, cask_id, path) = setup(Mode::ExeTreeSuccess);
+            install(&service, &cask_id, &path);
+            let root = PathBuf::from(&path).parent().unwrap().to_path_buf();
+            let document = root.join("notes.txt");
+            fs::write(&document, "keep reference bytes").unwrap();
+            let folder = root.join("project");
+            fs::create_dir(&folder).unwrap();
+            for (source, key) in [(&document, "documents"), (&folder, "projects")] {
+                service
+                    .add_resource(
+                        &AddResource {
+                            version: CONTRACT_VERSION,
+                            cask_id: cask_id.clone(),
+                            source_path: source.to_string_lossy().into_owned(),
+                            mode: AddMode::Reference,
+                            category_key: key.into(),
+                        },
+                        "test",
+                        &|_, _| {},
+                    )
+                    .unwrap();
+            }
+            let reference = observed("external-reference");
+            service
+                .storage
+                .registry
+                .lock()
+                .unwrap()
+                .push(reference.clone());
+            service
+                .repository
+                .associate_installed(&cask_id, &reference, 1)
+                .unwrap();
+            let plan = service
+                .create_category_cleanup(
+                    &CreateCategoryCleanup {
+                        scope: CreateRemovalPlan {
+                            version: CONTRACT_VERSION,
+                            cask_id: cask_id.clone(),
+                            resource_ids: vec![],
+                            category_key: category.map(str::to_owned),
+                            permanent: true,
+                        },
+                        installation_id: None,
+                    },
+                    "test",
+                )
+                .unwrap();
+            if category == Some("documents") {
+                assert!(plan.applications.is_none());
+                assert_eq!(plan.resources.as_ref().unwrap().items.len(), 1);
+            } else {
+                let apps = plan.applications.as_ref().unwrap();
+                assert_eq!(
+                    apps.items
+                        .iter()
+                        .filter(|item| item.action == "UNINSTALL")
+                        .count(),
+                    1
+                );
+                assert_eq!(
+                    apps.items
+                        .iter()
+                        .filter(|item| item.action == "DETACH")
+                        .count(),
+                    1
+                );
+                if category.is_some() {
+                    assert_eq!(plan.resources.as_ref().unwrap().items.len(), 1);
+                }
+                let mut wrong = plan.clone();
+                wrong.cask_id = "another-cask".into();
+                assert!(service.get_category_cleanup(&wrong, "test").is_err());
+            }
+            let approved = service.approve_category_cleanup(&plan, "test").unwrap();
+            assert!(
+                service
+                    .execute_category_cleanup(
+                        &ExecuteCategoryCleanup {
+                            plan: approved.clone(),
+                            confirm_permanent: false
+                        },
+                        "test"
+                    )
+                    .is_err()
+            );
+            let result = service
+                .execute_category_cleanup(
+                    &ExecuteCategoryCleanup {
+                        plan: approved,
+                        confirm_permanent: true,
+                    },
+                    "test",
+                )
+                .unwrap();
+            assert_eq!(result.resources.unwrap().state, "COMPLETE");
+            assert!(document.exists() && folder.exists());
+            assert!(
+                service
+                    .storage
+                    .registry
+                    .lock()
+                    .unwrap()
+                    .iter()
+                    .any(|item| item.installation_id == reference.installation_id)
+            );
+            if category == Some("documents") {
+                assert_eq!(
+                    service
+                        .repository
+                        .list_associated_installed(&cask_id)
+                        .unwrap()
+                        .len(),
+                    2
+                );
+            } else {
+                assert_eq!(result.applications.unwrap().state, "COMPLETE");
+                assert!(
+                    service
+                        .repository
+                        .list_associated_installed(&cask_id)
+                        .unwrap()
+                        .is_empty()
+                );
+            }
+        }
+    }
+    #[test]
+    fn partial_application_queue_stops_whole_cask_before_file_cleanup() {
+        use casklet_contracts::{CreateCategoryCleanup, CreateRemovalPlan, ExecuteCategoryCleanup};
+        let (service, cask_id, path) = setup(Mode::ExeTreeAliasLeavesAlias);
+        install(&service, &cask_id, &path);
+        let plan = service
+            .create_category_cleanup(
+                &CreateCategoryCleanup {
+                    scope: CreateRemovalPlan {
+                        version: CONTRACT_VERSION,
+                        cask_id,
+                        resource_ids: vec![],
+                        category_key: None,
+                        permanent: true,
+                    },
+                    installation_id: None,
+                },
+                "test",
+            )
+            .unwrap();
+        let approved = service.approve_category_cleanup(&plan, "test").unwrap();
+        let result = service
+            .execute_category_cleanup(
+                &ExecuteCategoryCleanup {
+                    plan: approved,
+                    confirm_permanent: true,
+                },
+                "test",
+            )
+            .unwrap();
+        assert_eq!(result.applications.unwrap().state, "PARTIAL");
+        let files = result.resources.unwrap();
+        assert_eq!(files.state, "APPROVED");
+        assert!(files.items.iter().all(|item| item.state == "PENDING"));
+        assert!(PathBuf::from(&files.items[0].path).exists());
+    }
+
     #[test]
     fn changed_alternate_view_blocks_existing_owned_uninstall_preview() {
         let (service, cask_id, path) = setup(Mode::ExeTreeAlias);

@@ -48,6 +48,7 @@ export function cleanupSummary(plan: RemovalPlanView) {
     return "Cleanup is running. Wait for it to finish.";
   const effects = [
     ["TRASH", "moved to the Recycle Bin"],
+    ["UNINSTALL", "uninstalled from Windows"],
     ["DETACH", "removed from this Cask with the data kept"],
     ["PRESERVE", "kept"],
     ["DELETE_PERMANENTLY", "permanently deleted"],
@@ -66,6 +67,7 @@ export function cleanupAction(action: string) {
   return (
     (
       {
+        UNINSTALL: "Uninstall from Windows",
         TRASH: "Move to Recycle Bin",
         DETACH: "Remove from this Cask; keep the data",
         PRESERVE: "Keep this item",
@@ -75,10 +77,24 @@ export function cleanupAction(action: string) {
   );
 }
 export function cleanupItemEffect(item: RemovalPlanView["items"][number]) {
+  if (item.reasonCode === "APPLICATION_OWNERSHIP") {
+    if (item.state === "RUNNING") return "Uninstalling...";
+    if (item.state === "FAILED" || item.state === "UNKNOWN")
+      return "Uninstall failed; ownership retained";
+    if (item.action === "DETACH")
+      return item.state === "SUCCEEDED"
+        ? "Reference removed; application remains installed"
+        : "Remove reference; leave installed on Windows";
+    if (item.state === "PENDING")
+      return item.action === "UNINSTALL"
+        ? "Waiting to uninstall"
+        : "Keep installed; verification required";
+  }
   if (item.state === "SUCCEEDED") {
     return (
       (
         {
+          UNINSTALL: "Uninstalled from Windows",
           TRASH: "Moved to the Recycle Bin",
           DETACH: "Removed from this Cask; data kept",
           DELETE_PERMANENTLY: "Permanently deleted",
