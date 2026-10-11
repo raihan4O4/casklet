@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { SvelteSet } from "svelte/reactivity";
   import ThemeSettings from "./ThemeSettings.svelte";
   import { invoke } from "@tauri-apps/api/core";
   import { listen } from "@tauri-apps/api/event";
@@ -16,6 +17,7 @@
     RecoveryInspection,
     OperationView,
     RemovalPlanView,
+    CategoryCleanupPlan,
     PortableZipPreview,
     PortableInstallationView,
     DetectedApplicationView,
@@ -31,7 +33,7 @@
     DatabaseBackupView,
   } from "../contracts/generated/casklet";
   import { CONTRACT_VERSION } from "../contracts/generated/casklet";
-  import MsiCleanup from "./MsiCleanup.svelte";
+
   import ApplicationLibrary from "./ApplicationLibrary.svelte";
   import { applicationRows, type ApplicationRow } from "./applications";
   import CleanupReview from "./CleanupReview.svelte";
@@ -204,10 +206,14 @@
   let removalBusy = $state(false);
   let historyPlanId = $state("");
   let cleanupHistory: RemovalPlanView[] = $state([]);
-  const cleanupPending = $derived(
-    cleanupHistory.some((plan) =>
-      ["PARTIAL", "EXECUTING"].includes(plan.state),
-    ),
+  const cleanupPending = $derived.by(
+    () =>
+      cleanupHistory.some((plan) =>
+        ["PARTIAL", "EXECUTING"].includes(plan.state),
+      ) ||
+      ["PARTIAL", "EXECUTING"].includes(
+        categoryCleanup?.applications?.state ?? "",
+      ),
   );
   let portablePreview: PortableZipPreview | null = $state(null);
   let portablePath = $state("");
@@ -259,6 +265,62 @@
       installerOperation?.state ?? "",
     ),
   );
+  const installerBlocksMutation = $derived.by(() =>
+    ["RUNNING", "RECOVERY_REQUIRED"].includes(installerOperation?.state ?? ""),
+  );
+  const installerConfirmationAttempts = new SvelteSet<string>();
+  let categoryCleanup: CategoryCleanupPlan | null = $state(null);
+  const categoryReview = $derived.by((): RemovalPlanView | null => {
+    if (!categoryCleanup) return null;
+    const file = categoryCleanup.resources;
+    const app = categoryCleanup.applications;
+    const states = [file?.state, app?.state].filter(Boolean);
+    const state = states.includes("PARTIAL")
+      ? "PARTIAL"
+      : states.includes("EXECUTING")
+        ? "EXECUTING"
+        : states.includes("DRAFT")
+          ? "DRAFT"
+          : states.includes("APPROVED")
+            ? "APPROVED"
+            : "COMPLETE";
+    return {
+      version: CONTRACT_VERSION,
+      id: `category:${file?.id ?? ""}:${app?.id ?? ""}`,
+      caskId: categoryCleanup.caskId,
+      scope: applicationRemovalId
+        ? "APPLICATION"
+        : removalCategory
+          ? "CATEGORY"
+          : "CASK",
+      categoryKey: removalCategory || null,
+      permanent: file?.permanent ?? false,
+      cleanupOnly: true,
+      state,
+      planHash: `${file?.planHash ?? ""}|${app?.planHash ?? ""}`,
+      runId: file?.runId ?? null,
+      createdAtMs: file?.createdAtMs ?? Date.now(),
+      expiresAtMs: Math.min(
+        file?.expiresAtMs ?? Infinity,
+        app?.expiresAtMs ?? Infinity,
+      ),
+      items: [
+        ...(file?.items ?? []),
+        ...(app?.items ?? []).map((item) => ({
+          id: item.installationId,
+          resourceId: item.installationId,
+          name: item.name,
+          path: "",
+          action: item.action,
+          reasonCode: "APPLICATION_OWNERSHIP",
+          expectedSizeBytes: null,
+          state: item.state,
+          resultCode: item.result,
+          recoveryPath: null,
+        })),
+      ],
+    };
+  });
   let applicationRemovalId = $state("");
   async function applicationAction(row: ApplicationRow) {
     if (row.kind === "portable") {
@@ -332,11 +394,40 @@
       },
     );
     if (selected?.id !== caskId) return;
-    const pending = operations.find((operation) =>
+    let pending = operations.find((operation) =>
       ["RUNNING", "REVIEW_REQUIRED", "RECOVERY_REQUIRED"].includes(
         operation.state,
       ),
     );
+    if (
+      pending?.state === "REVIEW_REQUIRED" &&
+      pending.exitCode === 0 &&
+      pending.candidates.length === 1 &&
+      ["HIGH", "MEDIUM"].includes(pending.candidates[0].confidence) &&
+      !installerConfirmationAttempts.has(pending.id) &&
+      !installerBusy
+    ) {
+      installerConfirmationAttempts.add(pending.id);
+      try {
+        await invoke("claim_managed_msi", {
+          request: {
+            version: CONTRACT_VERSION,
+            operationId: pending.id,
+            installationId: pending.candidates[0].installationId,
+          },
+        });
+        pending = await invoke<InstallerOperationView>(
+          "get_installer_operation",
+          {
+            request: { version: CONTRACT_VERSION, id: pending.id },
+          },
+        );
+      } catch (cause) {
+        // Preserve the evidence and surface a genuine confirmation issue.
+        error = message(cause);
+      }
+      if (selected?.id !== caskId) return;
+    }
     if (pending && !installerBusy && !installerNeedsAttention) {
       installerRefreshRevision += 1;
       installerOperation = pending;
@@ -840,7 +931,11 @@
         ? resourceIds.includes(item.id)
         : !removalCategory || item.categoryKey === removalCategory,
     );
-    if (!scoped.length) {
+    const includeApps =
+      !resourceIds.length &&
+      (!removalCategory || removalCategory === "applications") &&
+      associatedApps.length > 0;
+    if (!scoped.length && !includeApps) {
       removalPlan = null;
       return;
     }
@@ -848,21 +943,33 @@
     historyPlanId = "";
     const previous = removalPlan?.id;
     try {
-      removalPlan = await invoke<RemovalPlanView>("create_removal_plan", {
-        request: {
-          version: CONTRACT_VERSION,
-          caskId: selected.id,
-          resourceIds,
-          categoryKey: resourceIds.length ? null : removalCategory || null,
-          permanent: permanentPlan,
-        },
-      });
+      const scope = {
+        version: CONTRACT_VERSION,
+        caskId: selected.id,
+        resourceIds,
+        categoryKey: resourceIds.length ? null : removalCategory || null,
+        permanent: permanentPlan,
+      };
+      if (includeApps || applicationRemovalId) {
+        categoryCleanup = await invoke<CategoryCleanupPlan>(
+          "create_category_cleanup",
+          {
+            request: { scope, installationId: applicationRemovalId || null },
+          },
+        );
+        removalPlan = categoryCleanup.resources;
+      } else {
+        categoryCleanup = null;
+        removalPlan = await invoke<RemovalPlanView>("create_removal_plan", {
+          request: scope,
+        });
+      }
       permanentConfirmation = false;
       preserveConfirmed = false;
       reviewedPlanHash = "";
       executionConfirmed = false;
       progress =
-        removalPlan.id === previous
+        removalPlan?.id === previous
           ? "Current cleanup plan loaded."
           : "Cleanup plan ready.";
       error = "";
@@ -904,7 +1011,9 @@
     resourceIds: string[] = [],
     installationId = "",
   ) {
+    categoryCleanup = null;
     applicationRemovalId = installationId;
+    if (installationId) removalCategory = "applications";
     if (cleanupResourceIds.join() !== resourceIds.join()) {
       removalPlan = null;
       reviewedPlanHash = "";
@@ -912,10 +1021,27 @@
     }
     cleanupResourceIds = resourceIds;
     detailTab = "cleanup";
+    if (selected) {
+      const pending = await invoke<
+        import("../contracts/generated/casklet").MsiCleanupPlan | null
+      >("latest_msi_cleanup", {
+        request: { version: CONTRACT_VERSION, id: selected.id },
+      }).catch(() => null);
+      if (pending && ["PARTIAL", "EXECUTING"].includes(pending.state)) {
+        categoryCleanup = {
+          version: CONTRACT_VERSION,
+          caskId: selected.id,
+          resources: null,
+          applications: pending,
+        };
+      }
+    }
     await tick();
     document.getElementById("cleanup-heading")?.focus();
   }
   function invalidateCleanupReview() {
+    categoryCleanup = null;
+    applicationRemovalId = "";
     removalPlan = null;
     reviewedPlanHash = "";
     executionConfirmed = false;
@@ -928,7 +1054,17 @@
     executionConfirmed = false;
     permanentConfirmation = false;
     preserveConfirmed = false;
-    if (removalPlan) {
+    if (categoryCleanup) {
+      try {
+        categoryCleanup = await invoke<CategoryCleanupPlan>(
+          "get_category_cleanup",
+          { request: categoryCleanup },
+        );
+        removalPlan = categoryCleanup.resources;
+      } catch {
+        /* Keep the last inspected snapshots if journal access fails. */
+      }
+    } else if (removalPlan) {
       try {
         removalPlan = await invoke<RemovalPlanView>("get_removal_plan", {
           request: { version: CONTRACT_VERSION, id: removalPlan.id },
@@ -941,22 +1077,30 @@
     error = message(cause);
   }
   async function approveRemoval() {
+    const review = categoryReview ?? removalPlan;
     if (
-      !removalPlan ||
+      !review ||
       removalBusy ||
       !removalEnabled ||
-      reviewedPlanHash !== removalPlan.planHash
+      reviewedPlanHash !== review.planHash
     )
       return;
     removalBusy = true;
     try {
-      removalPlan = await invoke<RemovalPlanView>("approve_removal_plan", {
-        request: {
-          version: CONTRACT_VERSION,
-          id: removalPlan.id,
-          planHash: removalPlan.planHash,
-        },
-      });
+      if (categoryCleanup) {
+        categoryCleanup = await invoke<CategoryCleanupPlan>(
+          "approve_category_cleanup",
+          { request: categoryCleanup },
+        );
+        removalPlan = categoryCleanup.resources;
+      } else
+        removalPlan = await invoke<RemovalPlanView>("approve_removal_plan", {
+          request: {
+            version: CONTRACT_VERSION,
+            id: review.id,
+            planHash: review.planHash,
+          },
+        });
       error = "";
     } catch (cause) {
       await reconcileCleanupFailure(cause);
@@ -965,25 +1109,38 @@
     }
   }
   async function executeRemoval() {
+    const review = categoryReview ?? removalPlan;
     if (
-      !removalPlan ||
+      !review ||
       removalBusy ||
       !removalEnabled ||
       !executionConfirmed ||
-      reviewedPlanHash !== removalPlan.planHash ||
-      (removalPlan.permanent && !permanentConfirmation)
+      reviewedPlanHash !== review.planHash ||
+      (review.permanent && !permanentConfirmation)
     )
       return;
     removalBusy = true;
     try {
-      removalPlan = await invoke<RemovalPlanView>("execute_removal_plan", {
-        request: {
-          version: CONTRACT_VERSION,
-          id: removalPlan.id,
-          planHash: removalPlan.planHash,
-          confirmPermanent: removalPlan.permanent && permanentConfirmation,
-        },
-      });
+      if (categoryCleanup) {
+        categoryCleanup = await invoke<CategoryCleanupPlan>(
+          "execute_category_cleanup",
+          {
+            request: {
+              plan: categoryCleanup,
+              confirmPermanent: review.permanent && permanentConfirmation,
+            },
+          },
+        );
+        removalPlan = categoryCleanup.resources;
+      } else
+        removalPlan = await invoke<RemovalPlanView>("execute_removal_plan", {
+          request: {
+            version: CONTRACT_VERSION,
+            id: review.id,
+            planHash: review.planHash,
+            confirmPermanent: review.permanent && permanentConfirmation,
+          },
+        });
       preserveConfirmed = false;
       executionConfirmed = false;
       await refreshResources();
@@ -1000,7 +1157,33 @@
     }
   }
   async function closeUncertainRemoval() {
-    if (!removalPlan?.runId || !preserveConfirmed || removalBusy) return;
+    if (!preserveConfirmed || removalBusy) return;
+    if (
+      categoryCleanup?.applications &&
+      ["PARTIAL", "EXECUTING"].includes(categoryCleanup.applications.state)
+    ) {
+      removalBusy = true;
+      try {
+        const queue = categoryCleanup.applications;
+        await invoke("close_msi_cleanup", {
+          request: {
+            version: CONTRACT_VERSION,
+            id: queue.id,
+            planHash: queue.planHash,
+          },
+        });
+        categoryCleanup = null;
+        removalPlan = null;
+        invalidateCleanupReview();
+        await refreshResources();
+      } catch (cause) {
+        error = message(cause);
+      } finally {
+        removalBusy = false;
+      }
+      return;
+    }
+    if (!removalPlan?.runId) return;
     removalBusy = true;
     try {
       removalPlan = await invoke<RemovalPlanView>("close_uncertain_removal", {
@@ -1009,6 +1192,8 @@
           runId: removalPlan.runId,
         },
       });
+      if (categoryCleanup)
+        categoryCleanup = { ...categoryCleanup, resources: removalPlan };
       preserveConfirmed = false;
       await refreshResources();
       await refresh();
@@ -1360,6 +1545,20 @@
       void refreshOperations().catch(() => {});
       void refreshWingetOperation().catch(() => {});
       void refreshInstallerOperation().catch(() => {});
+      if (categoryCleanup && removalBusy) {
+        const snapshot = categoryCleanup;
+        void invoke<CategoryCleanupPlan>("get_category_cleanup", {
+          request: snapshot,
+        })
+          .then((value) => {
+            if (
+              removalBusy &&
+              categoryCleanup?.applications?.id === snapshot.applications?.id
+            )
+              categoryCleanup = value;
+          })
+          .catch(() => {});
+      }
     }, 3000);
     window.addEventListener("blur", clearDragFeedback);
     window.addEventListener("keydown", cancelDragFeedback);
@@ -2103,7 +2302,7 @@
             </p>
             <button
               type="button"
-              disabled={installerBusy || installerNeedsAttention}
+              disabled={installerBusy || installerBlocksMutation}
               onclick={() => void inspectInstaller()}
             >
               {installerBusy
@@ -2112,7 +2311,7 @@
                   ? "Choose another installer"
                   : "Select MSI or EXE"}
             </button>
-            {#if installerPreview && !installerNeedsAttention}
+            {#if installerPreview && !installerBlocksMutation}
               <div class="review installer-selection">
                 <div class="application-icon">
                   <Icon name="download" size={22} />
@@ -2553,13 +2752,6 @@
             }}><Icon name="back" size={16} /> Back to Overview</button
           >
         </div>
-        <MsiCleanup
-          caskId={selected.id}
-          enabled={removalEnabled}
-          installationId={applicationRemovalId}
-          hasManaged={associatedApps.length > 0}
-          onChanged={refreshResources}
-        />
         {#if caskRemovalStatus?.canRemove}
           <p>
             This Cask has no remaining items or unfinished work. You can remove
@@ -2581,23 +2773,11 @@
                 build.</span
               >
             </p>{/if}
-          {#if (caskRemovalStatus?.applicationCount ?? 0) > associatedApps.filter( (item) => ["MANAGED_MSI", "CASKLET_OWNED"].includes(item.removalPolicy), ).length}<p
-            >
-              Associated or unsupported applications remain. Keep and detach
-              their references, or use their provider/Windows uninstall options
-              before removing the Cask.
-            </p>
-            <button
-              type="button"
-              onclick={() => {
-                detailTab = "apps";
-              }}>Review applications</button
-            >{/if}
           {#if (caskRemovalStatus?.unfinishedOperations ?? 0) > 0}<p>
               Finish or resolve outstanding work in Activity before removing
               this Cask.
             </p>{/if}
-          {#if resources.length > 0}
+          {#if resources.length > 0 || associatedApps.length > 0}
             {#if selected.state === "ARCHIVED"}<p>
                 Restore this Cask in Settings before creating a cleanup plan.
               </p>{/if}
@@ -2627,52 +2807,69 @@
                 }}
                 disabled={removalBusy}>Consider Whole Cask</button
               >{/if}
-            <fieldset class="cleanup-method">
-              <legend>Deletion method</legend>
-              <label
-                ><input
-                  type="radio"
-                  name="deletion-method"
-                  disabled={removalBusy || cleanupPending}
-                  value={false}
-                  bind:group={permanentPlan}
-                  onchange={invalidateCleanupReview}
-                /> Move to Recycle Bin</label
-              >
-              <label
-                ><input
-                  type="radio"
-                  name="deletion-method"
-                  disabled={removalBusy || cleanupPending}
-                  value={true}
-                  bind:group={permanentPlan}
-                  onchange={invalidateCleanupReview}
-                /> Permanently delete eligible files</label
-              >
-              {#if permanentPlan}<p class="method-warning">
-                  Cannot be undone. Folders and files managed at their current
-                  location will be kept. Execution requires an extra
-                  confirmation.
-                </p>{/if}
-            </fieldset>
+            {#if !applicationRemovalId && resources.some((item) => !removalCategory || item.categoryKey === removalCategory)}
+              <fieldset class="cleanup-method">
+                <legend>Deletion method</legend>
+                <label
+                  ><input
+                    type="radio"
+                    name="deletion-method"
+                    disabled={removalBusy || cleanupPending}
+                    value={false}
+                    bind:group={permanentPlan}
+                    onchange={invalidateCleanupReview}
+                  /> Move to Recycle Bin</label
+                >
+                <label
+                  ><input
+                    type="radio"
+                    name="deletion-method"
+                    disabled={removalBusy || cleanupPending}
+                    value={true}
+                    bind:group={permanentPlan}
+                    onchange={invalidateCleanupReview}
+                  /> Permanently delete eligible files</label
+                >
+                {#if permanentPlan}<p class="method-warning">
+                    Cannot be undone. Folders and files managed at their current
+                    location will be kept. Execution requires an extra
+                    confirmation.
+                  </p>{/if}
+              </fieldset>
+            {/if}
             <button
               type="button"
               onclick={() => void previewRemoval()}
-              disabled={associatedApps.some((item) =>
-                ["MANAGED_MSI", "CASKLET_OWNED"].includes(item.removalPolicy),
-              ) ||
-                removalBusy ||
+              disabled={removalBusy ||
                 cleanupPending ||
                 selected.state !== "ACTIVE" ||
                 ["PARTIAL", "EXECUTING"].includes(removalPlan?.state ?? "")}
               >Create cleanup plan</button
             >
           {:else}<p>
-              No file resources to clean up. Resolve the remaining dependencies
-              before removing the Cask.
+              No items to clean up. Resolve the remaining dependencies before
+              removing the Cask.
             </p>{/if}
         {/if}
-        {#if removalPlan && !historyPlanId}
+        {#if categoryReview && !historyPlanId}
+          <CleanupReview
+            plan={categoryReview}
+            {removalEnabled}
+            {removalBusy}
+            {reviewedPlanHash}
+            bind:executionConfirmed
+            bind:permanentConfirmation
+            bind:preserveConfirmed
+            onReview={() => {
+              reviewedPlanHash = categoryReview!.planHash;
+              executionConfirmed = false;
+              permanentConfirmation = false;
+            }}
+            onApprove={() => void approveRemoval()}
+            onExecute={() => void executeRemoval()}
+            onClose={() => void closeUncertainRemoval()}
+          />
+        {:else if removalPlan && !historyPlanId}
           <CleanupReview
             plan={removalPlan}
             {removalEnabled}

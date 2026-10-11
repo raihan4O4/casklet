@@ -1,6 +1,6 @@
 # Casklet Project Context
 
-Last updated: 2026-10-10
+Last updated: 2026-10-11
 
 This is the canonical handoff for humans and new Codex tasks. Keep it concise and current. Detailed specifications belong in linked documents.
 
@@ -201,3 +201,9 @@ October 10 Activity follow-up: Activity is now main-window only. Completed displ
 October 10 drag feedback: individual Cask windows now highlight their existing native drop target with a themed border and compact centered card containing a folder icon, named instruction and review guidance. Drag leave/drop/Escape/focus loss clear the indication; one-item explicit intake and ownership consent are unchanged. Scope is individual Cask windows only; the main-list drop behavior remains unchanged. See docs/engineering/desktop-gui-design.md.
 
 The shared desktop shell suppresses the native WebView context menu across main and Cask windows. Explicit application menus and keyboard focus behavior remain available.
+
+October 11 installer recovery fixes verified reinstall ownership collisions on stable Windows IDs: only retired owners can be replaced after full verification. Cask windows retry saved successful confirmation without rerunning installers, and completed review no longer disables installation selection. Uncertain running/recovery operations retain safety locks. See docs/engineering/installer-reinstallation.md.
+
+October 11 category cleanup integrates application queues into the existing scope selector and Cleanup Review. Whole Cask executes sequential owned-app uninstalls/reference detachment before file cleanup; Applications excludes other categories, and other categories exclude native application queues. Existing component plans, journals, verification, recovery and execution gates remain authoritative. See docs/adr/0028-category-application-cleanup.md.
+
+October 11 PR #21 CI correction: preservation/detachment plans now snapshot recorded database identity, while destructive actions retain independently verified identity. The omitted local dependency caused two clean-checkout approval tests to fail; the isolated fix passed all 108 infrastructure tests, application-core tests, formatting and strict Clippy.

@@ -85,9 +85,11 @@ impl MsiRepository for SqliteCasks {
                 "Only a new, successful, unshared and verified installation can be owned".into(),
             );
         }
+        // A new verified install may reuse a Windows key from a retired owner.
+        // Active owners are never replaced; previous operations/plans remain journaled.
         super::windows_inventory::upsert(&tx, observed, now)?;
         tx.execute("INSERT INTO windows_cask_associations(id,cask_id,installation_id,created_at_ms) VALUES (?1,?2,?3,?4)", params![uuid::Uuid::new_v4().to_string(),cask_id,observed.installation_id,now]).map_err(|e|e.to_string())?;
-        tx.execute("INSERT INTO managed_msi_installations(installation_id,cask_id,operation_id,product_code,evidence_sha256,display_name,state,claimed_at_ms,uninstaller_sha256,registration_json) VALUES (?1,?2,?3,?4,?5,?6,'OWNED',?7,?8,?9)",params![observed.installation_id,cask_id,request.operation_id,code,observed.evidence_sha256,observed.name,now,uninstaller_sha256,observed.evidence_json]).map_err(|e|e.to_string())?;
+        tx.execute("INSERT INTO managed_msi_installations(installation_id,cask_id,operation_id,product_code,evidence_sha256,display_name,state,claimed_at_ms,uninstaller_sha256,registration_json) VALUES (?1,?2,?3,?4,?5,?6,'OWNED',?7,?8,?9) ON CONFLICT(installation_id) DO UPDATE SET cask_id=excluded.cask_id,operation_id=excluded.operation_id,product_code=excluded.product_code,evidence_sha256=excluded.evidence_sha256,display_name=excluded.display_name,state='OWNED',claimed_at_ms=excluded.claimed_at_ms,uninstaller_sha256=excluded.uninstaller_sha256,registration_json=excluded.registration_json WHERE managed_msi_installations.state IN ('REMOVED','RELEASED')",params![observed.installation_id,cask_id,request.operation_id,code,observed.evidence_sha256,observed.name,now,uninstaller_sha256,observed.evidence_json]).map_err(|e|e.to_string())?;
         tx.execute("UPDATE installer_operations SET state='CONFIRMED_ASSOCIATION',installed_for_cask=1,confirmed_installation_id=?2,updated_at_ms=?3,revision=revision+1 WHERE id=?1",params![request.operation_id,observed.installation_id,now]).map_err(|e|e.to_string())?;
         queue_projection(&tx, &cask_id, now)?;
         tx.commit().map_err(|e| e.to_string())

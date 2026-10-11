@@ -6,6 +6,27 @@ pub const CONTRACT_VERSION: u32 = 1;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct CreateCategoryCleanup {
+    pub scope: CreateRemovalPlan,
+    pub installation_id: Option<String>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CategoryCleanupPlan {
+    pub version: u32,
+    pub cask_id: String,
+    pub resources: Option<RemovalPlanView>,
+    pub applications: Option<MsiCleanupPlan>,
+}
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ExecuteCategoryCleanup {
+    pub plan: CategoryCleanupPlan,
+    pub confirm_permanent: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct MsiCleanupItem {
     pub installation_id: String,
     pub name: String,
@@ -870,6 +891,9 @@ export const CONTRACT_VERSION = 1;
 export type RemoveCask = { version: number; id: string; expectedRevision: number; confirm: boolean };
 export type CaskRemovalStatus = { version: number; canRemove: boolean; resourceCount: number; applicationCount: number; unfinishedOperations: number };
 export type MsiCleanupItem = { installationId: string; name: string; productCode: string; evidenceSha256: string; action: string; state: string; uninstallerSha256: string | null; result: string | null };
+export type CreateCategoryCleanup = { scope: CreateRemovalPlan; installationId: string | null };
+export type CategoryCleanupPlan = { version: number; caskId: string; resources: RemovalPlanView | null; applications: MsiCleanupPlan | null };
+export type ExecuteCategoryCleanup = { plan: CategoryCleanupPlan; confirmPermanent: boolean };
 export type MsiCleanupPlan = { version: number; id: string; caskId: string; state: string; planHash: string; expiresAtMs: number; items: MsiCleanupItem[] };
 export type CreateCask = { version: number; name: string };
 export type GetCask = { version: number; id: string };

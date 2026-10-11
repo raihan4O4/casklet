@@ -33,3 +33,7 @@ Windows maps both architecture views of HKCU Software uninstall keys to the same
 Claims and cleanup dependency checks include alternate-view associations/owners. Cleanup resolves the originally owned ID, revalidates all alias evidence, and requires disappearance through both views before success. A cross-Cask reference through either view blocks uninstall, including one added after approval. This extends existing plan revalidation without a new schema or ownership inference from a name/path. The application layer reuses the existing serde_json parser to compare captured data; Windows API access stays in infrastructure.
 
 Additional regressions cover real shared HKCU fixture keys with exact cleanup, MSI/EXE alias ownership and one uninstall, changed/preexisting aliases, claim races, reference protection after approval, and retained ownership when a surviving alias prevents verification.
+
+## October 11 reinstallation refinement
+
+A verified new installation can reuse a stable Windows identity from a REMOVED or RELEASED ownership record. The existing atomic claim refreshes that retired row with the new operation and immutable evidence, preserving prior installer and cleanup journals. Active ownership remains protected. Completed successful reviews may retry the same claim automatically after current-evidence validation, without executing the installer again. See docs/engineering/installer-reinstallation.md.
