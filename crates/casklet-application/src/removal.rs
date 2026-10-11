@@ -268,7 +268,13 @@ impl<R: CaskRepository + RemovalRepository, S: RemovalInspection> CaskService<R,
                     },
                     path: candidate.path,
                     kind: candidate.kind,
-                    identity,
+                    // Non-destructive steps revalidate recorded metadata, even when
+                    // the current file identity cannot be independently verified.
+                    identity: if matches!(action, "PRESERVE" | "DETACH") {
+                        candidate.recorded_identity
+                    } else {
+                        identity
+                    },
                     resource_revision: candidate.resource_revision,
                     association_revision: candidate.association_revision,
                     other_associations: candidate.other_associations,
