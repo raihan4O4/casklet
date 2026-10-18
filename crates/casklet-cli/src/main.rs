@@ -350,6 +350,10 @@ impl From<Mode> for AddMode {
 
 #[derive(Debug, Subcommand)]
 enum ResourceAction {
+    /// Inspect current folder contents with inherited parent ownership.
+    Contents {
+        id: String,
+    },
     Adopt {
         cask_id: String,
         source_path: String,
@@ -476,6 +480,9 @@ enum PlanAction {
         category: Option<String>,
         #[arg(long)]
         permanent: bool,
+        /// Detach resources without deleting files, including preserved items.
+        #[arg(long, conflicts_with = "permanent")]
+        detach_only: bool,
     },
     List {
         #[arg(long)]
@@ -1172,6 +1179,17 @@ fn main() -> ExitCode {
                 &correlation_id,
             )
             .map(|resources| render_resource_list(&resources, cli.output)),
+        Command::Resource { action: ResourceAction::Contents { id } } => service.resource_contents(
+            &GetResource { version: CONTRACT_VERSION, id }, true, &correlation_id,
+        ).map(|contents| match cli.output {
+            Output::Json => format!("{}\n",serde_json::to_string(&contents).unwrap()),
+            Output::Table => {
+                let mut text = format!("{} entries · {} · {} unknown\n",contents.total_entries,contents.ownership,contents.unknown_entries);
+                for entry in &contents.entries { let _ = writeln!(text,"{}\t{}\t{}",entry.kind,entry.size_bytes.map_or_else(|| "—".into(),|bytes|bytes.to_string()),entry.relative_path); }
+                if contents.total_entries > u64::try_from(contents.entries.len()).unwrap_or(u64::MAX) { text.push_str("Listing truncated; size includes all inspected contents.\n"); }
+                text
+            }
+        }),
         Command::Resource {
             action: ResourceAction::Get { id },
         } => service
@@ -1338,26 +1356,14 @@ fn main() -> ExitCode {
                 ),
                 Output::Json => format!("{}\n", serde_json::to_string(&backup).unwrap()),
             }),
-        Command::Plan {
-            action:
-                PlanAction::Create {
-                    cask_id,
-                    resource,
-                    category,
-                    permanent,
-                },
-        } => service
-            .create_removal_plan(
-                &CreateRemovalPlan {
-                    version: CONTRACT_VERSION,
-                    cask_id,
-                    resource_ids: resource,
-                    category_key: category,
-                    permanent,
-                },
-                &correlation_id,
-            )
-            .map(|plan| render_plan(&plan, cli.output)),
+        Command::Plan { action: PlanAction::Create { cask_id, resource, category, permanent, detach_only } } => {
+            let request = CreateRemovalPlan { version: CONTRACT_VERSION, cask_id,
+                resource_ids: resource, category_key: category, permanent };
+            let result = if detach_only {
+                service.create_detach_plan(&request, &correlation_id)
+            } else { service.create_removal_plan(&request, &correlation_id) };
+            result.map(|plan| render_plan(&plan, cli.output))
+        },
         Command::Plan { action: PlanAction::List { cask_id } } => service.list_removal_plans(&ListRemovalPlans { version: CONTRACT_VERSION, cask_id }, &correlation_id)
             .map(|plans| if matches!(cli.output, Output::Json) { format!("{}\n",serde_json::to_string(&plans).expect("serializable plans")) } else { plans.iter().fold(String::new(), |mut result, plan| { writeln!(result, "{}: {}", plan.id, plan.state).expect("String write"); result }) }),
         Command::Plan {

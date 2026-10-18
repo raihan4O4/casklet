@@ -126,6 +126,10 @@ fn recordable_file_identity(path: &Path) -> Option<(String, same_file::Handle)> 
         }
         hash.update(&buffer[..n]);
     }
+    let after = winapi_util::file::information(&handle).ok()?;
+    if after.file_size() != info.file_size() || after.last_write_time() != info.last_write_time() {
+        return None;
+    }
     Some((
         format!(
             "{:016x}:{:016x}:{:016x}:{:x}",
@@ -144,7 +148,7 @@ fn recordable_file_identity(_path: &Path) -> Option<(String, same_file::Handle)>
 }
 
 #[cfg(windows)]
-fn directory_object_identity(path: &Path) -> Option<String> {
+pub(super) fn directory_object_identity(path: &Path) -> Option<String> {
     let handle = winapi_util::Handle::from_path_any(path).ok()?;
     let info = winapi_util::file::information(&handle).ok()?;
     Some(format!(
@@ -162,6 +166,7 @@ fn recordable_directory_identity(root: &Path) -> Option<String> {
     use std::os::windows::ffi::OsStrExt;
 
     let initial_root = directory_object_identity(root)?;
+    let mut directory_stamps = Vec::new();
     let mut hash = Sha256::new();
     hash.update(b"casklet-directory-v1");
     hash.update(initial_root.as_bytes());
@@ -172,8 +177,11 @@ fn recordable_directory_identity(root: &Path) -> Option<String> {
             return None;
         }
         let before = directory_object_identity(&directory)?;
+        let modified = fs::metadata(&directory).ok()?.modified().ok()?;
+        directory_stamps.push((directory.clone(), modified));
         let mut children = fs::read_dir(&directory)
             .ok()?
+            .take(100_001)
             .collect::<Result<Vec<_>, _>>()
             .ok()?;
         children.sort_by_key(std::fs::DirEntry::file_name);
@@ -197,6 +205,14 @@ fn recordable_directory_identity(root: &Path) -> Option<String> {
                 hash.update(directory_object_identity(&path)?.as_bytes());
                 queue.push_back((path, depth + 1));
             } else if metadata.is_file() {
+                let handle = winapi_util::Handle::from_path_any(&path).ok()?;
+                if winapi_util::file::information(&handle)
+                    .ok()?
+                    .number_of_links()
+                    != 1
+                {
+                    return None;
+                }
                 hash.update(b"F");
                 hash.update(recordable_file_identity(&path)?.0.as_bytes());
             } else {
@@ -210,7 +226,34 @@ fn recordable_directory_identity(root: &Path) -> Option<String> {
     if directory_object_identity(root)? != initial_root {
         return None;
     }
-    Some(format!("tree-v1:{:x}", hash.finalize()))
+    for (path, modified) in directory_stamps {
+        if fs::metadata(path).ok()?.modified().ok()? != modified {
+            return None;
+        }
+    }
+    // The directory object survives content edits; the tree digest binds one plan.
+    Some(format!(
+        "tree-v2:{initial_root}|tree-v1:{:x}",
+        hash.finalize()
+    ))
+}
+
+pub(super) fn directory_authority_matches(recorded: &str, current: &str) -> bool {
+    match (
+        recorded.strip_prefix("tree-v2:"),
+        current.strip_prefix("tree-v2:"),
+    ) {
+        (Some(old), Some(new)) => old
+            .split_once('|')
+            .zip(new.split_once('|'))
+            .is_some_and(|((old_root, _), (new_root, _))| old_root == new_root),
+        // Legacy evidence contains no independently recoverable root identity.
+        // It is usable only while the original complete fingerprint still matches.
+        (None, Some(new)) => new
+            .split_once('|')
+            .is_some_and(|(_, tree)| tree == recorded),
+        _ => false,
+    }
 }
 
 const MAX_ENTRIES: u64 = 100_000;
@@ -503,6 +546,31 @@ fn copy_tree(
 }
 
 impl ResourceStorage for LocalStorage {
+    fn same_directory_object(&self, path: &str, recorded: &str) -> Option<bool> {
+        #[cfg(windows)]
+        {
+            let original = recorded.strip_prefix("tree-v2:")?.split_once('|')?.0;
+            Some(original == directory_object_identity(Path::new(path))?)
+        }
+        #[cfg(not(windows))]
+        {
+            let _ = (path, recorded);
+            None
+        }
+    }
+    fn measure_resource(
+        &self,
+        path: &str,
+        kind: ResourceKind,
+        force: bool,
+    ) -> Option<casklet_application::resource::ResourceMeasurement> {
+        Some(
+            self.measurements
+                .lock()
+                .unwrap_or_else(std::sync::PoisonError::into_inner)
+                .measure(path, kind, force),
+        )
+    }
     fn application_sizes(
         &self,
         entries: &[casklet_application::resource::ApplicationStorageEntry],

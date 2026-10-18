@@ -10,6 +10,8 @@ use std::{
     time::Duration,
 };
 mod diagnostics;
+#[cfg(all(test, windows))]
+mod folder_sync_tests;
 mod installer;
 mod installer_source;
 pub mod inventory;
@@ -23,6 +25,7 @@ pub mod portable_zip;
 mod projection;
 mod removal;
 mod resource_storage;
+mod resource_sync;
 mod resources;
 mod windows_inventory;
 mod windows_process;
@@ -53,6 +56,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../../../migrations/0014_managed_msi.sql"),
     include_str!("../../../migrations/0015_installer_provenance.sql"),
     include_str!("../../../migrations/0016_application_lifecycle.sql"),
+    include_str!("../../../migrations/0017_directory_plan_identity.sql"),
 ];
 
 impl SqliteCasks {
@@ -288,11 +292,15 @@ impl CaskRepository for SqliteCasks {
 #[derive(Debug, Clone)]
 pub struct LocalStorage {
     root: PathBuf,
+    measurements: std::sync::Arc<std::sync::Mutex<resource_sync::MeasurementCache>>,
 }
 impl LocalStorage {
     #[must_use]
     pub fn new(root: PathBuf) -> Self {
-        Self { root }
+        Self {
+            root,
+            measurements: std::sync::Arc::default(),
+        }
     }
 }
 impl casklet_application::library::StorageBrowser for LocalStorage {
@@ -747,8 +755,9 @@ mod tests {
             include_str!("../../../migrations/0014_managed_msi.sql"),
             include_str!("../../../migrations/0015_installer_provenance.sql"),
             include_str!("../../../migrations/0016_application_lifecycle.sql"),
+            include_str!("../../../migrations/0017_directory_plan_identity.sql"),
         ];
-        for version in 1..=16 {
+        for version in 1..=17 {
             let root = std::env::temp_dir().join(format!(
                 "casklet-upgrade-{version}-{}",
                 uuid::Uuid::new_v4()
@@ -768,7 +777,7 @@ mod tests {
             let reopened = SqliteCasks::open(db).unwrap();
             assert_eq!(reopened.list().unwrap()[0].name, "Existing");
             assert!(reopened.list().unwrap()[0].description.is_empty());
-            if version < 16 {
+            if version < 17 {
                 let backups = fs::read_dir(root.join("backups"))
                     .unwrap()
                     .collect::<Result<Vec<_>, _>>()
@@ -1197,7 +1206,7 @@ mod tests {
             .unwrap()
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(schema_version, 16);
+        assert_eq!(schema_version, 17);
         assert_eq!(
             reopened
                 .list(
@@ -1806,7 +1815,8 @@ mod tests {
                     "test",
                 )
                 .unwrap();
-            assert_eq!(result.items[0].state, "PRESERVED");
+            assert_eq!(result.items[0].state, "FAILED");
+            assert_eq!(result.state, "PARTIAL");
             assert_eq!(
                 result.items[0].result_code.as_deref(),
                 Some("REVALIDATION_FAILED")
@@ -1937,7 +1947,8 @@ mod tests {
                 "test",
             )
             .unwrap();
-        assert_eq!(result.items[0].state, "PRESERVED");
+        assert_eq!(result.items[0].state, "FAILED");
+        assert_eq!(result.state, "PARTIAL");
         assert_eq!(fs::read(external.join("keep.txt")).unwrap(), b"keep");
         fs::remove_dir(junction).unwrap();
         drop(executor);

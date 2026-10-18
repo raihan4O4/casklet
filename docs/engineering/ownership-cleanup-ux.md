@@ -70,3 +70,11 @@ Real Windows Recycle Bin handoff races and independent security review remain re
 - GUI: navigation does not create a plan; duplicate submissions blocked; review precedes approval; plain execution confirmation; gate-disabled controls remain visible; advanced-only IDs and paths; application-only Casks cannot be removed; Settings retains Archive and omits Storage Location; Copy/Move choices absent.
 - CLI: permanent removal requires `--yes`, fails on remaining dependencies, works after successful cleanup, and cannot restore; Copy/Move parser rejects requests without moving bytes.
 - Schema 1–12 migration tests preserve data and generate consistent pre-upgrade backups.
+
+## Dynamic directory contents (October 12)
+
+Owned folders include ordinary contents added later; references and all their descendants remain externally managed. New folder identity evidence separates a stable Windows root from each reviewed cleanup tree. Root replacement, links, overlapping registrations and incomplete scans remain ineligible. Changed legacy folders require Renew folder ownership with fresh explicit consent. Schema 17 separates recorded authority from current cleanup snapshots and invalidates pending old approvals. See ADR 0030.
+
+Shared-core resource queries reconcile current metadata and persist size/availability to SQLite and projections. Desktop polling, open/focus refresh and periodic full metadata reconciliation recover external and offline changes. Unchanged directory listings are reused; routine queries do not hash contents. Expanded folder details show up to 200 current descendants with inherited status and a truncation notice. Full destructive verification remains independent of this display cache.
+
+Requested removals that fail revalidation are FAILED/PARTIAL, preserving associations and recovery controls. Successful disposal requires both source and quarantine disappearance. A completed plan containing planned preservation explicitly states that retained data remains on disk; reference cleanup removes association only. Empty-Cask removal stays separately confirmed.

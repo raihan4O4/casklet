@@ -2,6 +2,8 @@
 
 Status: Implemented behind `reviewed-removal`; independent security review pending.
 
+ADR 0030 supersedes intake-time directory baseline semantics: stable root ownership covers later ordinary contents, while every plan still binds and revalidates a complete current tree. Scan limits, link rejection and journaled disposal remain required.
+
 ## Context
 
 Milestone 4 includes managed-directory cleanup and an explicitly chosen permanent-delete option. A directory path alone is insufficient evidence of its contents, and permanent recursive deletion would expand the destructive surface.
