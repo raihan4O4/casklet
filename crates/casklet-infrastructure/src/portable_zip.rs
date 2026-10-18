@@ -127,7 +127,7 @@ fn inspect_archive(archive: &mut ZipArchive<File>, sha256: String) -> Result<Zip
     let mut executables = Vec::new();
     for index in 0..archive.len() {
         let entry = archive.by_index(index).map_err(|e| e.to_string())?;
-        let relative = clean_entry(entry.name())?;
+        let relative = clean_entry(&entry.name().map_err(|e| e.to_string())?)?;
         let key = relative.to_string_lossy().to_lowercase();
         if !seen.insert(key) {
             return Err("ZIP contains duplicate or case-colliding paths".into());
@@ -223,7 +223,7 @@ pub fn extract_zip(
             return Err("Portable installation cancelled; staging preserved".into());
         }
         let mut entry = archive.by_index(index).map_err(|e| e.to_string())?;
-        let relative = clean_entry(entry.name())?;
+        let relative = clean_entry(&entry.name().map_err(|e| e.to_string())?)?;
         let target = staging.join(relative);
         if entry.is_dir() {
             fs::create_dir_all(&target).map_err(|e| e.to_string())?;
@@ -368,6 +368,48 @@ mod tests {
         }
         writer.finish().unwrap();
         path
+    }
+
+    #[test]
+    fn invalid_entry_name_is_rejected_before_staging() {
+        let zip = fixture("invalid-name", &[("app.exe", b"MZ-demo")]);
+        let mut bytes = fs::read(&zip).unwrap();
+        let headers: Vec<_> = bytes
+            .windows(4)
+            .enumerate()
+            .filter_map(|(index, signature)| {
+                if signature == [0x50, 0x4b, 0x03, 0x04] {
+                    Some((index, 30))
+                } else if signature == [0x50, 0x4b, 0x01, 0x02] {
+                    Some((index, 46))
+                } else {
+                    None
+                }
+            })
+            .collect();
+        assert_eq!(headers.len(), 2);
+        for (offset, name) in headers {
+            bytes[offset + name] = 0; // A filename with an embedded NUL is unsafe.
+        }
+        fs::write(&zip, &bytes).unwrap();
+        assert!(inspect_zip(&zip).is_err());
+        let stage = std::env::temp_dir().join(format!(
+            "casklet-invalid-zip-stage-{}",
+            uuid::Uuid::new_v4()
+        ));
+        assert!(
+            extract_zip(
+                &zip,
+                &format!("{:x}", Sha256::digest(&bytes)),
+                "app.exe",
+                &stage,
+                &|_, _| {},
+                &|| false
+            )
+            .is_err()
+        );
+        assert!(!stage.exists());
+        fs::remove_file(zip).unwrap();
     }
 
     #[test]

@@ -1,6 +1,6 @@
 # Casklet Project Context
 
-Last updated: 2026-10-12
+Last updated: 2026-10-18
 
 This is the canonical handoff for humans and new Codex tasks. Keep it concise and current. Detailed specifications belong in linked documents.
 
@@ -215,3 +215,5 @@ October 12 desktop follow-up: Cask windows use independent native top-level wind
 October 12 folder synchronization/cleanup: metadata reconciliation updates current folder sizes and bounded inherited content listings through the shared core, with incremental directory-list caching, desktop polling and periodic full reconciliation. New folder grants separate stable root identity from current cleanup trees. Schema 17 binds original authority separately from plan snapshots and invalidates pending old plans; changed legacy folders require explicit consent renewal. Failed requested removal now produces FAILED/PARTIAL, and successful disposal verifies source/quarantine absence. Planned preservation is explicitly described as retained data. See docs/adr/0030-current-folder-contents-and-cleanup.md and docs/engineering/ownership-cleanup-ux.md.
 
 Folder synchronization validation passed the full local gate (132 all-feature Rust tests, one opt-in benchmark ignored; default/Alpha profiles; 53 GUI tests; strict lint/format/types/contracts and builds), plus final frontend presentation checks. Real Windows owned/reference, locked-file, changed-plan and restart fixtures passed. Evidence: target/folder-sync-quality.log; refreshed local Alpha packaging uses target/folder-sync-alpha-package.log. Existing independent review/publication gates remain open.
+
+October 18 PR #22 CI correction: windows-quality passed, but dependency-policy rejected zip 8.6.0 for RUSTSEC-2026-0367, RUSTSEC-2026-0368 and RUSTSEC-2026-0369. The infrastructure dependency and lockfile now pin patched zip 9.0.0. Portable ZIP inspection/extraction propagate its fallible filename decoding through the existing path validator; a malformed-name fixture verifies rejection before staging. The dependency policy and all three focused ZIP tests pass without advisory exceptions or policy changes. Full local gate evidence uses target/pr22-zip9-quality.log; audit evidence uses target/pr22-dependency-policy-fixed.log.
