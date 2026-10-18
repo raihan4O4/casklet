@@ -18,6 +18,20 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .setup(move |app| {
             initialize_service(app, service);
+            if let Some(main) = app.get_webview_window("main") {
+                let handle = app.handle().clone();
+                main.on_window_event(move |event| {
+                    if matches!(event, tauri::WindowEvent::Destroyed) {
+                        // Preserve main-close behavior without native ownership, which
+                        // would also hide every Cask when the main window minimizes.
+                        for (label, window) in handle.webview_windows() {
+                            if label.starts_with("cask-") {
+                                let _ = window.destroy();
+                            }
+                        }
+                    }
+                });
+            }
             Ok(())
         })
         .manage(std::sync::Mutex::new(()))
@@ -84,6 +98,7 @@ pub fn run() {
             close_installer_operation,
             list_resources,
             get_resource,
+            resource_contents,
             create_category,
             list_categories,
             categorize_resource,
@@ -198,8 +213,7 @@ async fn open_cask_window(
     .theme(Some(theme))
     .background_color(theme_background(theme))
     .position(x, y.max(0.0))
-    .parent(&main)
-    .map_err(|e| window_error(e.to_string()))?
+    // Independent top-level windows must not inherit Windows owner minimization.
     .build()
     .map_err(|e| window_error(e.to_string()))?;
     let owner = main.clone();
@@ -869,19 +883,39 @@ async fn add_resource(
 }
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
-fn list_resources(
+async fn list_resources(
     service: tauri::State<'_, Service>,
     request: casklet_contracts::ListResources,
 ) -> Result<Vec<casklet_contracts::ResourceView>, casklet_contracts::ApiError> {
-    service.list_resources(&request, "desktop")
+    let service = service.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || service.list_resources(&request, "desktop"))
+        .await
+        .map_err(|e| window_error(e.to_string()))?
 }
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
-fn get_resource(
+async fn get_resource(
     service: tauri::State<'_, Service>,
     request: casklet_contracts::GetResource,
 ) -> Result<casklet_contracts::ResourceView, casklet_contracts::ApiError> {
-    service.get_resource(&request, "desktop")
+    let service = service.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || service.get_resource(&request, "desktop"))
+        .await
+        .map_err(|e| window_error(e.to_string()))?
+}
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+async fn resource_contents(
+    service: tauri::State<'_, Service>,
+    request: casklet_contracts::GetResource,
+    refresh: Option<bool>,
+) -> Result<casklet_contracts::ResourceContents, casklet_contracts::ApiError> {
+    let service = service.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        service.resource_contents(&request, refresh.unwrap_or(false), "desktop")
+    })
+    .await
+    .map_err(|e| window_error(e.to_string()))?
 }
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]

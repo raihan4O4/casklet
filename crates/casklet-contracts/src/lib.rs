@@ -224,6 +224,25 @@ pub struct ResourceView {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
+pub struct ResourceContentEntry {
+    pub relative_path: String,
+    pub kind: String,
+    pub size_bytes: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ResourceContents {
+    pub resource_id: String,
+    pub ownership: String,
+    pub availability: String,
+    pub total_entries: u64,
+    pub unknown_entries: u64,
+    pub entries: Vec<ResourceContentEntry>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub struct InspectPortableZip {
     pub version: u32,
     pub archive_path: String,
@@ -909,6 +928,8 @@ export type AddResource = { version: number; caskId: string; sourcePath: string;
 export type ListResources = { version: number; caskId: string };
 export type GetResource = { version: number; id: string };
 export type SetCaskArchived = { version: number; id: string; archived: boolean; expectedRevision: number };
+export type ResourceContentEntry = { relativePath: string; kind: string; sizeBytes: number | null };
+export type ResourceContents = { resourceId: string; ownership: string; availability: string; totalEntries: number; unknownEntries: number; entries: ResourceContentEntry[] };
 export type ResourceView = { version: number; id: string; caskId: string; name: string; path: string; kind: string; management: string; shared: boolean; containment: string; availability: string; categoryKey: string; sizeBytes: number | null; sizeMeasurement: string; unknownEntries: number; ownership: string; provenance: string };
 export type InspectPortableZip = { version: number; archivePath: string };
 export type PortableZipPreview = { version: number; archiveSha256: string; fileCount: number; expandedBytes: number; executablePaths: string[]; warnings: string[] };

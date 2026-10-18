@@ -47,3 +47,11 @@ Verified new MSI and EXE applications appear as **Casklet-owned**. **Remove** op
 ## Appearance
 
 Open Settings and choose Light or Dark under Appearance. The choice is saved on this computer and updates every open Casklet window. Light uses the supplied black logo; Dark uses the supplied white logo and layered dark-grey surfaces. Appearance does not change Cask data, storage, ownership or cleanup behavior. It is a local UI preference and is not part of database backups or Cask exports.
+
+## Folder changes
+
+Folder storage reflects current files, including nested additions, modifications and deletions made outside Casklet. While the desktop runs, metadata refreshes in the background; opening or focusing a workspace reconciles it again. Large trees use cached directory listings and an adaptive refresh interval. Expand a folder's details to inspect its current descendants; long listings are explicitly truncated without truncating the storage total.
+
+Owned folders cover later contents while the registered folder object remains verified. References and their descendants remain external; detachment never deletes them. If an older folder grant cannot verify a changed tree, use **Renew folder ownership** and confirm the dedicated-data consent again, or keep it referenced. Renewal keeps the resource ID and does not move data. CLI equivalents are `resource contents <resource-id>` and `resource adopt <cask-id> <folder-path> --confirm-ownership`.
+
+Cleanup always reviews a fresh current tree. Adding or changing contents after approval prevents that removal and requires a new reviewed plan. Failed or uncertain removal stays incomplete with recovery information; inspect both the original path and any recovery location before closing unresolved work. A completed plan that kept items explicitly says their data remains on disk. Removing an empty Cask remains a separate confirmation.

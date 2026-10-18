@@ -12,6 +12,7 @@
     CaskView,
     CategoryView,
     ResourceView,
+    ResourceContents,
     StorageSummary,
     RecoveryStatus,
     RecoveryInspection,
@@ -1412,6 +1413,51 @@
       }
     }
   }
+  let folderContents = $state<ResourceContents | null>(null);
+  let syncingFiles = false;
+  async function inspectFolder(resource: ResourceView, refresh = true) {
+    if (refresh) folderContents = null;
+    if (resource.kind !== "DIRECTORY") return;
+    try {
+      const value = await invoke<ResourceContents>("resource_contents", {
+        request: { version: CONTRACT_VERSION, id: resource.id },
+        refresh,
+      });
+      if (
+        selectedResource?.id === resource.id &&
+        value?.resourceId === resource.id
+      )
+        folderContents = value;
+    } catch (cause) {
+      error = `Folder inspection failed: ${message(cause)}`;
+    }
+  }
+  async function syncFiles() {
+    if (!selected || removed || syncingFiles || busy || removalBusy) return;
+    syncingFiles = true;
+    const caskId = selected.id;
+    try {
+      const current = await invoke<ResourceView[]>("list_resources", {
+        request: { version: CONTRACT_VERSION, caskId },
+      });
+      const sizes = await invoke<StorageSummary>("storage_summary", {
+        request: { version: CONTRACT_VERSION, caskId },
+      });
+      if (selected?.id !== caskId) return;
+      resources = current;
+      summary = sizes;
+      if (selectedResource) {
+        selectedResource =
+          current.find((resource) => resource.id === selectedResource?.id) ??
+          null;
+        if (selectedResource) await inspectFolder(selectedResource, false);
+      }
+    } catch (cause) {
+      error = `Folder refresh failed: ${message(cause)}`;
+    } finally {
+      syncingFiles = false;
+    }
+  }
   async function pick(directory: boolean, reference = false) {
     try {
       const picked = await open({ multiple: false, directory });
@@ -1541,6 +1587,7 @@
     let unlistenWinget: (() => void) | undefined;
     let unlistenInstaller: (() => void) | undefined;
     const poll = window.setInterval(() => {
+      void syncFiles();
       void refreshRecovery().catch(() => {});
       void refreshOperations().catch(() => {});
       void refreshWingetOperation().catch(() => {});
@@ -1561,6 +1608,10 @@
       }
     }, 3000);
     window.addEventListener("blur", clearDragFeedback);
+    const reconcileOnFocus = () => {
+      void syncFiles();
+    };
+    window.addEventListener("focus", reconcileOnFocus);
     window.addEventListener("keydown", cancelDragFeedback);
     void getCurrentWindow()
       .onDragDropEvent((event) => {
@@ -1630,6 +1681,7 @@
       window.clearInterval(poll);
       clearDragFeedback();
       window.removeEventListener("blur", clearDragFeedback);
+      window.removeEventListener("focus", reconcileOnFocus);
       window.removeEventListener("keydown", cancelDragFeedback);
       unlistenDrop?.();
       unlistenProgress?.();
@@ -2651,6 +2703,8 @@
                 onclick={() => {
                   selectedResource =
                     selectedResource?.id === resource.id ? null : resource;
+                  if (selectedResource) void inspectFolder(selectedResource);
+                  else folderContents = null;
                 }}
               >
                 <Icon
@@ -2711,6 +2765,46 @@
                       )}
                     </dd>
                   </dl>
+                  {#if selectedResource.kind === "DIRECTORY"}
+                    <div class="folder-contents">
+                      <h4>Folder contents</h4>
+                      <p>
+                        {selectedResource.availability === "CHANGED"
+                          ? "The registered folder was replaced or cannot be verified; its current contents have no verified cleanup authority."
+                          : selectedResource.ownership === "OWNED"
+                            ? "Contents inherit this folder’s ownership, including items added later."
+                            : "Contents are references; cleanup keeps the external data."}
+                      </p>
+                      {#if folderContents}
+                        <p>
+                          {folderContents.totalEntries} entries · {folderContents.unknownEntries
+                            ? `${folderContents.unknownEntries} entries could not be inspected`
+                            : "Current filesystem contents"}
+                        </p>
+                        <ul>
+                          {#each folderContents.entries as entry (entry.relativePath)}
+                            <li>
+                              <Icon
+                                name={entry.kind === "DIRECTORY"
+                                  ? "folder"
+                                  : "file"}
+                                size={14}
+                              /><span>{entry.relativePath}</span><small
+                                >{entry.kind === "FILE"
+                                  ? bytes(entry.sizeBytes)
+                                  : "Folder"}</small
+                              >
+                            </li>
+                          {/each}
+                        </ul>
+                        {#if folderContents.totalEntries > folderContents.entries.length}<p
+                          >
+                            Showing the first {folderContents.entries.length} entries.
+                            Storage includes all inspected files.
+                          </p>{/if}
+                      {:else}<p>Inspecting folder contents…</p>{/if}
+                    </div>
+                  {/if}
                   <div class="resource-category-row">
                     <label for="resource-category">Category</label><select
                       id="resource-category"
@@ -2728,6 +2822,24 @@
                     >
                   </div>
                   <div class="resource-inspector-actions">
+                    {#if selectedResource.kind === "DIRECTORY" && selectedResource.ownership === "OWNED" && selectedResource.containment === "EXTERNAL"}
+                      <button
+                        type="button"
+                        class="secondary-button"
+                        disabled={busy ||
+                          removalBusy ||
+                          selected?.state !== "ACTIVE"}
+                        onclick={() => {
+                          if (!selectedResource) return;
+                          pendingPath = selectedResource.path;
+                          pendingCategory = selectedResource.categoryKey;
+                          pendingMode = "adopt";
+                          ownershipConfirmed = false;
+                          adding = true;
+                          selectedResource = null;
+                        }}>Renew folder ownership</button
+                      >
+                    {/if}
                     <button
                       class="secondary-button"
                       type="button"

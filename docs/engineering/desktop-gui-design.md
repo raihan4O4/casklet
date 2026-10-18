@@ -49,3 +49,9 @@ Individual Cask windows use their existing Tauri drag/drop subscription for feed
 Drop processing remains the existing one-item Add Items review, with explicit Reference/Managed choice and ownership consent. No resource is registered on hover or drop alone. Scope is individual Cask windows only; main-window Cask rows do not accept drops.
 
 Drag-feedback verification: cargo xtask check passed full Rust/default/Alpha checks, strict Clippy, formatting, frontend lint/types/contracts, 46 GUI tests and builds. Tests cover file/folder hover, stable native over events, leave/Escape/blur, rejected multi-item drops, and unchanged explicit intake consent. Evidence: target/drag-feedback-quality.log.
+
+## Independent windows and compact cleanup (October 12)
+
+Cask windows now use independent top-level native windows so minimizing main leaves them visible. Stable IDs, hidden readiness, positioning, theme inheritance, reopen/restore/focus and workspace-close inventory notification remain. Explicit destruction of Cask windows when main is destroyed preserves the previous close lifecycle; native taskbar and z-order now follow independent windows. See ADR 0029.
+
+Cleanup Review starts collapsed with total items and nonzero Recycle Bin, uninstall, data-kept and permanent-deletion counts. A keyboard-accessible chevron disclosure reveals the full effect summary and item list with reduced-motion-aware transition. Actions and confirmations remain outside the panel. Review reveals the list and acknowledges the same exact plan as before; merely expanding or collapsing never acknowledges it. Changed plan hashes collapse the panel, and all existing workflow and safety guards remain.

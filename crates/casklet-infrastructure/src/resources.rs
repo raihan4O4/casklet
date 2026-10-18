@@ -82,6 +82,19 @@ fn resource_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ResourceView> {
 }
 
 impl ResourceRepository for SqliteCasks {
+    fn recorded_resource_identity(&self, id: &str) -> Result<Option<String>, String> {
+        self.connection()?.query_row("SELECT identity_key FROM resource_locations WHERE resource_id=?1 AND is_primary=1 AND retired_at_ms IS NULL", [id], |row|row.get(0)).optional().map(Option::flatten).map_err(|e|e.to_string())
+    }
+    fn record_measurement(&self, resource: &ResourceView) -> Result<(), String> {
+        let mut connection = self.connection()?;
+        let transaction = connection.transaction().map_err(|e| e.to_string())?;
+        let changed = transaction.execute("UPDATE resources SET availability=?2,size_bytes=?3,size_measurement=?4,unknown_entries=?5 WHERE id=?1 AND EXISTS(SELECT 1 FROM resource_locations l WHERE l.resource_id=?1 AND l.path_display=?6 AND l.is_primary=1 AND l.retired_at_ms IS NULL) AND (availability<>?2 OR size_bytes IS NOT ?3 OR size_measurement<>?4 OR unknown_entries<>?5)",
+            params![resource.id,resource.availability,resource.size_bytes.map(i64::try_from).transpose().map_err(|e|e.to_string())?,resource.size_measurement,i64::try_from(resource.unknown_entries).map_err(|e|e.to_string())?,resource.path]).map_err(|e|e.to_string())?;
+        if changed != 0 {
+            transaction.execute("INSERT INTO projection_jobs(cask_id,target_revision,state,updated_at_ms) SELECT cask_id,1,'PENDING',CAST(unixepoch('subsec')*1000 AS INTEGER) FROM resource_associations WHERE resource_id=?1 AND removed_at_ms IS NULL ON CONFLICT(cask_id) DO UPDATE SET target_revision=target_revision+1,state='PENDING',updated_at_ms=excluded.updated_at_ms",[&resource.id]).map_err(|e|e.to_string())?;
+        }
+        transaction.commit().map_err(|e| e.to_string())
+    }
     fn application_storage_entries(
         &self,
         cask_id: &str,
@@ -154,10 +167,27 @@ impl ResourceRepository for SqliteCasks {
             .identity_key
             .as_ref()
             .ok_or("Ownership identity missing")?;
-        transaction.execute("INSERT INTO resources(id,kind,display_name,management,provenance,availability,size_bytes,size_measurement,unknown_entries,created_at_ms) VALUES (?1,?2,?3,'MANAGED','USER_ADOPTED','PRESENT',?4,?5,0,?6)", params![resource.id,resource.kind.code(),resource.name,resource.size_bytes.map(i64::try_from).transpose().map_err(|e| e.to_string())?,resource.size_measurement,resource.created_at_ms]).map_err(|e| e.to_string())?;
-        transaction.execute("INSERT INTO resource_locations(id,resource_id,path_display,path_key,containment,is_primary,first_seen_at_ms,identity_key) VALUES (?1,?2,?3,?4,'EXTERNAL',1,?5,?6)", params![Uuid::new_v4().to_string(),resource.id,resource.path,resource.path.to_lowercase(),resource.created_at_ms,identity]).map_err(|e| e.to_string())?;
-        transaction.execute("INSERT INTO resource_associations(id,cask_id,resource_id,category_key,relationship,removal_policy,added_at_ms) VALUES (?1,?2,?3,?4,'OWNED','DELETE_WHEN_UNREFERENCED',?5)", params![Uuid::new_v4().to_string(),resource.cask_id,resource.id,resource.category_key,resource.created_at_ms]).map_err(|e| e.to_string())?;
-        transaction.execute("INSERT INTO resource_ownership_grants(resource_id,cask_id,exact_path,identity_key,consent_at_ms) VALUES (?1,?2,?3,?4,?5)", params![resource.id,resource.cask_id,resource.path,identity,resource.created_at_ms]).map_err(|e| e.to_string())?;
+        let renewing: bool = transaction
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM resources WHERE id=?1)",
+                [&resource.id],
+                |row| row.get(0),
+            )
+            .map_err(|e| e.to_string())?;
+        if renewing {
+            let eligible: bool = transaction.query_row("SELECT EXISTS(SELECT 1 FROM resources r JOIN resource_locations l ON l.resource_id=r.id AND l.is_primary=1 AND l.retired_at_ms IS NULL JOIN resource_associations a ON a.resource_id=r.id AND a.removed_at_ms IS NULL JOIN resource_ownership_grants g ON g.resource_id=r.id AND g.cask_id=a.cask_id AND g.exact_path=l.path_display WHERE r.id=?1 AND a.cask_id=?2 AND l.path_display=?3 AND r.kind='DIRECTORY' AND r.management='MANAGED' AND r.provenance='USER_ADOPTED' AND l.containment='EXTERNAL' AND a.relationship='OWNED')", params![resource.id,resource.cask_id,resource.path], |row|row.get(0)).map_err(|e|e.to_string())?;
+            if !eligible {
+                return Err("Only an existing explicitly owned folder can renew ownership".into());
+            }
+            transaction.execute("UPDATE resources SET availability='PRESENT',size_bytes=?2,size_measurement=?3,unknown_entries=0,revision=revision+1 WHERE id=?1",params![resource.id,resource.size_bytes.map(i64::try_from).transpose().map_err(|e|e.to_string())?,resource.size_measurement]).map_err(|e|e.to_string())?;
+            transaction.execute("UPDATE resource_locations SET identity_key=?2 WHERE resource_id=?1 AND is_primary=1 AND retired_at_ms IS NULL",params![resource.id,identity]).map_err(|e|e.to_string())?;
+            transaction.execute("UPDATE resource_ownership_grants SET identity_key=?2,consent_at_ms=?3 WHERE resource_id=?1",params![resource.id,identity,resource.created_at_ms]).map_err(|e|e.to_string())?;
+        } else {
+            transaction.execute("INSERT INTO resources(id,kind,display_name,management,provenance,availability,size_bytes,size_measurement,unknown_entries,created_at_ms) VALUES (?1,?2,?3,'MANAGED','USER_ADOPTED','PRESENT',?4,?5,0,?6)", params![resource.id,resource.kind.code(),resource.name,resource.size_bytes.map(i64::try_from).transpose().map_err(|e| e.to_string())?,resource.size_measurement,resource.created_at_ms]).map_err(|e| e.to_string())?;
+            transaction.execute("INSERT INTO resource_locations(id,resource_id,path_display,path_key,containment,is_primary,first_seen_at_ms,identity_key) VALUES (?1,?2,?3,?4,'EXTERNAL',1,?5,?6)", params![Uuid::new_v4().to_string(),resource.id,resource.path,resource.path.to_lowercase(),resource.created_at_ms,identity]).map_err(|e| e.to_string())?;
+            transaction.execute("INSERT INTO resource_associations(id,cask_id,resource_id,category_key,relationship,removal_policy,added_at_ms) VALUES (?1,?2,?3,?4,'OWNED','DELETE_WHEN_UNREFERENCED',?5)", params![Uuid::new_v4().to_string(),resource.cask_id,resource.id,resource.category_key,resource.created_at_ms]).map_err(|e| e.to_string())?;
+            transaction.execute("INSERT INTO resource_ownership_grants(resource_id,cask_id,exact_path,identity_key,consent_at_ms) VALUES (?1,?2,?3,?4,?5)", params![resource.id,resource.cask_id,resource.path,identity,resource.created_at_ms]).map_err(|e| e.to_string())?;
+        }
         transaction.execute("INSERT INTO operations(id,cask_id,type,state,current_step_code,started_at_ms,updated_at_ms,finished_at_ms) VALUES (?1,?2,'RESOURCE_INTAKE','SUCCEEDED','ADOPT_IN_PLACE',?3,?3,?3)", params![Uuid::new_v4().to_string(),resource.cask_id,resource.created_at_ms]).map_err(|e| e.to_string())?;
         transaction.execute("INSERT INTO projection_jobs(cask_id,target_revision,state,updated_at_ms) VALUES (?1,1,'PENDING',?2) ON CONFLICT(cask_id) DO UPDATE SET target_revision=target_revision+1,state='PENDING',updated_at_ms=excluded.updated_at_ms",params![resource.cask_id,resource.created_at_ms]).map_err(|e| e.to_string())?;
         transaction.commit().map_err(|e| e.to_string())

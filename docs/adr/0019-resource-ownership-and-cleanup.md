@@ -4,6 +4,8 @@ Status: Accepted for implementation on 2026-10-02 under the user's request.
 
 Archive presentation and user Copy/Move availability are superseded by ADR 0020. Ownership, cleanup eligibility, and recovery semantics remain applicable.
 
+ADR 0030 supersedes directory baseline semantics with stable root ownership and separate immutable current-tree cleanup snapshots. Changed legacy tree-only grants require explicit consent renewal; file and reference preservation rules remain applicable.
+
 ## Decision
 
 Archive and restore are reversible metadata commands for any Cask, including an empty Cask. Archive preserves associations, managed files, installed applications, manifests, and history; it never deletes a directory. Expose these commands directly in both interfaces. Do not introduce hard deletion of Cask metadata in this change. Cleanup plans describe resource actions and never implicitly archive or destroy the Cask. Application uninstall remains a separate provider plan with its existing eligibility rules.

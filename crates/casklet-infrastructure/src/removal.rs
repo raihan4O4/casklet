@@ -23,6 +23,18 @@ type PlanHeader = (
     bool,
 );
 
+fn verify_absent(path: &str) -> Result<(), String> {
+    match fs::symlink_metadata(path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Ok(_) => Err(
+            "Cleanup target remains on disk; inspect the original and recovery locations".into(),
+        ),
+        Err(error) => Err(format!(
+            "Cleanup disappearance could not be verified: {error}"
+        )),
+    }
+}
+
 pub(super) fn paths_overlap(left: &str, right: &str) -> bool {
     let left = std::path::PathBuf::from(left.to_lowercase());
     let right = std::path::PathBuf::from(right.to_lowercase());
@@ -68,6 +80,7 @@ fn equivalent_items(left: &[PlannedItem], right: &[PlannedItem]) -> bool {
                 && a.path == b.path
                 && a.kind == b.kind
                 && a.identity == b.identity
+                && a.authority_identity == b.authority_identity
                 && a.resource_revision == b.resource_revision
                 && a.association_revision == b.association_revision
                 && a.other_associations == b.other_associations
@@ -194,6 +207,13 @@ fn plan_hash(plan: &RemovalPlanView, items: &[PlannedItem], cask_revision: i64) 
         ] {
             hash_field(&mut hash, value);
         }
+        if item.authority_identity != item.identity {
+            hash_field(&mut hash, "DIRECTORY_AUTHORITY_V2");
+            hash_field(
+                &mut hash,
+                item.authority_identity.as_deref().unwrap_or_default(),
+            );
+        }
     }
     format!("{:x}", hash.finalize())
 }
@@ -202,7 +222,7 @@ fn load_plan_items(
     connection: &rusqlite::Connection,
     id: &str,
 ) -> Result<Vec<PlannedItem>, String> {
-    let mut stmt = connection.prepare("SELECT id,resource_id,name,action,reason_code,expected_size_bytes,expected_path,expected_kind,expected_identity,resource_revision,association_revision,other_associations,state,result_code FROM removal_plan_items WHERE plan_id=?1 ORDER BY sequence").map_err(|e|e.to_string())?;
+    let mut stmt = connection.prepare("SELECT id,resource_id,name,action,reason_code,expected_size_bytes,expected_path,expected_kind,expected_identity,resource_revision,association_revision,other_associations,state,result_code,authority_identity FROM removal_plan_items WHERE plan_id=?1 ORDER BY sequence").map_err(|e|e.to_string())?;
     stmt.query_map([id], |row| {
         Ok(PlannedItem {
             view: RemovalPlanItemView {
@@ -222,6 +242,7 @@ fn load_plan_items(
             path: row.get(6)?,
             kind: row.get(7)?,
             identity: row.get(8)?,
+            authority_identity: row.get(14)?,
             resource_revision: row.get(9)?,
             association_revision: row.get(10)?,
             other_associations: u64::try_from(row.get::<_, i64>(11)?).unwrap_or(u64::MAX),
@@ -284,7 +305,7 @@ impl RemovalRepository for SqliteCasks {
                 return Err("Resource sharing changed after planning".into());
             }
         }
-        let stale_count: i64 = transaction.query_row("SELECT COUNT(*) FROM removal_plan_items i LEFT JOIN resources r ON r.id=i.resource_id LEFT JOIN resource_associations a ON a.resource_id=i.resource_id AND a.cask_id=?2 AND a.removed_at_ms IS NULL LEFT JOIN resource_locations l ON l.resource_id=i.resource_id AND l.is_primary=1 AND l.retired_at_ms IS NULL WHERE i.plan_id=?1 AND (r.id IS NULL OR a.id IS NULL OR l.id IS NULL OR r.revision<>i.resource_revision OR a.revision<>i.association_revision OR r.kind<>i.expected_kind OR l.path_display<>i.expected_path OR l.identity_key IS NOT i.expected_identity)", params![id,cask_id], |row|row.get(0)).map_err(|e|e.to_string())?;
+        let stale_count: i64 = transaction.query_row("SELECT COUNT(*) FROM removal_plan_items i LEFT JOIN resources r ON r.id=i.resource_id LEFT JOIN resource_associations a ON a.resource_id=i.resource_id AND a.cask_id=?2 AND a.removed_at_ms IS NULL LEFT JOIN resource_locations l ON l.resource_id=i.resource_id AND l.is_primary=1 AND l.retired_at_ms IS NULL WHERE i.plan_id=?1 AND (r.id IS NULL OR a.id IS NULL OR l.id IS NULL OR r.revision<>i.resource_revision OR a.revision<>i.association_revision OR r.kind<>i.expected_kind OR l.path_display<>i.expected_path OR l.identity_key IS NOT i.authority_identity)", params![id,cask_id], |row|row.get(0)).map_err(|e|e.to_string())?;
         if stale_count != 0 {
             return Err("Resource or association changed after planning".into());
         }
@@ -409,7 +430,7 @@ impl RemovalRepository for SqliteCasks {
             &item.path,
         )?)
         .map_err(|e| e.to_string())?;
-        let current: i64 = transaction.query_row("SELECT COUNT(*) FROM removal_plan_items i JOIN removal_runs run ON run.plan_id=i.plan_id AND run.id=?1 AND run.state='RUNNING' JOIN removal_locks lock ON lock.run_id=run.id AND lock.cask_id=run.cask_id JOIN resources r ON r.id=i.resource_id JOIN resource_associations a ON a.resource_id=i.resource_id AND a.cask_id=run.cask_id AND a.removed_at_ms IS NULL JOIN resource_locations l ON l.resource_id=i.resource_id AND l.is_primary=1 AND l.retired_at_ms IS NULL JOIN removal_plans p ON p.id=i.plan_id WHERE i.id=?2 AND i.state='PENDING' AND i.started_at_ms IS NULL AND r.revision=i.resource_revision AND a.revision=i.association_revision AND r.kind=i.expected_kind AND l.path_display=i.expected_path AND l.identity_key IS i.expected_identity AND (?3=i.other_associations OR (i.action IN ('DETACH','PRESERVE') AND ?3<i.other_associations)) AND (i.action NOT IN ('TRASH','DELETE_PERMANENTLY') OR (r.management='MANAGED' AND ((l.containment='INTERNAL' AND r.provenance='ADDED_BY_CASKLET') OR (l.containment='EXTERNAL' AND r.provenance='USER_ADOPTED' AND EXISTS(SELECT 1 FROM resource_ownership_grants g WHERE g.resource_id=r.id AND g.cask_id=run.cask_id AND g.exact_path=l.path_display AND g.identity_key=l.identity_key))) AND a.relationship='OWNED' AND a.removal_policy='DELETE_WHEN_UNREFERENCED' AND r.availability='PRESENT' AND r.unknown_entries=0 AND i.other_associations=0 AND i.expected_identity IS NOT NULL)) AND (i.action<>'DELETE_PERMANENTLY' OR (p.permanent=1 AND r.kind='FILE' AND l.containment='INTERNAL'))",params![run_id,item.view.id,overlaps],|row|row.get(0)).map_err(|e|e.to_string())?;
+        let current: i64 = transaction.query_row("SELECT COUNT(*) FROM removal_plan_items i JOIN removal_runs run ON run.plan_id=i.plan_id AND run.id=?1 AND run.state='RUNNING' JOIN removal_locks lock ON lock.run_id=run.id AND lock.cask_id=run.cask_id JOIN resources r ON r.id=i.resource_id JOIN resource_associations a ON a.resource_id=i.resource_id AND a.cask_id=run.cask_id AND a.removed_at_ms IS NULL JOIN resource_locations l ON l.resource_id=i.resource_id AND l.is_primary=1 AND l.retired_at_ms IS NULL JOIN removal_plans p ON p.id=i.plan_id WHERE i.id=?2 AND i.state='PENDING' AND i.started_at_ms IS NULL AND r.revision=i.resource_revision AND a.revision=i.association_revision AND r.kind=i.expected_kind AND l.path_display=i.expected_path AND l.identity_key IS i.authority_identity AND (?3=i.other_associations OR (i.action IN ('DETACH','PRESERVE') AND ?3<i.other_associations)) AND (i.action NOT IN ('TRASH','DELETE_PERMANENTLY') OR (r.management='MANAGED' AND ((l.containment='INTERNAL' AND r.provenance='ADDED_BY_CASKLET') OR (l.containment='EXTERNAL' AND r.provenance='USER_ADOPTED' AND EXISTS(SELECT 1 FROM resource_ownership_grants g WHERE g.resource_id=r.id AND g.cask_id=run.cask_id AND g.exact_path=l.path_display AND g.identity_key=l.identity_key))) AND a.relationship='OWNED' AND a.removal_policy='DELETE_WHEN_UNREFERENCED' AND i.other_associations=0 AND i.expected_identity IS NOT NULL)) AND (i.action<>'DELETE_PERMANENTLY' OR (p.permanent=1 AND r.kind='FILE' AND l.containment='INTERNAL'))",params![run_id,item.view.id,overlaps],|row|row.get(0)).map_err(|e|e.to_string())?;
         if current != 1 {
             return Err("Removal item changed before execution; recovery required".into());
         }
@@ -428,7 +449,7 @@ impl RemovalRepository for SqliteCasks {
         result_code: &str,
         now_ms: i64,
     ) -> Result<(), String> {
-        if !matches!(state, "SUCCEEDED" | "PRESERVED" | "UNKNOWN") {
+        if !matches!(state, "SUCCEEDED" | "PRESERVED" | "UNKNOWN" | "FAILED") {
             return Err("Invalid removal item outcome".into());
         }
         let mut connection = self.connection()?;
@@ -701,8 +722,8 @@ impl RemovalRepository for SqliteCasks {
             {
                 return Err("Resource changed during planning".into());
             }
-            transaction.execute("INSERT INTO removal_plan_items(id,plan_id,sequence,resource_id,name,action,reason_code,expected_size_bytes,expected_path,expected_kind,expected_identity,resource_revision,association_revision,other_associations) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)",
-                params![item.view.id,plan.id,i64::try_from(sequence).map_err(|e|e.to_string())?,item.view.resource_id,item.view.name,item.view.action,item.view.reason_code,item.view.expected_size_bytes.map(i64::try_from).transpose().map_err(|e|e.to_string())?,item.path,item.kind,item.identity,item.resource_revision,item.association_revision,i64::try_from(item.other_associations).map_err(|e|e.to_string())?]).map_err(|e|e.to_string())?;
+            transaction.execute("INSERT INTO removal_plan_items(id,plan_id,sequence,resource_id,name,action,reason_code,expected_size_bytes,expected_path,expected_kind,expected_identity,resource_revision,association_revision,other_associations,authority_identity) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15)",
+                params![item.view.id,plan.id,i64::try_from(sequence).map_err(|e|e.to_string())?,item.view.resource_id,item.view.name,item.view.action,item.view.reason_code,item.view.expected_size_bytes.map(i64::try_from).transpose().map_err(|e|e.to_string())?,item.path,item.kind,item.identity,item.resource_revision,item.association_revision,i64::try_from(item.other_associations).map_err(|e|e.to_string())?,item.authority_identity]).map_err(|e|e.to_string())?;
         }
         transaction.commit().map_err(|e| e.to_string())?;
         Ok(plan.id.clone())
@@ -802,6 +823,15 @@ impl RemovalRepository for SqliteCasks {
 }
 
 impl RemovalInspection for LocalStorage {
+    fn refresh_candidate(&self, candidate: &mut RemovalCandidate) {
+        if let Some(kind) = ResourceKind::from_code(&candidate.kind)
+            && let Some(measured) = self.measure_resource(&candidate.path, kind, true)
+        {
+            candidate.size_bytes = measured.size_bytes;
+            candidate.unknown_entries = measured.unknown_entries;
+            candidate.availability = measured.availability;
+        }
+    }
     fn verify_managed(&self, cask_root: &str, candidate: &RemovalCandidate) -> Option<String> {
         if candidate.management != "MANAGED" {
             return None;
@@ -819,13 +849,22 @@ impl RemovalInspection for LocalStorage {
             }
             let observed = self.inspect(&candidate.path, &|_, _| {}).ok()?;
             if observed.kind.code() != candidate.kind
-                || observed.size_bytes != candidate.size_bytes
+                || (candidate.kind != "DIRECTORY" && observed.size_bytes != candidate.size_bytes)
                 || observed.unknown_entries > 0
             {
                 return None;
             }
             let identity = observed.recordable_identity?;
-            return (candidate.recorded_identity.as_deref() == Some(identity.as_str()))
+            return candidate
+                .recorded_identity
+                .as_deref()
+                .is_some_and(|recorded| {
+                    if candidate.kind == "DIRECTORY" {
+                        super::resource_storage::directory_authority_matches(recorded, &identity)
+                    } else {
+                        recorded == identity
+                    }
+                })
                 .then_some(identity);
         }
         if candidate.containment != "INTERNAL" {
@@ -860,13 +899,23 @@ impl RemovalInspection for LocalStorage {
         }
         let observed = self.inspect(&candidate.path, &|_, _| {}).ok()?;
         if observed.kind != kind
-            || observed.size_bytes != candidate.size_bytes
+            || (candidate.kind != "DIRECTORY" && observed.size_bytes != candidate.size_bytes)
             || observed.unknown_entries > 0
         {
             return None;
         }
         let current = observed.recordable_identity?;
-        if candidate.recorded_identity.as_deref() != Some(current.as_str()) {
+        if !candidate
+            .recorded_identity
+            .as_deref()
+            .is_some_and(|recorded| {
+                if candidate.kind == "DIRECTORY" {
+                    super::resource_storage::directory_authority_matches(recorded, &current)
+                } else {
+                    recorded == current
+                }
+            })
+        {
             return None;
         }
         Some(current)
@@ -886,7 +935,9 @@ impl RemovalInspection for LocalStorage {
         let quarantine =
             self.stage_verified_removal(cask_root, candidate, expected_identity, run_id, item_id)?;
         self.verify_quarantined(&quarantine, &candidate.kind, expected_identity)?;
-        trash::delete(&quarantine).map_err(|e| e.to_string())
+        trash::delete(&quarantine).map_err(|e| e.to_string())?;
+        verify_absent(&candidate.path)?;
+        verify_absent(&quarantine.to_string_lossy())
     }
 
     fn delete_permanently_verified(
@@ -903,7 +954,9 @@ impl RemovalInspection for LocalStorage {
         let quarantine =
             self.stage_verified_removal(cask_root, candidate, expected_identity, run_id, item_id)?;
         self.verify_quarantined(&quarantine, &candidate.kind, expected_identity)?;
-        fs::remove_file(&quarantine).map_err(|e| e.to_string())
+        fs::remove_file(&quarantine).map_err(|e| e.to_string())?;
+        verify_absent(&candidate.path)?;
+        verify_absent(&quarantine.to_string_lossy())
     }
 }
 

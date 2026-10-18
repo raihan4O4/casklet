@@ -839,7 +839,25 @@ test("cleanup review explains actions and blocks concurrent duplicate submission
     ],
   });
   await screen.findByRole("heading", { name: "Cleanup Review" });
+  const expand = screen.getByRole("button", { name: "Expand cleanup items" });
+  expect(expand.getAttribute("aria-expanded")).toBe("false");
+  expect(screen.queryByText(/Remove from this Cask; keep the data/)).toBeNull();
+  expect(screen.getByText("1 Data kept")).toBeTruthy();
+  expect(
+    screen
+      .getByRole("button", { name: "Review Cleanup" })
+      .closest(".cleanup-review-panel"),
+  ).toBeNull();
+  await fireEvent.click(expand);
   expect(screen.getByText(/Remove from this Cask; keep the data/)).toBeTruthy();
+  await fireEvent.click(
+    screen.getByRole("button", { name: "Collapse cleanup items" }),
+  );
+  expect(
+    screen
+      .getByRole("button", { name: "Approve Cleanup" })
+      .hasAttribute("disabled"),
+  ).toBe(true);
   expect(screen.getByText("Review only")).toBeTruthy();
   await fireEvent.click(screen.getByRole("button", { name: "Review Cleanup" }));
   expect(
@@ -2121,6 +2139,9 @@ test.each(["applications", "", "documents"])(
         installationId: null,
       },
     });
+    await fireEvent.click(
+      screen.getByRole("button", { name: "Expand cleanup items" }),
+    );
     expect(
       screen.getByText("Remove reference; leave installed on Windows"),
     ).toBeTruthy();
@@ -2190,6 +2211,9 @@ test("interrupted application queue restores in unified cleanup and closes witho
   const confirmation = await screen.findByLabelText(
     "I inspected the applications and will preserve unresolved results",
   );
+  await fireEvent.click(
+    screen.getByRole("button", { name: "Expand cleanup items" }),
+  );
   expect(screen.getByText("Uninstall failed; ownership retained")).toBeTruthy();
   const create = await screen.findByRole("button", {
     name: "Create cleanup plan",
@@ -2214,3 +2238,88 @@ test("interrupted application queue restores in unified cleanup and closes witho
     ),
   ).toBe(false);
 });
+
+test.each([true, false])(
+  "folder content inherits parent status and refreshes on focus (owned=%s)",
+  async (owned) => {
+    let resource = {
+      version: 1,
+      id: "folder",
+      caskId: "ownership-cask",
+      name: "Project",
+      path: "D:/Project",
+      kind: "DIRECTORY",
+      management: owned ? "MANAGED" : "REFERENCED",
+      ownership: owned ? "OWNED" : "REFERENCED",
+      containment: "EXTERNAL",
+      provenance: owned ? "USER_ADOPTED" : "USER_REFERENCE",
+      availability: "PRESENT",
+      categoryKey: "other",
+      sizeBytes: 3,
+      sizeMeasurement: "CALCULATED",
+      unknownEntries: 0,
+      shared: false,
+    };
+    let entries = [{ relativePath: "initial.txt", kind: "FILE", sizeBytes: 3 }];
+    ownershipWorkspace([resource], (command) => {
+      if (command === "list_resources") return [{ ...resource }];
+      if (command === "resource_contents")
+        return {
+          resourceId: "folder",
+          ownership: resource.ownership,
+          availability: "PRESENT",
+          totalEntries: entries.length,
+          unknownEntries: 0,
+          entries,
+        };
+    });
+    await screen.findByRole("heading", { name: "Ownership" });
+    await fireEvent.click(
+      screen.getByRole("button", { name: "Files & Folders" }),
+    );
+    await fireEvent.click(
+      await screen.findByRole("button", { name: "Details for Project" }),
+    );
+    await screen.findByText("initial.txt");
+    expect(
+      screen.getByText(
+        owned
+          ? /Contents inherit this folder’s ownership/
+          : /Contents are references/,
+      ),
+    ).toBeTruthy();
+    entries = [
+      ...entries,
+      { relativePath: "nested/later.txt", kind: "FILE", sizeBytes: 11 },
+    ];
+    resource = { ...resource, sizeBytes: 14 };
+    await fireEvent(window, new Event("focus"));
+    await screen.findByText("nested/later.txt");
+    expect(calls.invoke).toHaveBeenCalledWith("resource_contents", {
+      request: { version: 1, id: "folder" },
+      refresh: false,
+    });
+    expect(
+      calls.invoke.mock.calls.some(([command]) =>
+        [
+          "adopt_resource",
+          "create_removal_plan",
+          "execute_removal_plan",
+        ].includes(command),
+      ),
+    ).toBe(false);
+    if (owned) {
+      await fireEvent.click(
+        screen.getByRole("button", { name: "Renew folder ownership" }),
+      );
+      const commit = screen.getByRole("button", { name: "Add resource" });
+      expect(commit.hasAttribute("disabled")).toBe(true);
+      expect(
+        screen.getByLabelText(/This data is dedicated to this Cask/),
+      ).toBeTruthy();
+    } else
+      expect(
+        screen.queryByRole("button", { name: "Renew folder ownership" }),
+      ).toBeNull();
+  },
+);

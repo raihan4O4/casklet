@@ -1,6 +1,7 @@
 <script lang="ts">
   import type { RemovalPlanView } from "../contracts/generated/casklet";
   import { onMount } from "svelte";
+  import { slide } from "svelte/transition";
   import Icon from "./Icon.svelte";
   import {
     planExpired,
@@ -9,6 +10,7 @@
     cleanupSummary,
     cleanupItemEffect,
     cleanupReason,
+    cleanupCounts,
   } from "./cleanup";
   let {
     plan,
@@ -36,7 +38,27 @@
     onClose: () => void;
   } = $props();
   let nowMs = $state(Date.now());
+  let expanded = $state(false);
+  let displayedPlanHash = $state("");
+  $effect(() => {
+    if (displayedPlanHash !== plan.planHash) {
+      displayedPlanHash = plan.planHash;
+      expanded = false;
+    }
+  });
+  const counts = $derived(cleanupCounts(plan));
+  const disclosureDuration = () =>
+    window.matchMedia("(prefers-reduced-motion: reduce)").matches ? 0 : 160;
   const expired = $derived(planExpired(plan, nowMs));
+  const positiveStatus = $derived(
+    !expired &&
+      ((["DRAFT", "APPROVED"].includes(plan.state) &&
+        reviewedPlanHash === plan.planHash) ||
+        (plan.state === "COMPLETE" &&
+          !plan.items.some((item) =>
+            ["FAILED", "UNKNOWN"].includes(item.state),
+          ))),
+  );
   onMount(() => {
     const timer = setInterval(() => {
       nowMs = Date.now();
@@ -45,35 +67,79 @@
   });
 </script>
 
-<div class="cleanup-review-heading">
-  <h3 id="cleanup-plan-heading" tabindex="-1">Cleanup Review</h3>
-  <span
-    class="cleanup-status"
-    class:reviewed={!expired &&
-      (reviewedPlanHash === plan.planHash || plan.state === "COMPLETE")}
-    role="status"
-    aria-label={`Cleanup status: ${cleanupStatus(plan, reviewedPlanHash, nowMs)}`}
+<section class="cleanup-review-panel" aria-labelledby="cleanup-plan-heading">
+  <div class="cleanup-review-heading">
+    <h3 id="cleanup-plan-heading" tabindex="-1">Cleanup Review</h3>
+    <span
+      class="cleanup-status"
+      class:reviewed={positiveStatus}
+      role="status"
+      aria-label={`Cleanup status: ${cleanupStatus(plan, reviewedPlanHash, nowMs)}`}
+    >
+      {#if positiveStatus}<Icon name="check" size={14} />{/if}{cleanupStatus(
+        plan,
+        reviewedPlanHash,
+        nowMs,
+      )}
+    </span>
+  </div>
+  <button
+    type="button"
+    class="cleanup-review-toggle"
+    aria-label={expanded ? "Collapse cleanup items" : "Expand cleanup items"}
+    aria-expanded={expanded}
+    aria-controls="cleanup-review-items"
+    onclick={() => {
+      expanded = !expanded;
+    }}
   >
-    {#if !expired && (reviewedPlanHash === plan.planHash || plan.state === "COMPLETE")}<Icon
-        name="check"
-        size={14}
-      />{/if}{cleanupStatus(plan, reviewedPlanHash, nowMs)}
-  </span>
-</div>
+    <span class="cleanup-compact-summary">
+      <strong
+        >{plan.items.length}
+        {plan.items.length === 1 ? "item" : "items"} in this plan</strong
+      >
+      <span class="cleanup-counts">
+        {#each counts as count (count.label)}<span
+            >{count.count} {count.label}</span
+          >{/each}
+      </span>
+      {#if !["DRAFT", "APPROVED"].includes(plan.state)}
+        <span class="cleanup-outcome">{cleanupSummary(plan)}</span>
+      {/if}
+    </span>
+    <span class="cleanup-chevron" class:expanded
+      ><Icon name="down" size={18} /></span
+    >
+  </button>
+  <div id="cleanup-review-items">
+    {#if expanded}
+      <div
+        class="cleanup-review-content"
+        transition:slide={{ duration: disclosureDuration() }}
+      >
+        {#if ["DRAFT", "APPROVED"].includes(plan.state)}
+          <p class="cleanup-summary">{cleanupSummary(plan)}</p>
+        {/if}
+        <h4>Items</h4>
+        <ul class="cleanup-items">
+          {#each plan.items as item (item.id)}<li>
+              <strong>{item.name}</strong><span>{cleanupItemEffect(item)}</span>
+            </li>{/each}
+        </ul>
+      </div>
+    {/if}
+  </div>
+</section>
 {#if expired}<p>Plan expired. Create a new cleanup plan.</p>{/if}
-<p class="cleanup-summary">{cleanupSummary(plan)}</p>
-<h4>Items</h4>
-<ul class="cleanup-items">
-  {#each plan.items as item (item.id)}<li>
-      <strong>{item.name}</strong><span>{cleanupItemEffect(item)}</span>
-    </li>{/each}
-</ul>
 {#if plan.state === "DRAFT" || plan.state === "APPROVED"}
   <div class="cleanup-actions">
     <button
       type="button"
       disabled={expired || removalBusy || reviewedPlanHash === plan.planHash}
-      onclick={onReview}
+      onclick={() => {
+        expanded = true;
+        onReview();
+      }}
       ><Icon name="check" size={16} />{reviewedPlanHash === plan.planHash
         ? "Reviewed"
         : "Review Cleanup"}</button

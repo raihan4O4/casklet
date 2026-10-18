@@ -56,7 +56,26 @@ pub enum ApplicationSize {
     Unknown,
 }
 
+#[derive(Debug, Clone)]
+pub struct ResourceMeasurement {
+    pub availability: String,
+    pub size_bytes: Option<u64>,
+    pub unknown_entries: u64,
+    pub total_entries: u64,
+    pub entries: Vec<casklet_contracts::ResourceContentEntry>,
+}
+
 pub trait ResourceRepository {
+    /// # Errors
+    /// Reads original object evidence independently of current size observations.
+    fn recorded_resource_identity(&self, _id: &str) -> Result<Option<String>, String> {
+        Ok(None)
+    }
+    /// # Errors
+    /// Saves read-only measurements without altering identity or granting authority.
+    fn record_measurement(&self, _resource: &ResourceView) -> Result<(), String> {
+        Ok(())
+    }
     /// # Errors
     /// Reads active application associations and installer resource identities.
     fn application_storage_entries(
@@ -119,6 +138,20 @@ pub trait ResourceRepository {
 }
 
 pub trait ResourceStorage {
+    /// Compares stable directory objects without hashing descendants. None means
+    /// the legacy evidence or platform cannot make this comparison.
+    fn same_directory_object(&self, _path: &str, _recorded: &str) -> Option<bool> {
+        None
+    }
+    /// Metadata-only reconciliation; adapters may cache unchanged directory listings.
+    fn measure_resource(
+        &self,
+        _path: &str,
+        _kind: ResourceKind,
+        _force: bool,
+    ) -> Option<ResourceMeasurement> {
+        None
+    }
     /// # Errors
     /// Returns current read-only application size observations, independently of ownership.
     fn application_sizes(
@@ -224,6 +257,25 @@ impl<
         )
         .map_err(|e| err("INVALID_RESOURCE", format!("{e:?}"), correlation_id))?;
         resource.identity_key = observed.recordable_identity;
+        if resource.kind == ResourceKind::Directory {
+            // An explicit new consent can renew legacy directory evidence. Never
+            // promote a reference or silently replace another association.
+            if let Some(existing) = self
+                .repository
+                .list_resources(&resource.cask_id)
+                .map_err(|e| err("PERSISTENCE", e, correlation_id))?
+                .into_iter()
+                .find(|existing| {
+                    existing.path == resource.path
+                        && existing.kind == "DIRECTORY"
+                        && existing.management == "MANAGED"
+                        && existing.containment == "EXTERNAL"
+                        && existing.ownership == "OWNED"
+                })
+            {
+                resource.id = existing.id;
+            }
+        }
         if !observed
             .file_identity
             .matches_path(&resource.path)
@@ -475,6 +527,7 @@ impl<
         for resource in &mut resources {
             self.refresh_availability(resource, correlation_id)?;
         }
+        let _ = self.retry_manifest_projections(correlation_id);
         Ok(resources)
     }
     /// # Errors
@@ -491,7 +544,61 @@ impl<
             .map_err(|e| err("PERSISTENCE", e, correlation_id))?
             .ok_or_else(|| err("NOT_FOUND", "Resource not found".into(), correlation_id))?;
         self.refresh_availability(&mut resource, correlation_id)?;
+        let _ = self.retry_manifest_projections(correlation_id);
         Ok(resource)
+    }
+
+    /// Lists a bounded current projection of folder contents. Entries inherit the
+    /// parent's association; they do not receive independent deletion grants.
+    /// # Errors
+    /// Returns a validation, storage capability or persistence error.
+    pub fn resource_contents(
+        &self,
+        request: &GetResource,
+        refresh: bool,
+        correlation_id: &str,
+    ) -> Result<casklet_contracts::ResourceContents, ApiError> {
+        let mut resource = self.get_resource(request, correlation_id)?;
+        let kind = ResourceKind::from_code(&resource.kind)
+            .ok_or_else(|| err("PERSISTENCE", "Invalid kind".into(), correlation_id))?;
+        let measured = self
+            .storage
+            .measure_resource(&resource.path, kind, refresh)
+            .ok_or_else(|| {
+                err(
+                    "UNSUPPORTED",
+                    "Content inspection unavailable".into(),
+                    correlation_id,
+                )
+            })?;
+        resource.availability.clone_from(&measured.availability);
+        resource.size_bytes = measured.size_bytes;
+        resource.unknown_entries = measured.unknown_entries;
+        resource.size_measurement = if measured.size_bytes.is_none() {
+            "UNKNOWN"
+        } else if kind == ResourceKind::Directory {
+            "CALCULATED"
+        } else {
+            "EXACT"
+        }
+        .into();
+        self.refresh_directory_identity(&mut resource, correlation_id)?;
+        self.repository
+            .record_measurement(&resource)
+            .map_err(|e| err("PERSISTENCE", e, correlation_id))?;
+        let _ = self.retry_manifest_projections(correlation_id);
+        Ok(casklet_contracts::ResourceContents {
+            resource_id: resource.id,
+            ownership: if resource.ownership == "OWNED" && resource.availability == "CHANGED" {
+                "UNVERIFIED".into()
+            } else {
+                resource.ownership
+            },
+            availability: resource.availability,
+            total_entries: measured.total_entries,
+            unknown_entries: measured.unknown_entries,
+            entries: measured.entries,
+        })
     }
     /// # Errors
     /// Returns a typed validation or persistence error.
@@ -683,6 +790,43 @@ impl<
             )
         })?;
         resource.availability = self.storage.availability(&resource.path, kind).into();
+        if let Some(measured) = self.storage.measure_resource(&resource.path, kind, false) {
+            resource.availability = measured.availability;
+            resource.size_bytes = measured.size_bytes;
+            resource.unknown_entries = measured.unknown_entries;
+            resource.size_measurement = if resource.size_bytes.is_none() {
+                "UNKNOWN"
+            } else if kind == ResourceKind::Directory {
+                "CALCULATED"
+            } else {
+                "EXACT"
+            }
+            .into();
+            self.refresh_directory_identity(resource, correlation_id)?;
+            self.repository
+                .record_measurement(resource)
+                .map_err(|e| err("PERSISTENCE", e, correlation_id))?;
+        }
+        Ok(())
+    }
+    fn refresh_directory_identity(
+        &self,
+        resource: &mut ResourceView,
+        correlation_id: &str,
+    ) -> Result<(), ApiError> {
+        if resource.kind == "DIRECTORY"
+            && resource.availability == "PRESENT"
+            && let Some(recorded) = self
+                .repository
+                .recorded_resource_identity(&resource.id)
+                .map_err(|e| err("PERSISTENCE", e, correlation_id))?
+            && self
+                .storage
+                .same_directory_object(&resource.path, &recorded)
+                == Some(false)
+        {
+            resource.availability = "CHANGED".into();
+        }
         Ok(())
     }
 }

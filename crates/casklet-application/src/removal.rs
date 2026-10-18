@@ -36,6 +36,7 @@ pub struct PlannedItem {
     pub path: String,
     pub kind: String,
     pub identity: Option<String>,
+    pub authority_identity: Option<String>,
     pub resource_revision: i64,
     pub association_revision: i64,
     pub other_associations: u64,
@@ -100,6 +101,8 @@ pub trait RemovalRepository {
 }
 
 pub trait RemovalInspection {
+    /// Refreshes advisory size/presence from the filesystem before proposing effects.
+    fn refresh_candidate(&self, _candidate: &mut RemovalCandidate) {}
     /// Returns current identity evidence only for an exact managed allocation.
     fn verify_managed(&self, cask_root: &str, candidate: &RemovalCandidate) -> Option<String>;
     /// # Errors
@@ -137,16 +140,39 @@ fn error(code: &str, message: &str, correlation_id: &str) -> ApiError {
 }
 
 impl<R: CaskRepository + RemovalRepository, S: RemovalInspection> CaskService<R, S> {
+    /// Generates the usual conservative cleanup preview.
+    /// # Errors
+    /// Returns scope validation or persistence errors.
+    pub fn create_removal_plan(
+        &self,
+        request: &CreateRemovalPlan,
+        correlation_id: &str,
+    ) -> Result<RemovalPlanView, ApiError> {
+        self.plan_resources(request, correlation_id, false)
+    }
+
+    /// Explicitly detaches selected resources while preserving all file bytes.
+    /// # Errors
+    /// Returns scope validation or persistence errors.
+    pub fn create_detach_plan(
+        &self,
+        request: &CreateRemovalPlan,
+        correlation_id: &str,
+    ) -> Result<RemovalPlanView, ApiError> {
+        self.plan_resources(request, correlation_id, true)
+    }
+
     /// # Errors
     /// Returns validation or persistence errors.
     #[expect(
         clippy::too_many_lines,
         reason = "scope validation, conservative policy, and durable preview form one planning use case"
     )]
-    pub fn create_removal_plan(
+    fn plan_resources(
         &self,
         request: &CreateRemovalPlan,
         correlation_id: &str,
+        detach_only: bool,
     ) -> Result<RemovalPlanView, ApiError> {
         if request.version != CONTRACT_VERSION {
             return Err(error(
@@ -225,7 +251,8 @@ impl<R: CaskRepository + RemovalRepository, S: RemovalInspection> CaskService<R,
         .map_err(|_| error("CLOCK", "Clock unavailable", correlation_id))?;
         let items: Vec<PlannedItem> = selected
             .into_iter()
-            .map(|candidate| {
+            .map(|mut candidate| {
+                self.storage.refresh_candidate(&mut candidate);
                 let identity = self
                     .storage
                     .verify_managed(&cask.managed_storage_root, &candidate);
@@ -253,6 +280,11 @@ impl<R: CaskRepository + RemovalRepository, S: RemovalInspection> CaskService<R,
                 } else {
                     (action.code(), reason)
                 };
+                let (action, reason) = if detach_only {
+                    ("DETACH", "EXPLICIT_PRESERVE_AND_DETACH")
+                } else {
+                    (action, reason)
+                };
                 PlannedItem {
                     view: RemovalPlanItemView {
                         id: Uuid::new_v4().to_string(),
@@ -268,14 +300,15 @@ impl<R: CaskRepository + RemovalRepository, S: RemovalInspection> CaskService<R,
                     },
                     path: candidate.path,
                     kind: candidate.kind,
-                    // Non-destructive steps revalidate recorded metadata, even when
-                    // the current file identity cannot be independently verified.
+                    // Non-destructive steps snapshot recorded metadata; inability to
+                    // verify bytes is precisely why PRESERVE was selected.
                     identity: if matches!(action, "PRESERVE" | "DETACH") {
-                        candidate.recorded_identity
+                        candidate.recorded_identity.clone()
                     } else {
                         identity
                     },
                     resource_revision: candidate.resource_revision,
+                    authority_identity: candidate.recorded_identity.clone(),
                     association_revision: candidate.association_revision,
                     other_associations: candidate.other_associations,
                 }
@@ -529,7 +562,7 @@ impl<R: CaskRepository + RemovalRepository, S: RemovalInspection> CaskService<R,
                         "PRESERVE" => ("PRESERVED", "PLAN_PRESERVE"),
                         "DETACH" => ("SUCCEEDED", "DETACHED"),
                         "TRASH" | "DELETE_PERMANENTLY" if !verified => {
-                            ("PRESERVED", "REVALIDATION_FAILED")
+                            ("FAILED", "REVALIDATION_FAILED")
                         }
                         "TRASH" | "DELETE_PERMANENTLY" => {
                             let Some(candidate) = candidate else {

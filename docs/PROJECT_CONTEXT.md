@@ -1,6 +1,6 @@
 # Casklet Project Context
 
-Last updated: 2026-10-11
+Last updated: 2026-10-12
 
 This is the canonical handoff for humans and new Codex tasks. Keep it concise and current. Detailed specifications belong in linked documents.
 
@@ -204,6 +204,14 @@ The shared desktop shell suppresses the native WebView context menu across main 
 
 October 11 installer recovery fixes verified reinstall ownership collisions on stable Windows IDs: only retired owners can be replaced after full verification. Cask windows retry saved successful confirmation without rerunning installers, and completed review no longer disables installation selection. Uncertain running/recovery operations retain safety locks. See docs/engineering/installer-reinstallation.md.
 
+October 11 removal-plan follow-up: non-destructive PRESERVE/DETACH steps retain recorded metadata identity for database revalidation, while destructive steps still require independently verified identity. The shared core and CLI expose explicit preservation-only detachment plans (cleanup create --detach-only), with normal hash-bound approval and journaling, for permanent Cask removal that retains unverifiable files. An isolated changed-file fixture passed; real-test was removed through reviewed cleanup, preservation-only detachment and the core Cask removal command after metadata backup.
+
 October 11 category cleanup integrates application queues into the existing scope selector and Cleanup Review. Whole Cask executes sequential owned-app uninstalls/reference detachment before file cleanup; Applications excludes other categories, and other categories exclude native application queues. Existing component plans, journals, verification, recovery and execution gates remain authoritative. See docs/adr/0028-category-application-cleanup.md.
 
 October 11 PR #21 CI correction: preservation/detachment plans now snapshot recorded database identity, while destructive actions retain independently verified identity. The omitted local dependency caused two clean-checkout approval tests to fail; the isolated fix passed all 108 infrastructure tests, application-core tests, formatting and strict Clippy.
+
+October 12 desktop follow-up: Cask windows use independent native top-level windows to avoid owner minimization, with explicit main-close destruction preserving the close lifecycle. Cleanup Review defaults to a compact collapsible action-count summary; workflow buttons and confirmations remain outside, with existing review/approval/execution guards unchanged. See docs/adr/0029-independent-cask-windows.md and docs/engineering/desktop-gui-design.md. Native multi-window regression checks remain manual.
+
+October 12 folder synchronization/cleanup: metadata reconciliation updates current folder sizes and bounded inherited content listings through the shared core, with incremental directory-list caching, desktop polling and periodic full reconciliation. New folder grants separate stable root identity from current cleanup trees. Schema 17 binds original authority separately from plan snapshots and invalidates pending old plans; changed legacy folders require explicit consent renewal. Failed requested removal now produces FAILED/PARTIAL, and successful disposal verifies source/quarantine absence. Planned preservation is explicitly described as retained data. See docs/adr/0030-current-folder-contents-and-cleanup.md and docs/engineering/ownership-cleanup-ux.md.
+
+Folder synchronization validation passed the full local gate (132 all-feature Rust tests, one opt-in benchmark ignored; default/Alpha profiles; 53 GUI tests; strict lint/format/types/contracts and builds), plus final frontend presentation checks. Real Windows owned/reference, locked-file, changed-plan and restart fixtures passed. Evidence: target/folder-sync-quality.log; refreshed local Alpha packaging uses target/folder-sync-alpha-package.log. Existing independent review/publication gates remain open.

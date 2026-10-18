@@ -258,3 +258,50 @@ fn alpha_cleanup_supports_msi_but_does_not_enable_winget_uninstall() {
             .success()
     );
 }
+
+#[cfg(windows)]
+#[test]
+fn folder_contents_and_storage_reconcile_changes_across_cli_processes() {
+    let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../target")
+        .join(format!("cli-folder-sync-{}", uuid::Uuid::new_v4()));
+    let folder = root.join("external/project");
+    fs::create_dir_all(&folder).unwrap();
+    fs::write(folder.join("initial.txt"), b"one").unwrap();
+    let run = |args: &[&str]| {
+        let output = Command::new(env!("CARGO_BIN_EXE_casklet"))
+            .args(["--output", "json"])
+            .args(args)
+            .env("CASKLET_DEV_ROOT", &root)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        serde_json::from_slice::<serde_json::Value>(&output.stdout).unwrap()
+    };
+    let cask = run(&["cask", "create", "Folder reconciliation"]);
+    let id = cask["id"].as_str().unwrap();
+    let resource = run(&[
+        "resource",
+        "adopt",
+        id,
+        &folder.to_string_lossy(),
+        "--confirm-ownership",
+    ]);
+    fs::create_dir_all(folder.join("nested")).unwrap();
+    fs::write(folder.join("nested/later.txt"), b"later").unwrap();
+    fs::write(folder.join("initial.txt"), b"modified").unwrap();
+    let contents = run(&["resource", "contents", resource["id"].as_str().unwrap()]);
+    assert_eq!(contents["ownership"], "OWNED");
+    assert_eq!(contents["totalEntries"], 3);
+    let listed = run(&["resource", "get", resource["id"].as_str().unwrap()]);
+    assert_eq!(listed["sizeBytes"], 13);
+    let plan = run(&["cleanup", "create", id]);
+    assert_eq!(plan["items"][0]["action"], "TRASH");
+    assert_eq!(plan["items"][0]["expectedSizeBytes"], 13);
+    assert_eq!(fs::read(folder.join("nested/later.txt")).unwrap(), b"later");
+    fs::remove_dir_all(root).unwrap();
+}

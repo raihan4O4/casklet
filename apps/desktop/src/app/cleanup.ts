@@ -15,7 +15,13 @@ export function cleanupStatus(
   if (plan.state === "DRAFT")
     return reviewedPlanHash === plan.planHash ? "Reviewed" : "Ready for review";
   if (plan.state === "APPROVED") return "Approved";
-  if (plan.state === "COMPLETE") return "Completed";
+  if (plan.state === "COMPLETE") {
+    if (plan.items.some((item) => ["UNKNOWN", "FAILED"].includes(item.state)))
+      return "Closed with unresolved items";
+    return plan.items.some((item) => item.state === "PRESERVED")
+      ? "Completed; items kept"
+      : "Completed";
+  }
   return "Needs attention";
 }
 export function cleanupActionHint(
@@ -41,7 +47,9 @@ export function cleanupSummary(plan: RemovalPlanView) {
   if (plan.state === "COMPLETE")
     return plan.items.some((item) => ["UNKNOWN", "FAILED"].includes(item.state))
       ? "Cleanup closed. Unresolved items still need inspection."
-      : "Cleanup finished. Remove the Cask once no dependencies remain.";
+      : plan.items.some((item) => item.state === "PRESERVED")
+        ? "Cleanup finished with items kept. Their data remains on disk; inspect the planned actions."
+        : "Cleanup finished. Remove the Cask once no dependencies remain.";
   if (plan.state === "PARTIAL")
     return "Cleanup stopped. Inspect the items that need attention.";
   if (plan.state === "EXECUTING")
@@ -63,6 +71,29 @@ export function cleanupSummary(plan: RemovalPlanView) {
     .filter(Boolean)
     .join(" ");
 }
+export function cleanupCounts(plan: RemovalPlanView) {
+  return [
+    {
+      label: "Recycle Bin",
+      count: plan.items.filter((item) => item.action === "TRASH").length,
+    },
+    {
+      label: "Uninstall",
+      count: plan.items.filter((item) => item.action === "UNINSTALL").length,
+    },
+    {
+      label: "Data kept",
+      count: plan.items.filter((item) =>
+        ["DETACH", "PRESERVE"].includes(item.action),
+      ).length,
+    },
+    {
+      label: "Permanent deletion",
+      count: plan.items.filter((item) => item.action === "DELETE_PERMANENTLY")
+        .length,
+    },
+  ].filter(({ count }) => count > 0);
+}
 export function cleanupAction(action: string) {
   return (
     (
@@ -77,6 +108,14 @@ export function cleanupAction(action: string) {
   );
 }
 export function cleanupItemEffect(item: RemovalPlanView["items"][number]) {
+  if (item.resultCode === "REVALIDATION_FAILED")
+    return "Item changed or could not be verified; nothing removed. Create a new plan.";
+  if (
+    ["TRASH_OUTCOME_UNCERTAIN", "DELETE_OUTCOME_UNCERTAIN"].includes(
+      item.resultCode ?? "",
+    )
+  )
+    return "Removal could not be confirmed; inspect the original and recovery locations.";
   if (item.reasonCode === "APPLICATION_OWNERSHIP") {
     if (item.state === "RUNNING") return "Uninstalling...";
     if (item.state === "FAILED" || item.state === "UNKNOWN")

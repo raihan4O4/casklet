@@ -2324,3 +2324,101 @@ html.theme-switching * {
   font-size: 12px;
   line-height: 1.5;
 }
+
+/* Cleanup disclosure keeps workflow controls within reach in either theme. */
+.cleanup-review-panel {
+  margin-top: 20px;
+  border: 1px solid var(--border-subtle, #e1e1e1);
+  border-radius: 8px;
+  background: var(--surface-panel, #fff);
+  overflow: hidden;
+}
+.cleanup-review-panel .cleanup-review-heading {
+  margin: 0;
+  padding: 14px 14px 0;
+}
+.workspace-content .cleanup-review-toggle {
+  width: 100%;
+  margin: 0;
+  padding: 12px 14px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  text-align: left;
+}
+.workspace-content .cleanup-review-toggle:hover,
+.workspace-content .cleanup-review-toggle[aria-expanded="true"] {
+  background: var(--surface-secondary, #fafafa);
+}
+.cleanup-compact-summary {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+}
+.cleanup-compact-summary strong {
+  font-size: 12px;
+  font-weight: 550;
+}
+.cleanup-counts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px 14px;
+  color: var(--text-secondary, #666);
+  font-size: 11px;
+}
+.cleanup-chevron {
+  display: flex;
+  flex-shrink: 0;
+  color: var(--text-muted, #777);
+  transition: transform 0.16s ease;
+}
+.cleanup-chevron.expanded {
+  transform: rotate(180deg);
+}
+.cleanup-review-content {
+  padding: 0 14px 12px;
+  border-top: 1px solid var(--border-subtle, #e1e1e1);
+}
+.cleanup-review-content .cleanup-summary {
+  font-size: 12px;
+}
+@media (prefers-reduced-motion: reduce) {
+  .cleanup-chevron {
+    transition: none;
+  }
+}
+.cleanup-outcome {
+  font-size: 11px;
+  line-height: 1.5;
+  color: var(--text-secondary, #666);
+}
+.folder-contents {
+  margin: 16px 0;
+}
+.folder-contents p {
+  font-size: 11px;
+  color: var(--text-secondary, #666);
+}
+.folder-contents ul {
+  max-height: 240px;
+  overflow: auto;
+}
+.folder-contents li {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 11px;
+}
+.folder-contents li span {
+  flex: 1;
+  overflow-wrap: anywhere;
+  min-width: 0;
+}
+.folder-contents li svg,
+.folder-contents li small {
+  flex-shrink: 0;
+}

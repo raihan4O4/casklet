@@ -98,3 +98,7 @@ Commands change state and queries only read it. This is a lightweight separation
 10. Logical, physical, and reclaimable storage remain distinct.
 
 The original `domain model.txt` remains as the Phase 3 source record during Milestone 0 and can be archived only after this normalization is reviewed.
+
+## Directory contents and authority (ADR 0030)
+
+A registered owned directory covers ordinary descendants added after consent while the root object remains verified. Referenced directory descendants inherit reference status and never deletion authority. Descendant listings and measurements are observations rather than new independently owned resources. Immutable removal plans bind current complete trees separately from original root authority. Root replacement, unknown descendants and other registered dependencies prevent disposal; mutation after review requires a new plan. Legacy changed tree-only grants need explicit renewal.
