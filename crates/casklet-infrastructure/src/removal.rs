@@ -932,12 +932,17 @@ impl RemovalInspection for LocalStorage {
         if !matches!(candidate.kind.as_str(), "FILE" | "DIRECTORY") {
             return Err("Only identified managed resources may be trashed".into());
         }
-        let quarantine =
-            self.stage_verified_removal(cask_root, candidate, expected_identity, run_id, item_id)?;
-        self.verify_quarantined(&quarantine, &candidate.kind, expected_identity)?;
-        trash::delete(&quarantine).map_err(|e| e.to_string())?;
-        verify_absent(&candidate.path)?;
-        verify_absent(&quarantine.to_string_lossy())
+        if uuid::Uuid::parse_str(run_id).is_err() || uuid::Uuid::parse_str(item_id).is_err() {
+            return Err("Invalid removal run or item ID".into());
+        }
+        // Keep the original name and location in Windows' restore metadata. Quarantine
+        // remains exclusively for permanent deletion and legacy interrupted runs.
+        if self.verify_managed(cask_root, candidate).as_deref() != Some(expected_identity) {
+            return Err("Resource changed before Recycle Bin handoff; source retained".into());
+        }
+        check_components(Path::new(&candidate.path))?;
+        trash::delete(&candidate.path).map_err(|e| e.to_string())?;
+        verify_absent(&candidate.path)
     }
 
     fn delete_permanently_verified(

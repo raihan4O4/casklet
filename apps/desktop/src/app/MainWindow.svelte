@@ -13,6 +13,7 @@
   } from "../contracts/generated/casklet";
   import { CONTRACT_VERSION } from "../contracts/generated/casklet";
   import BrandLogo from "./BrandLogo.svelte";
+  import CreateCaskForm from "./CreateCaskForm.svelte";
   import Icon from "./Icon.svelte";
   import Workspace from "./Workspace.svelte";
   // Cask row actions intentionally hidden for Alpha; typed handlers retained.
@@ -35,14 +36,21 @@
   let page: "casks" | "installations" | "activity" | "settings" =
     $state("casks");
   let library: CaskLibraryView | null = $state(null);
+  // Match the per-Cask totals, including references. This is logical size
+  // across associations, not physical usage or reclaimable space.
+  let usedStorageBytes = $derived.by(() =>
+    library?.casks.reduce(
+      (total, item) => total + item.managedBytes + item.referencedBytes,
+      0,
+    ),
+  );
   let loading = $state(true);
   let refreshSequence = 0;
   let error = $state("");
   let notice = $state("");
   let search = $state("");
-  let name = $state("");
   let creating = $state(false);
-  let busy = $state(false);
+  let creationBusy = $state(false);
   let recoveryCount = $state(0);
   let activeCask = $state("");
   let sort: "name" | "items" | "storage" | "updated" = $state("updated");
@@ -146,25 +154,16 @@
     document.getElementById("cask-name")?.focus();
   }
   function closeCreate() {
+    if (creationBusy) return;
     createDialog.close();
     creating = false;
-    name = "";
   }
-  async function create() {
-    busy = true;
-    try {
-      const cask = await invoke<CaskView>("create_cask", {
-        request: { version: CONTRACT_VERSION, name },
-      });
-      closeCreate();
-      notice = "Cask created.";
-      await refresh();
-      await openCask(cask.id);
-    } catch (cause) {
-      error = message(cause);
-    } finally {
-      busy = false;
-    }
+  async function created(cask: CaskView) {
+    createDialog.close();
+    creating = false;
+    notice = "Cask created.";
+    await refresh();
+    await openCask(cask.id);
   }
   async function searchInstalled(refreshInventory = false) {
     installationsBusy = true;
@@ -320,11 +319,10 @@
         <div class="summary-card">
           <span class="summary-icon"><Icon name="storage" size={22} /></span>
           <div>
-            <strong>{bytes(library?.managedBytes)}</strong><span
-              >Used Storage</span
+            <strong>{bytes(usedStorageBytes)}</strong><span>Used Storage</span
             ><small
-              title="Known logical size of managed resources. References and unmeasured installed applications are excluded."
-              >Managed logical size{library?.unknownEntries
+              title="Sum of known Cask sizes, including references. Content associated with multiple Casks is counted in each. This is not physical disk usage or reclaimable space."
+              >Includes references{library?.unknownEntries
                 ? " · incomplete"
                 : ""}</small
             >
@@ -492,43 +490,15 @@
 </div>
 {#if creating}<dialog
     bind:this={createDialog}
-    oncancel={() => {
-      creating = false;
-      name = "";
+    oncancel={(event) => {
+      event.preventDefault();
+      closeCreate();
     }}
     aria-labelledby="create-heading"
   >
-    <form
-      onsubmit={(event) => {
-        event.preventDefault();
-        void create();
-      }}
-    >
-      <div class="section-heading">
-        <h2 id="create-heading">New Cask</h2>
-        <button
-          class="icon-button"
-          type="button"
-          aria-label="Cancel creation"
-          onclick={closeCreate}><Icon name="close" /></button
-        >
-      </div>
-      <p>
-        Give this activity a name. Files and applications can be added next.
-      </p>
-      <label for="cask-name">Cask name</label><input
-        id="cask-name"
-        bind:value={name}
-        maxlength="120"
-        required
-        placeholder="e.g. Photography Course"
-      />{#if error}<p class="error" role="alert">{error}</p>{/if}
-      <div class="dialog-actions">
-        <button type="button" onclick={closeCreate}>Cancel</button><button
-          class="primary-button"
-          disabled={busy || !name.trim()}
-          >{busy ? "Creating…" : "Create Cask"}</button
-        >
-      </div>
-    </form>
+    <CreateCaskForm
+      onCreated={created}
+      onCancel={closeCreate}
+      bind:busy={creationBusy}
+    />
   </dialog>{/if}

@@ -45,7 +45,6 @@
     caskColor,
     activityDay,
     bytes,
-    relativeTime,
     label,
     signatureLabel,
   } from "./format";
@@ -67,6 +66,63 @@
     if (event.key === "Escape") clearDragFeedback();
   }
   let adding = $state(false);
+  let explorerInstaller = $state("");
+  let waitingExplorer: {
+    id: number;
+    path: string;
+    isInstaller: boolean;
+    installDirect?: boolean;
+  } | null = $state(null);
+  let checkingExplorer = false;
+  async function receiveExplorer() {
+    if (checkingExplorer || loading || !selected || removed) return;
+    checkingExplorer = true;
+    try {
+      const request = await invoke<{
+        id: number;
+        path: string;
+        isInstaller: boolean;
+        installDirect?: boolean;
+      } | null>("explorer_pending");
+      if (
+        !request ||
+        typeof request.id !== "number" ||
+        typeof request.path !== "string"
+      )
+        return;
+      waitingExplorer = request;
+      if (
+        busy ||
+        removalBusy ||
+        installerBusy ||
+        installerBlocksMutation ||
+        pendingPath ||
+        adding ||
+        applicationWorkflow ||
+        explorerInstaller
+      )
+        return;
+      await invoke("explorer_ack", { id: request.id });
+      waitingExplorer = null;
+      if (request.installDirect && request.isInstaller) {
+        explorerInstaller = request.path;
+        await installExplorerItem();
+      } else if (request.isInstaller) explorerInstaller = request.path;
+      else reviewDroppedPaths([request.path]);
+    } catch (cause) {
+      error = message(cause);
+    } finally {
+      checkingExplorer = false;
+    }
+  }
+  async function installExplorerItem() {
+    const path = explorerInstaller;
+    explorerInstaller = "";
+    detailTab = "apps";
+    applicationWorkflow = "installer";
+    installerElevation = false;
+    await inspectInstaller(path);
+  }
   let applicationWorkflow:
     | "portable"
     | "winget"
@@ -102,7 +158,13 @@
   let pendingPath = $state("");
   let ownershipConfirmed = $state(false);
   let pendingMode: "reference" | "adopt" | "" = $state("");
-  let pendingCategory = $state("other");
+  let categoryEditor = $state(false);
+  let categoryChoice = $state("");
+  let categoryBusy = $state(false);
+  let ownershipEditor = $state(false);
+  let ownershipTarget = $state(false);
+  let policyConfirmed = $state(false);
+  let pendingCategory = $state("auto");
   let progress = $state("");
   let categoryName = $state("");
   let selectedResource: ResourceView | null = $state(null);
@@ -297,13 +359,18 @@
       categoryKey: removalCategory || null,
       permanent: file?.permanent ?? false,
       cleanupOnly: true,
-      state,
-      planHash: `${file?.planHash ?? ""}|${app?.planHash ?? ""}`,
+      state:
+        state === "COMPLETE" &&
+        categoryCleanup.caskRemovalId &&
+        !categoryCleanup.caskRemoved
+          ? "APPROVED"
+          : state,
+      planHash: `${file?.planHash ?? ""}|${app?.planHash ?? ""}${categoryCleanup.caskRemovalId ? `|remove:${categoryCleanup.caskRemovalId}` : ""}`,
       runId: file?.runId ?? null,
       createdAtMs: file?.createdAtMs ?? Date.now(),
       expiresAtMs: Math.min(
-        file?.expiresAtMs ?? Infinity,
-        app?.expiresAtMs ?? Infinity,
+        file?.state === "COMPLETE" ? Infinity : (file?.expiresAtMs ?? Infinity),
+        app?.state === "COMPLETE" ? Infinity : (app?.expiresAtMs ?? Infinity),
       ),
       items: [
         ...(file?.items ?? []),
@@ -357,15 +424,17 @@
       (summary?.ownedApplicationBytes ?? 0) +
       (summary?.referenceApplicationBytes ?? 0),
   );
-  async function inspectInstaller() {
+  async function inspectInstaller(source?: string) {
     if (installerBusy) return;
     installerBusy = true;
     installerPreview = null;
     try {
-      const path = await open({
-        multiple: false,
-        filters: [{ name: "Windows installer", extensions: ["msi", "exe"] }],
-      });
+      const path =
+        source ??
+        (await open({
+          multiple: false,
+          filters: [{ name: "Windows installer", extensions: ["msi", "exe"] }],
+        }));
       if (typeof path !== "string") return;
       installerPreview = await invoke<InstallerInspection>(
         "inspect_installer_artifact",
@@ -951,7 +1020,11 @@
         categoryKey: resourceIds.length ? null : removalCategory || null,
         permanent: permanentPlan,
       };
-      if (includeApps || applicationRemovalId) {
+      if (
+        includeApps ||
+        applicationRemovalId ||
+        (!resourceIds.length && !removalCategory)
+      ) {
         categoryCleanup = await invoke<CategoryCleanupPlan>(
           "create_category_cleanup",
           {
@@ -1035,6 +1108,24 @@
           resources: null,
           applications: pending,
         };
+      }
+    }
+    if (
+      selected &&
+      !resourceIds.length &&
+      !installationId &&
+      !removalCategory
+    ) {
+      const whole = await invoke<CategoryCleanupPlan | null>(
+        "pending_whole_cask_cleanup",
+        {
+          request: { version: CONTRACT_VERSION, id: selected.id },
+          resourcePlanId: null,
+        },
+      ).catch(() => null);
+      if (whole?.caskRemovalId) {
+        categoryCleanup = whole;
+        removalPlan = whole.resources;
       }
     }
     await tick();
@@ -1133,6 +1224,17 @@
           },
         );
         removalPlan = categoryCleanup.resources;
+        if (categoryCleanup.caskRemoved) {
+          if (categoryCleanup.caskRemovalWarning)
+            notify(categoryCleanup.caskRemovalWarning, "info");
+          removed = true;
+          selected = null;
+          removalPlan = null;
+          categoryCleanup = null;
+          progress = "Cask permanently removed.";
+          await refresh();
+          return;
+        }
       } else
         removalPlan = await invoke<RemovalPlanView>("execute_removal_plan", {
           request: {
@@ -1356,7 +1458,18 @@
         ? plan.items.map((item) => item.resourceId)
         : [],
     );
-    removalPlan = plan;
+    // History displays one file plan. Do not route its controls to an
+    // application queue discovered while navigating to Cleanup.
+    categoryCleanup = await invoke<CategoryCleanupPlan | null>(
+      "pending_whole_cask_cleanup",
+      {
+        request: { version: CONTRACT_VERSION, id: plan.caskId },
+        resourcePlanId: plan.id,
+      },
+    ).catch(() => null);
+    if (!categoryCleanup?.caskRemovalId) categoryCleanup = null;
+    applicationRemovalId = "";
+    removalPlan = categoryCleanup?.resources ?? plan;
     permanentPlan = plan.permanent;
     removalCategory = plan.categoryKey ?? "";
     reviewedPlanHash = "";
@@ -1501,7 +1614,8 @@
       adding = false;
       ownershipConfirmed = false;
       selectedResource = null;
-      progress = "Resource added.";
+      progress =
+        "Item is in this Cask. Duplicate additions keep its current ownership and category.";
       await refreshResources();
     } catch (cause) {
       error = message(cause);
@@ -1530,9 +1644,40 @@
       error = message(cause);
     }
   }
-  async function recategorize(resource: ResourceView, categoryKey: string) {
+  async function changeOwnership() {
+    if (!selectedResource || !selected || (ownershipTarget && !policyConfirmed))
+      return;
+    busy = true;
+    error = "";
     try {
-      selectedResource = await invoke<ResourceView>("categorize_resource", {
+      selectedResource = await invoke<ResourceView>("set_resource_ownership", {
+        request: {
+          version: CONTRACT_VERSION,
+          caskId: selected.id,
+          resourceId: selectedResource.id,
+          expectedOwnership: selectedResource.ownership,
+          owned: ownershipTarget,
+          confirmOwnership: policyConfirmed,
+        },
+      });
+      ownershipEditor = false;
+      policyConfirmed = false;
+      await refreshResources();
+      if (selectedResource?.kind === "DIRECTORY")
+        await inspectFolder(selectedResource);
+      progress = "Ownership updated. File contents and location are unchanged.";
+    } catch (cause) {
+      error = message(cause);
+    } finally {
+      busy = false;
+    }
+  }
+  async function recategorize(resource: ResourceView, categoryKey: string) {
+    if (categoryBusy || categoryKey === resource.categoryKey) return;
+    categoryBusy = true;
+    error = "";
+    try {
+      const updated = await invoke<ResourceView>("categorize_resource", {
         request: {
           version: CONTRACT_VERSION,
           resourceId: resource.id,
@@ -1540,9 +1685,15 @@
         },
       });
       await refreshResources();
-      progress = "Changes saved.";
+      if (selectedResource?.id === resource.id) {
+        selectedResource = updated;
+        categoryEditor = false;
+      }
+      progress = "Category updated.";
     } catch (cause) {
       error = message(cause);
+    } finally {
+      categoryBusy = false;
     }
   }
   onMount(() => {
@@ -1587,6 +1738,7 @@
     let unlistenWinget: (() => void) | undefined;
     let unlistenInstaller: (() => void) | undefined;
     const poll = window.setInterval(() => {
+      void receiveExplorer();
       void syncFiles();
       void refreshRecovery().catch(() => {});
       void refreshOperations().catch(() => {});
@@ -1699,6 +1851,7 @@
       error = message(cause);
     } finally {
       loading = false;
+      void receiveExplorer();
       await tick();
       onReady();
     }
@@ -1823,6 +1976,53 @@
     </nav>
   {/if}
   <div class="workspace-content">
+    {#if waitingExplorer}
+      <section class="review" aria-label="Waiting Explorer item">
+        <p>
+          An Explorer item is waiting. Finish or close the current review to
+          continue.
+        </p>
+        <p class="path">{waitingExplorer.path}</p>
+        <button
+          onclick={() => {
+            if (waitingExplorer)
+              void invoke("explorer_ack", { id: waitingExplorer.id })
+                .then(() => {
+                  waitingExplorer = null;
+                })
+                .catch((cause) => {
+                  error = message(cause);
+                });
+          }}>Cancel waiting item</button
+        >
+      </section>
+    {/if}
+    {#if explorerInstaller}
+      <section class="review" aria-label="Installer action">
+        <h2>What would you like to do?</h2>
+        <p class="path">{explorerInstaller}</p>
+        <p>
+          Install the application, or manage just the installer file in {selected?.name}.
+        </p>
+        <div class="form-row">
+          <button class="primary" onclick={() => void installExplorerItem()}
+            >Install Application</button
+          >
+          <button
+            onclick={() => {
+              const path = explorerInstaller;
+              explorerInstaller = "";
+              reviewDroppedPaths([path]);
+            }}>Add Installer to Cask</button
+          >
+          <button
+            onclick={() => {
+              explorerInstaller = "";
+            }}>Cancel</button
+          >
+        </div>
+      </section>
+    {/if}
     {#if removed}<p role="status">Cask removed permanently.</p>
       <button type="button" onclick={() => void getCurrentWindow().close()}
         >Return to Casks</button
@@ -1895,28 +2095,30 @@
       </div>
       <details class="information-panel" aria-label="Cask information">
         <summary>Details</summary>
-        <div class="info-row">
-          <Icon name="folder" /><span>Storage Location</span><span
-            class="truncate path"
-            title={selected.managedStorageRoot}
-            >{selected.managedStorageRoot}</span
-          ><button type="button" onclick={() => void openStorage()}>Open</button
-          >
-        </div>
-        <div class="info-row">
-          <Icon name="clock" /><span>Created</span><span
-            >{new Date(selected.createdAtMs).toLocaleDateString(undefined, {
-              day: "numeric",
-              month: "short",
-              year: "numeric",
-            })}</span
-          >
-        </div>
-        <div class="info-row">
-          <Icon name="clock" /><span>Last Updated</span><span
-            >{relativeTime(selected.updatedAtMs)}</span
-          >
-        </div>
+        <dl class="cask-dates">
+          <div>
+            <dt><Icon name="clock" size={14} />Created</dt>
+            <dd>
+              <time datetime={new Date(selected.createdAtMs).toISOString()}
+                >{new Date(selected.createdAtMs).toLocaleDateString(undefined, {
+                  month: "short",
+                  day: "numeric",
+                  year: "numeric",
+                })}</time
+              >
+            </dd>
+          </div>
+          <div>
+            <dt><Icon name="clock" size={14} />Last Updated</dt>
+            <dd>
+              <time
+                datetime={new Date(selected.updatedAtMs).toISOString()}
+                title={new Date(selected.updatedAtMs).toLocaleString()}
+                >{activityDay(selected.updatedAtMs)}</time
+              >
+            </dd>
+          </div>
+        </dl>
       </details>
     {/if}
     {#if mode === "activity"}
@@ -2638,6 +2840,7 @@
                 id="intake-category"
                 bind:value={pendingCategory}
                 disabled={busy}
+                ><option value="auto">Automatic (file type)</option
                 >{#each categories as category (category.key)}<option
                     value={category.key}>{category.name}</option
                   >{/each}</select
@@ -2701,6 +2904,9 @@
                 aria-expanded={selectedResource?.id === resource.id}
                 aria-controls={`resource-details-${resource.id}`}
                 onclick={() => {
+                  categoryEditor = false;
+                  ownershipEditor = false;
+                  policyConfirmed = false;
                   selectedResource =
                     selectedResource?.id === resource.id ? null : resource;
                   if (selectedResource) void inspectFolder(selectedResource);
@@ -2749,12 +2955,6 @@
                       selectedResource.containment === "EXTERNAL"
                         ? "Managed in place"
                         : label(selectedResource.management)}
-                    </dd>
-                    <dt>Cleanup authority</dt>
-                    <dd>
-                      {selectedResource.ownership === "OWNED"
-                        ? "Owned; requires a current reviewed plan"
-                        : "Reference only; underlying data is preserved"}
                     </dd>
                     <dt>Availability</dt>
                     <dd>{label(selectedResource.availability)}</dd>
@@ -2805,24 +3005,83 @@
                       {:else}<p>Inspecting folder contents…</p>{/if}
                     </div>
                   {/if}
-                  <div class="resource-category-row">
-                    <label for="resource-category">Category</label><select
-                      id="resource-category"
-                      value={selectedResource.categoryKey}
-                      onchange={(event) => {
-                        if (selectedResource)
-                          void recategorize(
-                            selectedResource,
-                            event.currentTarget.value,
-                          );
-                      }}
-                      >{#each categories as category (category.key)}<option
-                          value={category.key}>{category.name}</option
-                        >{/each}</select
-                    >
-                  </div>
+                  <dl class="resource-category-display">
+                    <dt>Category</dt>
+                    <dd>
+                      {categories.find(
+                        (category) =>
+                          category.key === selectedResource?.categoryKey,
+                      )?.name ?? label(selectedResource.categoryKey)}
+                    </dd>
+                  </dl>
                   <div class="resource-inspector-actions">
-                    {#if selectedResource.kind === "DIRECTORY" && selectedResource.ownership === "OWNED" && selectedResource.containment === "EXTERNAL"}
+                    <button
+                      type="button"
+                      class="secondary-button"
+                      disabled={busy ||
+                        removalBusy ||
+                        categoryBusy ||
+                        selected?.state !== "ACTIVE"}
+                      onclick={() => {
+                        categoryChoice = selectedResource?.categoryKey ?? "";
+                        categoryEditor = true;
+                        ownershipEditor = false;
+                      }}>Change Category</button
+                    >
+                    {#if categoryEditor}
+                      <form
+                        class="ownership-policy-form"
+                        aria-label="Change item category"
+                        onsubmit={(event) => {
+                          event.preventDefault();
+                          if (selectedResource)
+                            void recategorize(selectedResource, categoryChoice);
+                        }}
+                      >
+                        <label for="category-choice">Category</label><select
+                          id="category-choice"
+                          bind:value={categoryChoice}
+                          disabled={categoryBusy}
+                        >
+                          {#each categories as category (category.key)}<option
+                              value={category.key}>{category.name}</option
+                            >{/each}
+                        </select>
+                        <div>
+                          <button
+                            type="submit"
+                            disabled={categoryBusy ||
+                              !categoryChoice ||
+                              categoryChoice === selectedResource.categoryKey}
+                            >Save category</button
+                          >
+                          <button
+                            type="button"
+                            disabled={categoryBusy}
+                            onclick={() => {
+                              categoryEditor = false;
+                            }}>Cancel</button
+                          >
+                        </div>
+                      </form>
+                    {/if}
+                    <button
+                      type="button"
+                      class="secondary-button"
+                      disabled={busy ||
+                        removalBusy ||
+                        selected?.state !== "ACTIVE"}
+                      onclick={() => {
+                        categoryEditor = false;
+                        ownershipEditor = true;
+                        ownershipTarget =
+                          selectedResource?.ownership !== "OWNED";
+                        policyConfirmed = false;
+                      }}
+                    >
+                      Change ownership
+                    </button>
+                    {#if selectedResource.kind === "DIRECTORY" && selectedResource.ownership === "OWNED"}
                       <button
                         type="button"
                         class="secondary-button"
@@ -2830,15 +3089,70 @@
                           removalBusy ||
                           selected?.state !== "ACTIVE"}
                         onclick={() => {
-                          if (!selectedResource) return;
-                          pendingPath = selectedResource.path;
-                          pendingCategory = selectedResource.categoryKey;
-                          pendingMode = "adopt";
-                          ownershipConfirmed = false;
-                          adding = true;
-                          selectedResource = null;
+                          categoryEditor = false;
+                          ownershipEditor = true;
+                          ownershipTarget = true;
+                          policyConfirmed = false;
                         }}>Renew folder ownership</button
                       >
+                    {/if}
+                    {#if ownershipEditor}
+                      <form
+                        class="ownership-policy-form"
+                        aria-label="Change item ownership"
+                        onsubmit={(event) => {
+                          event.preventDefault();
+                          void changeOwnership();
+                        }}
+                      >
+                        <label for="ownership-policy">Ownership</label>
+                        <select
+                          id="ownership-policy"
+                          bind:value={ownershipTarget}
+                          disabled={busy}
+                          onchange={() => {
+                            policyConfirmed = false;
+                          }}
+                        >
+                          <option value={true}>Owned by Cask</option><option
+                            value={false}>Reference</option
+                          >
+                        </select>
+                        <p>
+                          Current: {selectedResource.ownership === "OWNED"
+                            ? "Owned by Cask"
+                            : "Reference"}. This changes management only; files
+                          stay in place. Folder contents inherit this policy.
+                        </p>
+                        {#if ownershipTarget}<label
+                            ><input
+                              type="checkbox"
+                              bind:checked={policyConfirmed}
+                              disabled={busy}
+                            /> This data is dedicated to this Cask and may be removed
+                            through reviewed cleanup.</label
+                          >
+                        {:else}<p>
+                            Future cleanup will preserve this item and its
+                            contents.
+                          </p>{/if}
+                        <button
+                          type="submit"
+                          disabled={busy ||
+                            removalBusy ||
+                            selected?.state !== "ACTIVE" ||
+                            (ownershipTarget && !policyConfirmed)}
+                          >Save ownership</button
+                        >
+                        <button
+                          type="button"
+                          disabled={busy}
+                          onclick={() => {
+                            ownershipEditor = false;
+                            policyConfirmed = false;
+                          }}>Cancel</button
+                        >
+                      </form>
                     {/if}
                     <button
                       class="secondary-button"
@@ -2876,13 +3190,13 @@
           {#if !removalPlan}<p class="cleanup-intro">
               Clean up items, then remove the empty Cask.
             </p>{/if}
-          {#if !removalEnabled && resources.length > 0}<p
+          {#if !removalEnabled && (resources.length > 0 || applications.length > 0 || removalPlan || categoryReview)}<p
               class="cleanup-notice"
               id="cleanup-limit"
             >
               <Icon name="info" size={16} /><span
-                ><strong>Review only</strong> · Execution is unavailable in this
-                build.</span
+                ><strong>Review only</strong> · Approval and execution are unavailable
+                in this build. Use the Alpha cleanup build to continue.</span
               >
             </p>{/if}
           {#if (caskRemovalStatus?.unfinishedOperations ?? 0) > 0}<p>
@@ -2966,6 +3280,7 @@
         {#if categoryReview && !historyPlanId}
           <CleanupReview
             plan={categoryReview}
+            removeCask={!!categoryCleanup?.caskRemovalId}
             {removalEnabled}
             {removalBusy}
             {reviewedPlanHash}
@@ -3015,7 +3330,8 @@
             {/each}
             {#if removalPlan && historyPlanId}
               <CleanupReview
-                plan={removalPlan}
+                plan={categoryReview ?? removalPlan}
+                removeCask={!!categoryCleanup?.caskRemovalId}
                 {removalEnabled}
                 {removalBusy}
                 {reviewedPlanHash}
@@ -3023,7 +3339,7 @@
                 bind:permanentConfirmation
                 bind:preserveConfirmed
                 onReview={() => {
-                  reviewedPlanHash = removalPlan!.planHash;
+                  reviewedPlanHash = (categoryReview ?? removalPlan)!.planHash;
                   executionConfirmed = false;
                   permanentConfirmation = false;
                 }}

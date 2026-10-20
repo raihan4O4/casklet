@@ -6,6 +6,7 @@
   import Workspace from "./Workspace.svelte";
   import WindowChrome from "./WindowChrome.svelte";
   import ToastArea from "./ToastArea.svelte";
+  import ExplorerIntake from "./ExplorerIntake.svelte";
   import { revealWindow } from "./windowReady";
   import { notify } from "./notifications";
   const ready = () =>
@@ -25,3 +26,4 @@
     />{/if}
 </div>
 <ToastArea />
+{#if !caskId}<ExplorerIntake />{/if}

@@ -10,14 +10,50 @@ use casklet_contracts::{
     GetRemovalPlan,
 };
 
+#[derive(Debug, Clone)]
+pub struct WholeCaskIntent {
+    pub id: String,
+    pub cask_id: String,
+    pub resource_plan_id: Option<String>,
+    pub application_plan_id: Option<String>,
+    pub removed: bool,
+    pub warning: Option<String>,
+}
+
+pub trait WholeCaskCleanupRepository {
+    /// # Errors
+    /// Persists the exact component-plan IDs for a whole-Cask removal review.
+    fn create_whole_cask_intent(
+        &self,
+        cask: &str,
+        resources: Option<&str>,
+        applications: Option<&str>,
+    ) -> Result<String, String>;
+    /// # Errors
+    /// Loads an immutable intent and actual removal status; optionally locates it by file plan.
+    fn whole_cask_intent(
+        &self,
+        cask: &str,
+        id: Option<&str>,
+        resource_plan: Option<&str>,
+    ) -> Result<Option<WholeCaskIntent>, String>;
+}
+
 impl<R, S> CaskService<R, S>
 where
     R: CaskRepository
         + RemovalRepository
         + MsiRepository
         + InstallerRepository
-        + InstalledInventoryRepository,
-    S: RemovalInspection + MsiUninstaller + InstalledInventorySource,
+        + InstalledInventoryRepository
+        + WholeCaskCleanupRepository
+        + crate::resource::ResourceRepository
+        + crate::projection::ProjectionRepository,
+    S: RemovalInspection
+        + MsiUninstaller
+        + InstalledInventorySource
+        + crate::ManagedStorage
+        + crate::projection::ManifestProjection,
 {
     /// Generates one review using existing resource/application plans.
     /// # Errors
@@ -83,7 +119,26 @@ where
                 correlation,
             ));
         }
+        let cask_removal_id = if request.scope.resource_ids.is_empty()
+            && request.scope.category_key.is_none()
+            && request.installation_id.is_none()
+        {
+            Some(
+                self.repository
+                    .create_whole_cask_intent(
+                        &request.scope.cask_id,
+                        resources.as_ref().map(|plan| plan.id.as_str()),
+                        applications.as_ref().map(|plan| plan.id.as_str()),
+                    )
+                    .map_err(|e| api_error("PERSISTENCE", e, correlation))?,
+            )
+        } else {
+            None
+        };
         Ok(CategoryCleanupPlan {
+            cask_removal_id,
+            cask_removed: false,
+            cask_removal_warning: None,
             version: request.scope.version,
             cask_id: request.scope.cask_id.clone(),
             resources,
@@ -100,6 +155,34 @@ where
     ) -> Result<CategoryCleanupPlan, ApiError> {
         check_version(request.version, correlation)?;
         let mut result = request.clone();
+        result.cask_removed = false;
+        result.cask_removal_warning = None;
+        if let Some(id) = &request.cask_removal_id {
+            let intent = self
+                .repository
+                .whole_cask_intent(&request.cask_id, Some(id), None)
+                .map_err(|e| api_error("PERSISTENCE", e, correlation))?
+                .ok_or_else(|| {
+                    api_error(
+                        "INVALID_PLAN",
+                        "Whole-Cask removal intent is unavailable".into(),
+                        correlation,
+                    )
+                })?;
+            if intent.resource_plan_id.as_deref()
+                != request.resources.as_ref().map(|plan| plan.id.as_str())
+                || intent.application_plan_id.as_deref()
+                    != request.applications.as_ref().map(|plan| plan.id.as_str())
+            {
+                return Err(api_error(
+                    "INVALID_PLAN",
+                    "Whole-Cask cleanup phases do not match the reviewed intent".into(),
+                    correlation,
+                ));
+            }
+            result.cask_removed = intent.removed;
+            result.cask_removal_warning = intent.warning;
+        }
         if let Some(plan) = &request.resources {
             let current = self.get_removal_plan(
                 &GetRemovalPlan {
@@ -147,6 +230,66 @@ where
         }
         Ok(result)
     }
+    /// Reopens persisted whole-Cask cleanup without replaying completed phases.
+    /// # Errors
+    /// Returns missing component or persistence errors.
+    pub fn pending_whole_cask_cleanup(
+        &self,
+        request: &GetCask,
+        resource_plan: Option<&str>,
+        correlation: &str,
+    ) -> Result<Option<CategoryCleanupPlan>, ApiError> {
+        check_version(request.version, correlation)?;
+        let Some(intent) = self
+            .repository
+            .whole_cask_intent(&request.id, None, resource_plan)
+            .map_err(|e| api_error("PERSISTENCE", e, correlation))?
+        else {
+            return Ok(None);
+        };
+        let resources = intent
+            .resource_plan_id
+            .as_ref()
+            .map(|id| {
+                self.get_removal_plan(
+                    &GetRemovalPlan {
+                        version: casklet_contracts::CONTRACT_VERSION,
+                        id: id.clone(),
+                    },
+                    correlation,
+                )
+            })
+            .transpose()?;
+        let applications = intent
+            .application_plan_id
+            .as_ref()
+            .map(|id| {
+                self.repository
+                    .get_msi_plan(id)
+                    .map_err(|e| api_error("PERSISTENCE", e, correlation))?
+                    .ok_or_else(|| {
+                        api_error(
+                            "NOT_FOUND",
+                            "Application phase is missing".into(),
+                            correlation,
+                        )
+                    })
+            })
+            .transpose()?;
+        self.get_category_cleanup(
+            &CategoryCleanupPlan {
+                version: casklet_contracts::CONTRACT_VERSION,
+                cask_id: intent.cask_id,
+                resources,
+                applications,
+                cask_removal_id: Some(intent.id),
+                cask_removed: false,
+                cask_removal_warning: None,
+            },
+            correlation,
+        )
+        .map(Some)
+    }
     /// Approves the exact reviewed snapshots without external effects.
     /// # Errors
     /// Any existing plan approval/revalidation error.
@@ -191,6 +334,9 @@ where
         correlation: &str,
     ) -> Result<CategoryCleanupPlan, ApiError> {
         let mut result = self.get_category_cleanup(&request.plan, correlation)?;
+        if result.cask_removed {
+            return Ok(result);
+        }
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .map_err(|e| api_error("CLOCK", e.to_string(), correlation))?
@@ -252,6 +398,67 @@ where
                 },
                 correlation,
             )?);
+        }
+        self.finish_whole_cask_cleanup(result, correlation)
+    }
+
+    fn finish_whole_cask_cleanup(
+        &self,
+        mut result: CategoryCleanupPlan,
+        correlation: &str,
+    ) -> Result<CategoryCleanupPlan, ApiError> {
+        if result.cask_removal_id.is_none()
+            || result
+                .resources
+                .as_ref()
+                .is_some_and(|plan| plan.state != "COMPLETE")
+            || result
+                .applications
+                .as_ref()
+                .is_some_and(|plan| plan.state != "COMPLETE")
+        {
+            return Ok(result);
+        }
+        let removal = self
+            .get(
+                &GetCask {
+                    version: result.version,
+                    id: result.cask_id.clone(),
+                },
+                correlation,
+            )
+            .and_then(|cask| {
+                self.remove_cask(
+                    &casklet_contracts::RemoveCask {
+                        version: result.version,
+                        id: cask.id,
+                        expected_revision: cask.revision,
+                        confirm: true,
+                    },
+                    correlation,
+                )
+            });
+        match removal {
+            Ok(warning) => {
+                result.cask_removed = true;
+                result.cask_removal_warning = warning;
+            }
+            Err(mut error) => {
+                // Another window may have finalized the same intent after our phase check.
+                let current = self
+                    .repository
+                    .whole_cask_intent(&result.cask_id, result.cask_removal_id.as_deref(), None)
+                    .map_err(|e| api_error("PERSISTENCE", e, correlation))?;
+                if let Some(current) = current.filter(|intent| intent.removed) {
+                    result.cask_removed = true;
+                    result.cask_removal_warning = current.warning;
+                } else {
+                    if error.code == "CASK_NOT_REMOVABLE" {
+                        error.message = "Cleanup phases finished, but preserved items or unfinished work still prevent Cask removal. Resolve the remaining items and preview Whole Cask again.".into();
+                    }
+                    return Err(error);
+                }
+            }
         }
         Ok(result)
     }

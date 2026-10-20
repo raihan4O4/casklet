@@ -357,7 +357,7 @@ enum ResourceAction {
     Adopt {
         cask_id: String,
         source_path: String,
-        #[arg(long, default_value = "other")]
+        #[arg(long, default_value = "auto")]
         category: String,
         #[arg(
             long,
@@ -370,7 +370,7 @@ enum ResourceAction {
         source_path: String,
         #[arg(long, value_enum)]
         mode: Mode,
-        #[arg(long, default_value = "other")]
+        #[arg(long, default_value = "auto")]
         category: String,
     },
     List {
@@ -383,6 +383,14 @@ enum ResourceAction {
         id: String,
         #[arg(long)]
         category: String,
+    },
+    Ownership {
+        cask_id: String,
+        id: String,
+        #[arg(long)]
+        owned: bool,
+        #[arg(long)]
+        confirm_ownership: bool,
     },
 }
 #[derive(Debug, Subcommand)]
@@ -1134,7 +1142,11 @@ fn main() -> ExitCode {
                 service.set_cask_archived(&casklet_contracts::SetCaskArchived { version: CONTRACT_VERSION, id: cask.id, archived, expected_revision: cask.revision }, &correlation_id)
             ).map(|cask| render_cask_detail(&cask, cli.output))
         }
-        Command::Resource { action: ResourceAction::Adopt { cask_id, source_path, category, confirm_ownership } } => service.adopt_resource(&casklet_contracts::AdoptResource { version: CONTRACT_VERSION, cask_id, source_path, category_key: category, confirm_ownership }, &correlation_id, &|done,_| { eprint!("\rInspected: {done} entries"); }).map(|resource| match cli.output { Output::Json => format!("{}\n",serde_json::to_string(&resource).unwrap()), Output::Table => format!("Managed in place: {}\nLocation unchanged: {}\nNo files deleted. Cleanup requires a reviewed plan.\n",resource.name,resource.path) }),
+        Command::Resource { action: ResourceAction::Ownership { cask_id, id, owned, confirm_ownership } } => {
+            service.get_resource(&GetResource { version: CONTRACT_VERSION, id: id.clone() }, &correlation_id).and_then(|current| service.set_resource_ownership(&casklet_contracts::SetResourceOwnership { version: CONTRACT_VERSION, cask_id, resource_id: id, expected_ownership: current.ownership, owned, confirm_ownership }, &correlation_id))
+                .map(|resource| match cli.output { Output::Json => format!("{}\n",serde_json::to_string(&resource).unwrap()), Output::Table => format!("{}: {} (file contents and location unchanged)\n", resource.name,resource.ownership) })
+        },
+        Command::Resource { action: ResourceAction::Adopt { cask_id, source_path, category, confirm_ownership } } => service.adopt_resource(&casklet_contracts::AdoptResource { version: CONTRACT_VERSION, cask_id, source_path, category_key: category, confirm_ownership }, &correlation_id, &|done,_| { eprint!("\rInspected: {done} entries"); }).map(|resource| match cli.output { Output::Json => format!("{}\n",serde_json::to_string(&resource).unwrap()), Output::Table => format!("Item: {}\nOwnership: {}\nLocation unchanged: {}\nNo files deleted. Cleanup requires a reviewed plan.\n",resource.name,if resource.ownership == "OWNED" { "Owned by Cask" } else { "Reference" },resource.path) }),
         Command::Resource {
             action:
                 ResourceAction::Add {

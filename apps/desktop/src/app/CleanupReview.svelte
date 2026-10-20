@@ -14,6 +14,7 @@
   } from "./cleanup";
   let {
     plan,
+    removeCask = false,
     removalEnabled,
     removalBusy,
     reviewedPlanHash,
@@ -26,6 +27,7 @@
     onClose,
   }: {
     plan: RemovalPlanView;
+    removeCask?: boolean;
     removalEnabled: boolean;
     removalBusy: boolean;
     reviewedPlanHash: string;
@@ -130,6 +132,11 @@
     {/if}
   </div>
 </section>
+{#if removeCask}<p class="cleanup-summary">
+    After successful cleanup, this Cask will be permanently removed. Referenced
+    files and folders stay on disk. Failures or remaining dependencies keep the
+    Cask available.
+  </p>{/if}
 {#if expired}<p>Plan expired. Create a new cleanup plan.</p>{/if}
 {#if plan.state === "DRAFT" || plan.state === "APPROVED"}
   <div class="cleanup-actions">
@@ -187,7 +194,9 @@
   {#if plan.state === "APPROVED" && removalEnabled && !expired && reviewedPlanHash === plan.planHash}
     <label class="checkbox-label"
       ><input type="checkbox" bind:checked={executionConfirmed} /> I confirm the
-      cleanup actions shown above</label
+      cleanup actions shown above{removeCask
+        ? " and removal of this Cask after they succeed"
+        : ""}</label
     >
     {#if plan.permanent}<label class="checkbox-label"
         ><input type="checkbox" bind:checked={permanentConfirmation} /> I understand
@@ -220,7 +229,9 @@
   </ul>
   <p>
     Reviewing acknowledges this exact plan; approval and execution are separate.
-    The Cask remains until it has no dependencies and you confirm its removal.
+    {#if removeCask}The Cask is removed only after all phases succeed and its
+      final dependency checks pass.{:else}This scope cleans up its selected
+      contents; the Cask remains.{/if}
   </p>
   {#if !removalEnabled}<p>
       Approval and execution remain disabled pending independent security
