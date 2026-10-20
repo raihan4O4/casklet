@@ -17,6 +17,12 @@ pub struct CategoryCleanupPlan {
     pub cask_id: String,
     pub resources: Option<RemovalPlanView>,
     pub applications: Option<MsiCleanupPlan>,
+    #[serde(default)]
+    pub cask_removal_id: Option<String>,
+    #[serde(default)]
+    pub cask_removed: bool,
+    #[serde(default)]
+    pub cask_removal_warning: Option<String>,
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -172,6 +178,17 @@ pub struct AdoptResource {
     pub cask_id: String,
     pub source_path: String,
     pub category_key: String,
+    pub confirm_ownership: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SetResourceOwnership {
+    pub version: u32,
+    pub cask_id: String,
+    pub resource_id: String,
+    pub expected_ownership: String,
+    pub owned: bool,
     pub confirm_ownership: bool,
 }
 
@@ -911,7 +928,7 @@ export type RemoveCask = { version: number; id: string; expectedRevision: number
 export type CaskRemovalStatus = { version: number; canRemove: boolean; resourceCount: number; applicationCount: number; unfinishedOperations: number };
 export type MsiCleanupItem = { installationId: string; name: string; productCode: string; evidenceSha256: string; action: string; state: string; uninstallerSha256: string | null; result: string | null };
 export type CreateCategoryCleanup = { scope: CreateRemovalPlan; installationId: string | null };
-export type CategoryCleanupPlan = { version: number; caskId: string; resources: RemovalPlanView | null; applications: MsiCleanupPlan | null };
+export type CategoryCleanupPlan = { version: number; caskId: string; resources: RemovalPlanView | null; applications: MsiCleanupPlan | null; caskRemovalId?: string | null; caskRemoved?: boolean; caskRemovalWarning?: string | null };
 export type ExecuteCategoryCleanup = { plan: CategoryCleanupPlan; confirmPermanent: boolean };
 export type MsiCleanupPlan = { version: number; id: string; caskId: string; state: string; planHash: string; expiresAtMs: number; items: MsiCleanupItem[] };
 export type CreateCask = { version: number; name: string };
@@ -924,6 +941,7 @@ export type CaskLibraryView = { version: number; casks: CaskSummaryView[]; total
 export type ApiError = { version: number; code: string; message: string; correlationId: string };
 export type AddMode = 'copy' | 'move' | 'reference';
 export type AdoptResource = { version: number; caskId: string; sourcePath: string; categoryKey: string; confirmOwnership: boolean };
+export type SetResourceOwnership = { version: number; caskId: string; resourceId: string; expectedOwnership: string; owned: boolean; confirmOwnership: boolean };
 export type AddResource = { version: number; caskId: string; sourcePath: string; mode: AddMode; categoryKey: string };
 export type ListResources = { version: number; caskId: string };
 export type GetResource = { version: number; id: string };

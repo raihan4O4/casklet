@@ -81,6 +81,81 @@ fn resource_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<ResourceView> {
     })
 }
 
+// The native object key excludes mutable content/tree digests. It grants no authority.
+fn object_key(identity: &str) -> Option<String> {
+    if let Some(tree) = identity.strip_prefix("tree-v2:") {
+        return tree.split_once('|').map(|(root, _)| root.to_string());
+    }
+    let parts: Vec<_> = identity.split(':').collect();
+    (parts.len() == 4
+        && parts[..3]
+            .iter()
+            .all(|part| part.len() == 16 && part.bytes().all(|byte| byte.is_ascii_hexdigit())))
+    .then(|| parts[..3].join(":"))
+}
+
+// Canonical paths come from the storage adapter. Native object keys and the
+// service-selected ID handle aliases without merging distinct case-sensitive files.
+fn existing_intake_resource(
+    connection: &rusqlite::Connection,
+    cask_id: &str,
+    path: &str,
+    identity: Option<&str>,
+    requested_id: &str,
+) -> Result<Option<ResourceView>, String> {
+    let mut statement = connection.prepare(&format!("{SELECT_RESOURCE} WHERE a.cask_id=?1 ORDER BY a.relationship='OWNED' DESC,a.added_at_ms,r.id")).map_err(|e|e.to_string())?;
+    let rows = statement
+        .query_map([cask_id], resource_row)
+        .map_err(|e| e.to_string())?;
+    for row in rows {
+        let resource = row.map_err(|e| e.to_string())?;
+        let recorded: Option<String> = connection.query_row("SELECT identity_key FROM resource_locations WHERE resource_id=?1 AND is_primary=1 AND retired_at_ms IS NULL", [&resource.id], |row|row.get(0)).map_err(|e|e.to_string())?;
+        if resource.id == requested_id
+            || resource.path == path
+            || identity
+                .and_then(object_key)
+                .zip(recorded.as_deref().and_then(object_key))
+                .is_some_and(|(left, right)| left == right)
+        {
+            return Ok(Some(resource));
+        }
+    }
+    Ok(None)
+}
+
+// Repair historical duplicate user references without deleting audit records or bytes.
+// Other Casks, ownership grants, and installation artifacts remain dependencies.
+fn retire_duplicate_references(
+    connection: &rusqlite::Connection,
+    keep: &ResourceView,
+    now: i64,
+) -> Result<(), String> {
+    let mut statement = connection.prepare(&format!("{SELECT_RESOURCE} WHERE a.cask_id=?1 AND r.provenance='USER_REFERENCE' AND a.relationship='REFERENCED' AND NOT EXISTS(SELECT 1 FROM installer_artifacts i WHERE i.resource_id=r.id)")).map_err(|e|e.to_string())?;
+    let rows = statement
+        .query_map([&keep.cask_id], resource_row)
+        .map_err(|e| e.to_string())?;
+    let mut changed = false;
+    for row in rows {
+        let resource = row.map_err(|e| e.to_string())?;
+        let identities = |id: &str| -> Result<Option<String>, String> {
+            connection.query_row("SELECT identity_key FROM resource_locations WHERE resource_id=?1 AND is_primary=1 AND retired_at_ms IS NULL", [id], |row|row.get(0)).map_err(|e|e.to_string())
+        };
+        let same_object = identities(&resource.id)?
+            .as_deref()
+            .and_then(object_key)
+            .zip(identities(&keep.id)?.as_deref().and_then(object_key))
+            .is_some_and(|(left, right)| left == right);
+        if resource.id != keep.id && (resource.path == keep.path || same_object) {
+            connection.execute("UPDATE resource_associations SET removed_at_ms=?3 WHERE resource_id=?1 AND cask_id=?2 AND removed_at_ms IS NULL", params![resource.id,keep.cask_id,now]).map_err(|e|e.to_string())?;
+            changed = true;
+        }
+    }
+    if changed {
+        connection.execute("INSERT INTO projection_jobs(cask_id,target_revision,state,updated_at_ms) VALUES (?1,1,'PENDING',?2) ON CONFLICT(cask_id) DO UPDATE SET target_revision=target_revision+1,state='PENDING',updated_at_ms=excluded.updated_at_ms", params![keep.cask_id,now]).map_err(|e|e.to_string())?;
+    }
+    Ok(())
+}
+
 impl ResourceRepository for SqliteCasks {
     fn recorded_resource_identity(&self, id: &str) -> Result<Option<String>, String> {
         self.connection()?.query_row("SELECT identity_key FROM resource_locations WHERE resource_id=?1 AND is_primary=1 AND retired_at_ms IS NULL", [id], |row|row.get(0)).optional().map(Option::flatten).map_err(|e|e.to_string())
@@ -139,9 +214,16 @@ impl ResourceRepository for SqliteCasks {
             .map_err(|e| e.to_string())
     }
 
-    fn commit_adoption(&self, resource: &Resource) -> Result<(), String> {
+    fn commit_adoption(
+        &self,
+        resource: &Resource,
+        expected: Option<&str>,
+    ) -> Result<String, String> {
+        let mut resource = resource.clone();
         let mut connection = self.connection()?;
-        let transaction = connection.transaction().map_err(|e| e.to_string())?;
+        let transaction = connection
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(|e| e.to_string())?;
         reject_locked_overlap(&transaction, &resource.path)?;
         reject_pending_intake_overlap(&transaction, &resource.path)?;
         if let Some(parent) = self.db_path.parent()
@@ -154,6 +236,32 @@ impl ResourceRepository for SqliteCasks {
         if available != 1 {
             return Err("Cask changed or has unfinished work".into());
         }
+        if let Some(existing) = existing_intake_resource(
+            &transaction,
+            &resource.cask_id,
+            &resource.path,
+            resource.identity_key.as_deref(),
+            &resource.id,
+        )? {
+            if existing.kind != resource.kind.code() {
+                return Err(
+                    "The registered item changed type; review its existing association first"
+                        .into(),
+                );
+            }
+            if let Some(expected) = expected {
+                if existing.id != resource.id || existing.ownership != expected {
+                    return Err("Ownership changed; refresh this item and try again".into());
+                }
+            } else {
+                retire_duplicate_references(&transaction, &existing, resource.created_at_ms)?;
+                transaction.commit().map_err(|e| e.to_string())?;
+                return Ok(existing.id);
+            }
+            resource.id.clone_from(&existing.id);
+            resource.path.clone_from(&existing.path);
+            retire_duplicate_references(&transaction, &existing, resource.created_at_ms)?;
+        }
         if super::removal::overlap_count(
             &transaction,
             &resource.id,
@@ -162,6 +270,9 @@ impl ResourceRepository for SqliteCasks {
         )? != 0
         {
             return Err("This path overlaps a registered resource; keep it referenced or resolve its associations first".into());
+        }
+        if expected.is_some() && !transaction.query_row("SELECT EXISTS(SELECT 1 FROM resource_associations WHERE cask_id=?1 AND resource_id=?2 AND removed_at_ms IS NULL)", params![resource.cask_id,resource.id], |row|row.get::<_,bool>(0)).map_err(|e|e.to_string())? {
+            return Err("Item is no longer associated with this Cask".into());
         }
         let identity = resource
             .identity_key
@@ -175,9 +286,15 @@ impl ResourceRepository for SqliteCasks {
             )
             .map_err(|e| e.to_string())?;
         if renewing {
-            let eligible: bool = transaction.query_row("SELECT EXISTS(SELECT 1 FROM resources r JOIN resource_locations l ON l.resource_id=r.id AND l.is_primary=1 AND l.retired_at_ms IS NULL JOIN resource_associations a ON a.resource_id=r.id AND a.removed_at_ms IS NULL JOIN resource_ownership_grants g ON g.resource_id=r.id AND g.cask_id=a.cask_id AND g.exact_path=l.path_display WHERE r.id=?1 AND a.cask_id=?2 AND l.path_display=?3 AND r.kind='DIRECTORY' AND r.management='MANAGED' AND r.provenance='USER_ADOPTED' AND l.containment='EXTERNAL' AND a.relationship='OWNED')", params![resource.id,resource.cask_id,resource.path], |row|row.get(0)).map_err(|e|e.to_string())?;
-            if !eligible {
-                return Err("Only an existing explicitly owned folder can renew ownership".into());
+            let eligible: bool = transaction.query_row("SELECT EXISTS(SELECT 1 FROM resources r JOIN resource_locations l ON l.resource_id=r.id AND l.is_primary=1 AND l.retired_at_ms IS NULL JOIN resource_associations a ON a.resource_id=r.id AND a.removed_at_ms IS NULL JOIN resource_ownership_grants g ON g.resource_id=r.id AND g.cask_id=a.cask_id AND g.exact_path=l.path_display WHERE r.id=?1 AND a.cask_id=?2 AND l.path_display=?3 AND r.management='MANAGED' AND r.provenance='USER_ADOPTED' AND l.containment='EXTERNAL' AND a.relationship='OWNED')", params![resource.id,resource.cask_id,resource.path], |row|row.get(0)).map_err(|e|e.to_string())?;
+            let reference: bool = transaction.query_row("SELECT EXISTS(SELECT 1 FROM resources r JOIN resource_locations l ON l.resource_id=r.id AND l.is_primary=1 AND l.retired_at_ms IS NULL JOIN resource_associations a ON a.resource_id=r.id AND a.removed_at_ms IS NULL WHERE r.id=?1 AND a.cask_id=?2 AND l.path_display=?3 AND r.management='REFERENCED' AND r.provenance IN ('USER_REFERENCE','USER_ADOPTED') AND l.containment='EXTERNAL' AND a.relationship='REFERENCED' AND NOT EXISTS(SELECT 1 FROM installer_artifacts i WHERE i.resource_id=r.id))", params![resource.id,resource.cask_id,resource.path], |row|row.get(0)).map_err(|e|e.to_string())?;
+            if !eligible && !reference {
+                return Err("This item cannot be converted to in-place ownership".into());
+            }
+            if reference {
+                transaction.execute("UPDATE resources SET management='MANAGED',provenance='USER_ADOPTED' WHERE id=?1", [&resource.id]).map_err(|e|e.to_string())?;
+                transaction.execute("UPDATE resource_associations SET relationship='OWNED',removal_policy='DELETE_WHEN_UNREFERENCED',revision=revision+1 WHERE resource_id=?1 AND cask_id=?2 AND removed_at_ms IS NULL", params![resource.id,resource.cask_id]).map_err(|e|e.to_string())?;
+                transaction.execute("INSERT INTO resource_ownership_grants(resource_id,cask_id,exact_path,identity_key,consent_at_ms) VALUES (?1,?2,?3,?4,?5)", params![resource.id,resource.cask_id,resource.path,identity,resource.created_at_ms]).map_err(|e|e.to_string())?;
             }
             transaction.execute("UPDATE resources SET availability='PRESENT',size_bytes=?2,size_measurement=?3,unknown_entries=0,revision=revision+1 WHERE id=?1",params![resource.id,resource.size_bytes.map(i64::try_from).transpose().map_err(|e|e.to_string())?,resource.size_measurement]).map_err(|e|e.to_string())?;
             transaction.execute("UPDATE resource_locations SET identity_key=?2 WHERE resource_id=?1 AND is_primary=1 AND retired_at_ms IS NULL",params![resource.id,identity]).map_err(|e|e.to_string())?;
@@ -190,7 +307,68 @@ impl ResourceRepository for SqliteCasks {
         }
         transaction.execute("INSERT INTO operations(id,cask_id,type,state,current_step_code,started_at_ms,updated_at_ms,finished_at_ms) VALUES (?1,?2,'RESOURCE_INTAKE','SUCCEEDED','ADOPT_IN_PLACE',?3,?3,?3)", params![Uuid::new_v4().to_string(),resource.cask_id,resource.created_at_ms]).map_err(|e| e.to_string())?;
         transaction.execute("INSERT INTO projection_jobs(cask_id,target_revision,state,updated_at_ms) VALUES (?1,1,'PENDING',?2) ON CONFLICT(cask_id) DO UPDATE SET target_revision=target_revision+1,state='PENDING',updated_at_ms=excluded.updated_at_ms",params![resource.cask_id,resource.created_at_ms]).map_err(|e| e.to_string())?;
-        transaction.commit().map_err(|e| e.to_string())
+        transaction.commit().map_err(|e| e.to_string())?;
+        Ok(resource.id.clone())
+    }
+    fn commit_ownership_policy(
+        &self,
+        resource: &Resource,
+        expected: &str,
+        owned: bool,
+    ) -> Result<String, String> {
+        let current = self
+            .get_resource(&resource.id)?
+            .ok_or("Item no longer exists")?;
+        if owned && current.containment == "EXTERNAL" {
+            return self.commit_adoption(resource, Some(expected));
+        }
+        let mut connection = self.connection()?;
+        let tx = connection
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(|e| e.to_string())?;
+        reject_locked_overlap(&tx, &resource.path)?;
+        reject_pending_intake_overlap(&tx, &resource.path)?;
+        let eligible: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM resource_associations a JOIN resources r ON r.id=a.resource_id JOIN resource_locations l ON l.resource_id=r.id AND l.is_primary=1 AND l.retired_at_ms IS NULL JOIN casks c ON c.id=a.cask_id WHERE a.cask_id=?1 AND r.id=?2 AND a.removed_at_ms IS NULL AND a.relationship=?3 AND l.path_display=?4 AND c.state='ACTIVE' AND NOT EXISTS(SELECT 1 FROM operation_locks WHERE lock_key='cask:'||c.id||':mutation') AND NOT EXISTS(SELECT 1 FROM removal_locks WHERE cask_id=c.id) AND NOT EXISTS(SELECT 1 FROM installer_locks WHERE cask_id=c.id) AND NOT EXISTS(SELECT 1 FROM msi_cleanup_locks WHERE cask_id=c.id) AND NOT EXISTS(SELECT 1 FROM installer_artifacts WHERE resource_id=r.id))", params![resource.cask_id,resource.id,expected,resource.path], |row|row.get(0)).map_err(|e|e.to_string())?;
+        if !eligible {
+            return Err("Item changed, is an installation artifact, or Cask has unfinished work; refresh and retry".into());
+        }
+        if owned {
+            let internal: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM resources r JOIN resource_locations l ON l.resource_id=r.id WHERE r.id=?1 AND r.provenance='ADDED_BY_CASKLET' AND l.containment='INTERNAL' AND l.is_primary=1 AND l.retired_at_ms IS NULL)", [&resource.id], |row|row.get(0)).map_err(|e|e.to_string())?;
+            if !internal
+                || super::removal::overlap_count(
+                    &tx,
+                    &resource.id,
+                    &resource.cask_id,
+                    &resource.path,
+                )? != 0
+            {
+                return Err(
+                    "Internal allocation cannot be owned while shared or overlapping".into(),
+                );
+            }
+            let identity = resource
+                .identity_key
+                .as_ref()
+                .ok_or("Ownership identity unavailable")?;
+            tx.execute("UPDATE resource_locations SET identity_key=?2 WHERE resource_id=?1 AND is_primary=1 AND retired_at_ms IS NULL",params![resource.id,identity]).map_err(|e|e.to_string())?;
+        }
+        let relationship = if owned { "OWNED" } else { "REFERENCED" };
+        tx.execute("UPDATE resource_associations SET relationship=?3,removal_policy=?4,revision=revision+1 WHERE resource_id=?1 AND cask_id=?2 AND removed_at_ms IS NULL",params![resource.id,resource.cask_id,relationship,if owned {"DELETE_WHEN_UNREFERENCED"} else {"DETACH_ONLY"}]).map_err(|e|e.to_string())?;
+        // A resource shared by other Casks must not change their classification.
+        if !tx.query_row("SELECT EXISTS(SELECT 1 FROM resource_associations WHERE resource_id=?1 AND cask_id<>?2 AND removed_at_ms IS NULL)",params![resource.id,resource.cask_id],|r|r.get::<_,bool>(0)).map_err(|e|e.to_string())? {
+            tx.execute("UPDATE resources SET management=?2,revision=revision+1 WHERE id=?1",params![resource.id,if owned {"MANAGED"} else {"REFERENCED"}]).map_err(|e|e.to_string())?;
+        }
+        if !owned {
+            tx.execute(
+                "DELETE FROM resource_ownership_grants WHERE resource_id=?1 AND cask_id=?2",
+                params![resource.id, resource.cask_id],
+            )
+            .map_err(|e| e.to_string())?;
+        }
+        tx.execute("INSERT INTO operations(id,cask_id,type,state,current_step_code,started_at_ms,updated_at_ms,finished_at_ms) VALUES (?1,?2,'RESOURCE_INTAKE','SUCCEEDED','CHANGE_OWNERSHIP',?3,?3,?3)",params![Uuid::new_v4().to_string(),resource.cask_id,resource.created_at_ms]).map_err(|e|e.to_string())?;
+        tx.execute("INSERT INTO projection_jobs(cask_id,target_revision,state,updated_at_ms) VALUES (?1,1,'PENDING',?2) ON CONFLICT(cask_id) DO UPDATE SET target_revision=target_revision+1,state='PENDING',updated_at_ms=excluded.updated_at_ms",params![resource.cask_id,resource.created_at_ms]).map_err(|e|e.to_string())?;
+        tx.commit().map_err(|e| e.to_string())?;
+        Ok(resource.id.clone())
     }
     fn category_exists(&self, cask_id: &str, key: &str) -> Result<bool, String> {
         let count: i64 = self
@@ -283,9 +461,11 @@ impl ResourceRepository for SqliteCasks {
         transaction.commit().map_err(|e| e.to_string())?;
         Ok(())
     }
-    fn commit_resource(&self, resource: &Resource, op_id: Option<&str>) -> Result<(), String> {
+    fn commit_resource(&self, resource: &Resource, op_id: Option<&str>) -> Result<String, String> {
         let mut connection = self.connection()?;
-        let transaction = connection.transaction().map_err(|e| e.to_string())?;
+        let transaction = connection
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(|e| e.to_string())?;
         reject_locked_overlap(&transaction, &resource.path)?;
         let active: bool = transaction
             .query_row(
@@ -326,6 +506,19 @@ impl ResourceRepository for SqliteCasks {
         if locked != 0 || installer_lock != 0 {
             return Err("Cask has an active or unrecovered removal".into());
         }
+        if op_id.is_none()
+            && let Some(existing) = existing_intake_resource(
+                &transaction,
+                &resource.cask_id,
+                &resource.path,
+                resource.identity_key.as_deref(),
+                &resource.id,
+            )?
+        {
+            retire_duplicate_references(&transaction, &existing, resource.created_at_ms)?;
+            transaction.commit().map_err(|e| e.to_string())?;
+            return Ok(existing.id);
+        }
         let size = resource
             .size_bytes
             .map(i64::try_from)
@@ -360,7 +553,8 @@ impl ResourceRepository for SqliteCasks {
             transaction.execute("INSERT INTO projection_jobs(cask_id,target_revision,state,updated_at_ms) VALUES (?1,1,'PENDING',?2) ON CONFLICT(cask_id) DO UPDATE SET target_revision=target_revision+1,state='PENDING',updated_at_ms=excluded.updated_at_ms",
                 params![resource.cask_id,resource.created_at_ms]).map_err(|e| e.to_string())?;
         }
-        transaction.commit().map_err(|e| e.to_string())
+        transaction.commit().map_err(|e| e.to_string())?;
+        Ok(resource.id.clone())
     }
     fn complete_intake(&self, op_id: &str) -> Result<(), String> {
         let mut connection = self.connection()?;

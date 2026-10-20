@@ -27,7 +27,7 @@ fn add_resource_storage(
     } else {
         0
     };
-    if item.management == "MANAGED" {
+    if item.ownership == "OWNED" {
         summary.managed_bytes = summary.managed_bytes.saturating_add(size);
     } else {
         summary.referenced_bytes = summary.referenced_bytes.saturating_add(size);

@@ -9,7 +9,9 @@ use std::{
     path::{Path, PathBuf},
     time::Duration,
 };
+mod category_cleanup;
 mod diagnostics;
+pub mod explorer;
 #[cfg(all(test, windows))]
 mod folder_sync_tests;
 mod installer;
@@ -57,6 +59,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../../../migrations/0015_installer_provenance.sql"),
     include_str!("../../../migrations/0016_application_lifecycle.sql"),
     include_str!("../../../migrations/0017_directory_plan_identity.sql"),
+    include_str!("../../../migrations/0018_whole_cask_cleanup.sql"),
 ];
 
 impl SqliteCasks {
@@ -110,6 +113,7 @@ impl SqliteCasks {
                 .map_err(|e| e.to_string())?;
             transaction.commit().map_err(|e| e.to_string())?;
         }
+        this.refresh_explorer();
         Ok(this)
     }
     fn connection(&self) -> Result<Connection, String> {
@@ -246,6 +250,7 @@ impl CaskRepository for SqliteCasks {
             .execute("DELETE FROM projection_jobs WHERE cask_id=?1", [id])
             .map_err(|e| e.to_string())?;
         transaction.commit().map_err(|e| e.to_string())?;
+        self.refresh_explorer();
         Ok(true)
     }
 
@@ -257,6 +262,7 @@ impl CaskRepository for SqliteCasks {
             transaction.execute("INSERT INTO projection_jobs(cask_id,target_revision,state,updated_at_ms) VALUES (?1,?2,'PENDING',?3) ON CONFLICT(cask_id) DO UPDATE SET target_revision=excluded.target_revision,state='PENDING',updated_at_ms=excluded.updated_at_ms", params![cask.id,cask.revision,cask.updated_at_ms]).map_err(|e|e.to_string())?;
         }
         transaction.commit().map_err(|e| e.to_string())?;
+        self.refresh_explorer();
         Ok(changed == 1)
     }
     fn create(&self, cask: &Cask) -> Result<(), String> {
@@ -267,6 +273,7 @@ impl CaskRepository for SqliteCasks {
         transaction.execute("INSERT INTO projection_jobs(cask_id,target_revision,state,updated_at_ms) VALUES (?1,0,'PENDING',?2)",
             params![cask.id,cask.created_at_ms]).map_err(|e| e.to_string())?;
         transaction.commit().map_err(|e| e.to_string())?;
+        self.refresh_explorer();
         Ok(())
     }
     fn get(&self, id: &str) -> Result<Option<Cask>, String> {
@@ -756,8 +763,9 @@ mod tests {
             include_str!("../../../migrations/0015_installer_provenance.sql"),
             include_str!("../../../migrations/0016_application_lifecycle.sql"),
             include_str!("../../../migrations/0017_directory_plan_identity.sql"),
+            include_str!("../../../migrations/0018_whole_cask_cleanup.sql"),
         ];
-        for version in 1..=17 {
+        for version in 1..=18 {
             let root = std::env::temp_dir().join(format!(
                 "casklet-upgrade-{version}-{}",
                 uuid::Uuid::new_v4()
@@ -777,7 +785,7 @@ mod tests {
             let reopened = SqliteCasks::open(db).unwrap();
             assert_eq!(reopened.list().unwrap()[0].name, "Existing");
             assert!(reopened.list().unwrap()[0].description.is_empty());
-            if version < 17 {
+            if version < 18 {
                 let backups = fs::read_dir(root.join("backups"))
                     .unwrap()
                     .collect::<Result<Vec<_>, _>>()
@@ -1206,7 +1214,7 @@ mod tests {
             .unwrap()
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(schema_version, 17);
+        assert_eq!(schema_version, i64::try_from(MIGRATIONS.len()).unwrap());
         assert_eq!(
             reopened
                 .list(

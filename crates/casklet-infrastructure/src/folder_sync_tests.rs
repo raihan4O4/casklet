@@ -291,23 +291,17 @@ fn changed_legacy_folder_requires_explicit_consent_and_renewal_keeps_resource_id
     assert_eq!(f.plan().items[0].action, "TRASH");
     f.change();
     assert_eq!(f.plan().items[0].action, "PRESERVE");
-    let mut request = AdoptResource {
+    let mut request = casklet_contracts::SetResourceOwnership {
         version: CONTRACT_VERSION,
         cask_id: f.cask.id.clone(),
-        source_path: f.resource.path.clone(),
-        category_key: "other".into(),
+        resource_id: f.resource.id.clone(),
+        expected_ownership: "OWNED".into(),
+        owned: true,
         confirm_ownership: false,
     };
-    assert!(
-        f.service
-            .adopt_resource(&request, "test", &|_, _| {})
-            .is_err()
-    );
+    assert!(f.service.set_resource_ownership(&request, "test").is_err());
     request.confirm_ownership = true;
-    let renewed = f
-        .service
-        .adopt_resource(&request, "test", &|_, _| {})
-        .unwrap();
+    let renewed = f.service.set_resource_ownership(&request, "test").unwrap();
     assert_eq!(renewed.id, f.resource.id);
     assert_eq!(f.plan().items[0].action, "TRASH");
 }

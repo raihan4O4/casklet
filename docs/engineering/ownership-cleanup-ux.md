@@ -78,3 +78,33 @@ Owned folders include ordinary contents added later; references and all their de
 Shared-core resource queries reconcile current metadata and persist size/availability to SQLite and projections. Desktop polling, open/focus refresh and periodic full metadata reconciliation recover external and offline changes. Unchanged directory listings are reused; routine queries do not hash contents. Expanded folder details show up to 200 current descendants with inherited status and a truncation notice. Full destructive verification remains independent of this display cache.
 
 Requested removals that fail revalidation are FAILED/PARTIAL, preserving associations and recovery controls. Successful disposal requires both source and quarantine disappearance. A completed plan containing planned preservation explicitly states that retained data remains on disk; reference cleanup removes association only. Empty-Cask removal stays separately confirmed.
+
+## October 20 approval and history correction
+
+The direct local NSIS builds used for the Explorer/storage follow-ups omitted `--features alpha-cleanup`. They were therefore review-only even though the package version contained Alpha. Reviewing a plan correctly acknowledged its hash but could not enable approval. Functional local candidates must use `cargo xtask package-alpha --allow-dirty` (with verified `SYFT_PATH`) or the existing `scripts/package-release.ps1 -Alpha -AllowDirty` path, which selects the capability for both desktop and CLI and records it in provenance. Default/release-review builds retain their explicit safety gate; the UI must never bypass an unavailable backend capability.
+
+The disabled-action notice now covers application-only Casks and existing plans and explains that both approval and execution require the Alpha cleanup build. Loading a file plan from Recent cleanups clears the application queue discovered during navigation: displayed file-plan controls must never approve or close a different application operation. Pending application work remains durable and is rediscovered on the next Cleanup navigation; shared-core concurrency locks continue to reject conflicting execution.
+
+Regression coverage explicitly checks approval enables after review in capable builds, remains disabled in review-only builds, application-only limitation text, and saved file-plan approval while an application queue exists. Existing tests cover expiration, method/scope invalidation, permanent confirmation, interrupted outcomes and reference preservation.
+
+## Idempotent intake (October 20)
+
+Repeated reference additions reuse the same active item in that Cask and preserve existing ownership/category. Add as Owned explicitly promotes an exact same-Cask user reference only after normal source/ownership validation; other Cask and overlapping-path dependencies still block it. Old duplicate user-reference associations are retired on a repeat addition, preserving audit records and source bytes. Files, folders and installer-file content share this behavior; application installation tracking is unchanged. See ADR 0034.
+
+## Idempotent intake (October 20)
+
+Repeated reference additions reuse the same active item in that Cask and preserve existing ownership/category. Add as Owned explicitly promotes an exact same-Cask user reference only after normal source/ownership validation; other Cask and overlapping-path dependencies still block it. Old duplicate user-reference associations are retired on a repeat addition, preserving audit records and source bytes. Files, folders and installer-file content share this behavior; application installation tracking is unchanged. See ADR 0034.
+
+## Explicit ownership and native restoration (ADR 0035)
+
+Duplicate adds preserve existing ownership and category regardless of the selected intake mode. In item details, Change ownership opens a focused policy selector. Owned requires dedicated-data consent; Reference preserves bytes and releases cleanup authority. Save and Cancel are separate, and folder contents inherit the updated parent. Renew folder ownership uses this dedicated command rather than duplicate intake. Old cleanup previews must be regenerated after policy changes.
+
+The automatic intake category uses existing file categories and remains overridable. CLI defaults to --category auto; GUI/drop and Explorer use the same shared classifier. Existing/manual categories remain unchanged on retries.
+
+Move to Recycle Bin now uses the original verified path. Windows Restore returns the original name, extension and location; associations retired by successful cleanup remain retired. Errors/interruptions retain uncertain journals and locks for inspection. Quarantine applies to permanent deletion and historical interrupted recovery only. Earlier recycled quarantine-name items retain their old Windows metadata; this change does not alter them.
+
+## Whole-Cask finalization and details (October 21)
+
+ADR 0036 supersedes the older contents-only Whole Cask description. Whole-Cask plans persist their removal intent in schema 18, resume the same component journals, and retire the Cask only after successful phases and final dependency checks. Preserved dependencies or failures retain the Cask; referenced source bytes remain intact. Category/selected-item plans retain their Cask. New details use Change Category, omit Cleanup Authority, and display actual Created/Last Updated dates.
+
+Validation: `target/whole-cask-quality-final.log` records a successful complete `cargo xtask check`, including strict Clippy, all-feature/default/Alpha suites, 131 infrastructure tests, migration upgrades, 73 GUI tests, Svelte diagnostics, contracts and production builds. Focused restart/concurrency/failure fixtures are also recorded in `target/whole-cask-regressions.log`. Local Alpha packaging evidence uses `target/whole-cask-package.log`; independent security review, real third-party uninstall/UAC and clean-machine release gates remain open.

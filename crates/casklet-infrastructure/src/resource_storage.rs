@@ -649,6 +649,34 @@ impl ResourceStorage for LocalStorage {
             .collect())
     }
 
+    fn validate_internal_location(
+        &self,
+        cask: &casklet_domain::Cask,
+        observed: &Observation,
+    ) -> Result<(), String> {
+        let root = fs::canonicalize(Path::new(&cask.managed_storage_root).join("content"))
+            .map_err(|e| e.to_string())?;
+        let source = fs::canonicalize(&observed.source_path).map_err(|e| e.to_string())?;
+        if source == root
+            || !source.starts_with(root)
+            || observed.recordable_identity.is_none()
+            || observed.unknown_entries != 0
+        {
+            return Err("Item is not a verified internal allocation".into());
+        }
+        #[cfg(windows)]
+        if observed.kind == ResourceKind::File {
+            let handle = winapi_util::Handle::from_path_any(&source).map_err(|e| e.to_string())?;
+            if winapi_util::file::information(&handle)
+                .map_err(|e| e.to_string())?
+                .number_of_links()
+                != 1
+            {
+                return Err("Hard-linked data must remain referenced".into());
+            }
+        }
+        check_components(&source)
+    }
     fn validate_owned_location(&self, observed: &Observation) -> Result<(), String> {
         validate_owned_path(&self.root, Path::new(&observed.source_path))?;
         if observed.unknown_entries != 0 || observed.recordable_identity.is_none() {

@@ -2422,3 +2422,48 @@ html.theme-switching * {
 .folder-contents li small {
   flex-shrink: 0;
 }
+
+.ownership-policy-form {
+  flex-basis: 100%;
+  display: grid;
+  gap: 0.75rem;
+  padding: 1rem;
+  border: 1px solid var(--border);
+  border-radius: 0.5rem;
+}
+.ownership-policy-form p {
+  margin: 0;
+}
+.ownership-policy-form label {
+  display: flex;
+  align-items: start;
+  gap: 0.5rem;
+}
+
+.cask-dates {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 1.5rem;
+  padding: 1rem 0 0.25rem;
+  margin: 0;
+}
+.cask-dates dt {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  color: var(--text-secondary);
+  font-size: 0.75rem;
+}
+.cask-dates dd {
+  margin: 0.5rem 0 0;
+  font-weight: 500;
+}
+.resource-category-display {
+  display: grid;
+  grid-template-columns: 100px minmax(0, 1fr);
+  gap: 14px;
+  margin: 1rem 0;
+}
+.resource-category-display dd {
+  margin: 0;
+}

@@ -546,6 +546,17 @@ mod tests {
             )
         }
     }
+    impl casklet_application::ManagedStorage for FakeStorage {
+        fn root_for(&self, id: &str) -> String {
+            self.local.root_for(id)
+        }
+        fn initialize(&self, cask: &Cask) -> Result<(), String> {
+            self.local.initialize(cask)
+        }
+        fn retire_empty(&self, cask: &casklet_contracts::CaskView) -> Result<(), String> {
+            self.local.retire_empty(cask)
+        }
+    }
     impl ManifestProjection for FakeStorage {
         fn project(
             &self,
@@ -574,7 +585,7 @@ mod tests {
         let local = LocalStorage::new(root.join("casks"));
         let cask = Cask::new(
             "Installer Test",
-            root.join("cask").to_string_lossy().into_owned(),
+            root.join("casks/cask").to_string_lossy().into_owned(),
             1,
         )
         .unwrap();
@@ -1005,6 +1016,11 @@ mod tests {
                     "test",
                 )
                 .unwrap();
+            assert_eq!(result.cask_removed, category.is_none());
+            assert_eq!(
+                service.repository.get(&cask_id).unwrap().is_none(),
+                category.is_none()
+            );
             assert_eq!(result.resources.unwrap().state, "COMPLETE");
             assert!(document.exists() && folder.exists());
             assert!(
@@ -1072,6 +1088,54 @@ mod tests {
         assert_eq!(files.state, "APPROVED");
         assert!(files.items.iter().all(|item| item.state == "PENDING"));
         assert!(PathBuf::from(&files.items[0].path).exists());
+    }
+
+    #[test]
+    fn whole_cask_application_references_detach_without_uninstall_and_remove_the_cask() {
+        use casklet_contracts::{CreateCategoryCleanup, CreateRemovalPlan, ExecuteCategoryCleanup};
+        let (service, cask_id, source) = setup(Mode::ExeTreeSuccess);
+        let reference = observed("whole-reference");
+        service
+            .storage
+            .registry
+            .lock()
+            .unwrap()
+            .push(reference.clone());
+        service
+            .repository
+            .associate_installed(&cask_id, &reference, 1)
+            .unwrap();
+        let plan = service
+            .create_category_cleanup(
+                &CreateCategoryCleanup {
+                    scope: CreateRemovalPlan {
+                        version: CONTRACT_VERSION,
+                        cask_id: cask_id.clone(),
+                        resource_ids: vec![],
+                        category_key: None,
+                        permanent: false,
+                    },
+                    installation_id: None,
+                },
+                "test",
+            )
+            .unwrap();
+        assert!(plan.resources.is_none());
+        let approved = service.approve_category_cleanup(&plan, "test").unwrap();
+        let result = service
+            .execute_category_cleanup(
+                &ExecuteCategoryCleanup {
+                    plan: approved,
+                    confirm_permanent: false,
+                },
+                "test",
+            )
+            .unwrap();
+        assert!(result.cask_removed);
+        assert!(service.repository.get(&cask_id).unwrap().is_none());
+        assert_eq!(service.storage.registry.lock().unwrap().len(), 1);
+        assert_eq!(service.storage.runs.load(Ordering::SeqCst), 0);
+        assert!(PathBuf::from(source).exists());
     }
 
     #[test]

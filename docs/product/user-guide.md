@@ -14,6 +14,16 @@ Choose or drop one file or folder. Review **Reference** or **Manage at current l
 
 Portable ZIPs are inspected before installation. WinGet packages require explicit review. Existing Windows applications are associated as references only. For MSI/EXE, choose **Install Application**, select the installer, then click **Install**. Inspection, managed copying, launch approval and supported detection happen internally. Windows handles the installer's requested UAC permission. Verified new MSI applications automatically appear in Applications with cleanup ownership. A single verified new EXE application becomes Casklet-owned automatically. Cleanup uses its registered MSI or supported direct EXE uninstaller; unsupported mechanisms are preserved for review. Preexisting, ambiguous, failed, reboot and legacy reference results never gain ownership. Failed/interrupted installation shows a short status. When the installer and its opened apps have finished, confirm this before using **Keep installed changes**; normal success needs no confirmation or preserved closure. An EXE that opens an app as a child may stay in progress until that app closes. CLI uses `casklet installer install <cask-id> <path> --accept-risk`; low-level inspect/register/launch/recovery commands remain available.
 
+## Add from File Explorer
+
+In an installed Windows build, right-click files or folders and choose **Show more options → Casklet**. The submenu shows the first five active Casks in creation order. **More casks…** opens a searchable list of every active Cask. Restore an archived Cask before adding items to it.
+
+Choosing a destination opens its existing review with the source prefilled. EXE/MSI files first offer **Install Application** or **Add Installer to Cask**. Installation opens the normal inspection/review; it still requires pressing Install. Adding the installer file uses the normal ownership/reference choice and never runs it.
+
+Explorer supports up to 32 selected items. Choose one destination for the batch, then review each item separately. Cancelling the destination chooser cancels that pending batch. Cancelling an individual review adds nothing for that item; earlier completed items remain added. Existing Casklet windows are reused, and an unfinished review keeps subsequent items waiting rather than replacing it.
+
+Reinstall Casklet if its Explorer entry is missing. Uninstall preserves your Cask data. Windows may require a restart to remove a shell library that Explorer still has loaded.
+
 ## Export, recovery, and cleanup
 
 Export portable JSON for sharing or a readable report. Exports contain paths and application details, so inspect before sharing. The recovery area lists interrupted operations; inspect source, staging, and destination before choosing recovery or **Keep files and close**. Use **Back up database metadata** in Settings or `casklet diagnostics backup` to make a consistent local SQLite backup. It contains metadata only, never managed files. If startup reports database corruption, preserve the database and its backup and use local manifests for conservative recovery; do not replace the damaged file in place.
@@ -55,3 +65,15 @@ Folder storage reflects current files, including nested additions, modifications
 Owned folders cover later contents while the registered folder object remains verified. References and their descendants remain external; detachment never deletes them. If an older folder grant cannot verify a changed tree, use **Renew folder ownership** and confirm the dedicated-data consent again, or keep it referenced. Renewal keeps the resource ID and does not move data. CLI equivalents are `resource contents <resource-id>` and `resource adopt <cask-id> <folder-path> --confirm-ownership`.
 
 Cleanup always reviews a fresh current tree. Adding or changing contents after approval prevents that removal and requires a new reviewed plan. Failed or uncertain removal stays incomplete with recovery information; inspect both the original path and any recovery location before closing unresolved work. A completed plan that kept items explicitly says their data remains on disk. Removing an empty Cask remains a separate confirmation.
+
+If Explorer intake finds no active Casks, enter a name in **New Cask** and select **Create Cask**. Casklet continues with the original selection in the new Cask; choose Reference or explicitly consent to ownership before adding it. **More casks…** shows a searchable names-only list that loads automatically. You do not need to refresh or repeat the Explorer action.
+
+For direct Explorer intake, hover over **Casklet → your Cask**, then choose **Add as Reference** or **Add as Owned**. Owned declares that the selected data is dedicated to this activity and eligible for later reviewed cleanup; its location does not change. Casklet processes the selection in the background and reports completion or errors. Select a single EXE/MSI and choose **Install Application** to open installation review; the two file-management actions never run it. More casks and first-Cask creation continue through the existing selection and consent screens.
+
+### Change file ownership and use automatic categories
+
+Adding a file or folder that is already in a Cask keeps its current ownership and category, even if you select a different add mode. To change it, open Files & Folders, expand the item details, and choose **Change ownership**. Select **Owned by Cask** or **Reference**, then save. Ownership requires confirmation that the data is dedicated to the Cask. Changing policy never moves or deletes the item; folder contents inherit the policy. Old cleanup previews must be reviewed again after changes.
+
+New items default to **Automatic (file type)** using the existing categories. You can choose a category explicitly or edit it later. Installer files categorized as Applications are still ordinary content unless you separately start the application installation workflow.
+
+New Recycle Bin cleanup operations preserve the original filename, extension and restore location. Use Windows Restore to recover the item; restoration does not automatically recreate its Cask association or ownership. Items recycled by older versions under a quarantine name retain their historical Windows restore metadata.

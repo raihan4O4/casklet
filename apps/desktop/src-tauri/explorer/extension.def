@@ -1,0 +1,4 @@
+LIBRARY "casklet-explorer"
+EXPORTS
+    DllCanUnloadNow PRIVATE
+    DllGetClassObject PRIVATE

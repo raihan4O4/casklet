@@ -1,3 +1,4 @@
+mod explorer;
 mod managed_msi;
 use tauri::{Emitter, Manager};
 use tauri_plugin_dialog::DialogExt;
@@ -9,19 +10,49 @@ use tauri_plugin_dialog::DialogExt;
 /// Panics if Tauri cannot initialize or run the desktop window.
 #[expect(clippy::too_many_lines, reason = "Explicit desktop command registry")]
 pub fn run() {
-    let service = if cfg!(debug_assertions) {
-        casklet_infrastructure::development_service()
-    } else {
-        casklet_infrastructure::production_service()
-    };
+    #[cfg(windows)]
+    if std::env::args().nth(1).as_deref() == Some("--register-explorer") {
+        let result = std::env::current_exe()
+            .map_err(|e| e.to_string())
+            .and_then(|path| {
+                let library = path
+                    .with_file_name("explorer")
+                    .join(env!("CASKLET_EXPLORER_LIBRARY"));
+                casklet_infrastructure::explorer::register(&path, &library)
+            });
+        std::process::exit(i32::from(result.is_err()));
+    }
+    let mut context = tauri::generate_context!();
+    if cfg!(debug_assertions) {
+        context.config_mut().identifier.push_str(".debug");
+    }
+    let launch_args = std::env::args().collect::<Vec<_>>();
     tauri::Builder::default()
+        .manage(explorer::Runtime::new(&launch_args))
+        .manage(explorer::Requests::default())
+        .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
+            explorer::receive(app, &args);
+        }))
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_notification::init())
         .setup(move |app| {
-            initialize_service(app, service);
+            let service = if cfg!(debug_assertions) {
+                casklet_infrastructure::development_service()
+            } else {
+                casklet_infrastructure::production_service()
+            };
+            if !initialize_service(app, service) {
+                return Ok(());
+            }
+            explorer::initialized(app.handle(), &launch_args);
             if let Some(main) = app.get_webview_window("main") {
                 let handle = app.handle().clone();
                 main.on_window_event(move |event| {
                     if matches!(event, tauri::WindowEvent::Destroyed) {
+                        handle
+                            .state::<explorer::Runtime>()
+                            .ui
+                            .store(false, std::sync::atomic::Ordering::SeqCst);
                         // Preserve main-close behavior without native ownership, which
                         // would also hide every Cask when the main window minimizes.
                         for (label, window) in handle.webview_windows() {
@@ -36,6 +67,9 @@ pub fn run() {
         })
         .manage(std::sync::Mutex::new(()))
         .invoke_handler(tauri::generate_handler![
+            explorer::explorer_pending,
+            explorer::explorer_ack,
+            explorer::explorer_route,
             create_cask,
             update_cask,
             cask_library,
@@ -53,6 +87,7 @@ pub fn run() {
             get_cask,
             add_resource,
             adopt_resource,
+            set_resource_ownership,
             set_cask_archived,
             remove_cask,
             cask_removal_status,
@@ -116,6 +151,7 @@ pub fn run() {
             create_removal_plan,
             create_category_cleanup,
             get_category_cleanup,
+            pending_whole_cask_cleanup,
             approve_category_cleanup,
             execute_category_cleanup,
             get_removal_plan,
@@ -125,20 +161,33 @@ pub fn run() {
             execute_removal_plan,
             close_uncertain_removal
         ])
-        .run(tauri::generate_context!())
-        .expect("failed to run Casklet desktop");
+        .build(context)
+        .expect("failed to build Casklet desktop")
+        .run(|app, event| {
+            if let tauri::RunEvent::ExitRequested { api, .. } = event
+                && app
+                    .state::<explorer::Runtime>()
+                    .jobs
+                    .load(std::sync::atomic::Ordering::SeqCst)
+                    > 0
+            {
+                api.prevent_exit();
+            }
+        });
 }
 
-fn initialize_service(app: &mut tauri::App, service: Result<Service, String>) {
+fn initialize_service(app: &mut tauri::App, service: Result<Service, String>) -> bool {
     match service {
         Ok(service) => {
             app.manage(service);
+            true
         }
         Err(problem) => {
             app.dialog().message(format!("Casklet could not open its local data. Reopen newer data with the matching Casklet version, or restore a verified database backup. Resource files have not been removed.\n\nDetails: {problem}"))
                         .title("Casklet cannot open your data")
                         .kind(tauri_plugin_dialog::MessageDialogKind::Error).blocking_show();
             app.handle().exit(1);
+            false
         }
     }
 }
@@ -217,8 +266,11 @@ async fn open_cask_window(
     .build()
     .map_err(|e| window_error(e.to_string()))?;
     let owner = main.clone();
+    let closing_handle = app.clone();
+    let closing_label = format!("cask-{}", cask.id);
     window.on_window_event(move |event| {
         if matches!(event, tauri::WindowEvent::Destroyed) {
+            explorer::window_closed(&closing_handle, &closing_label);
             let _ = owner.set_focus();
             let _ = owner.emit("casks-changed", ());
         }
@@ -229,7 +281,18 @@ async fn open_cask_window(
 /// The invoking `WebView` reveals only its own already-rendered native window.
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
-async fn window_ready(window: tauri::WebviewWindow) -> Result<(), casklet_contracts::ApiError> {
+async fn window_ready(
+    window: tauri::WebviewWindow,
+    runtime: tauri::State<'_, explorer::Runtime>,
+) -> Result<(), casklet_contracts::ApiError> {
+    if window.label() == "main" {
+        runtime
+            .ready
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+        if !runtime.ui.load(std::sync::atomic::Ordering::SeqCst) {
+            return Ok(());
+        }
+    }
     window.show().map_err(|e| window_error(e.to_string()))?;
     window.set_focus().map_err(|e| window_error(e.to_string()))
 }
@@ -308,6 +371,14 @@ fn cask_removal_status(
 ) -> Result<casklet_contracts::CaskRemovalStatus, casklet_contracts::ApiError> {
     service.cask_removal_status(&request, "desktop")
 }
+fn announce_cask_removed(app: &tauri::AppHandle, id: &str) {
+    let _ = app.emit("casks-removed", id);
+    let _ = app.emit("casks-changed", ());
+    if let Some(window) = app.get_webview_window(&format!("cask-{id}")) {
+        let _ = window.destroy();
+    }
+}
+
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
 async fn remove_cask(
@@ -315,15 +386,13 @@ async fn remove_cask(
     service: tauri::State<'_, Service>,
     request: casklet_contracts::RemoveCask,
 ) -> Result<Option<String>, casklet_contracts::ApiError> {
-    use tauri::Emitter;
     let id = request.id.clone();
     let service = service.inner().clone();
     let warning =
         tauri::async_runtime::spawn_blocking(move || service.remove_cask(&request, "desktop"))
             .await
             .map_err(|e| worker_error(&e))??;
-    let _ = app.emit("casks-removed", &id);
-    let _ = app.emit("casks-changed", ());
+    announce_cask_removed(&app, &id);
     Ok(warning)
 }
 
@@ -339,6 +408,23 @@ async fn adopt_resource(
         let result = service.adopt_resource(&request, "desktop", &|done, total| {
             let _ = app.emit("resource-progress", (done, total));
         })?;
+        let _ = app.emit("casks-changed", &result.cask_id);
+        Ok(result)
+    })
+    .await
+    .map_err(|e| worker_error(&e))?
+}
+
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+async fn set_resource_ownership(
+    app: tauri::AppHandle,
+    service: tauri::State<'_, Service>,
+    request: casklet_contracts::SetResourceOwnership,
+) -> Result<casklet_contracts::ResourceView, casklet_contracts::ApiError> {
+    let service = service.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        let result = service.set_resource_ownership(&request, "desktop")?;
         let _ = app.emit("casks-changed", &result.cask_id);
         Ok(result)
     })
@@ -1208,8 +1294,29 @@ async fn get_category_cleanup(
     })
     .await
     .map_err(|e| worker_error(&e))?;
-    let _ = app.emit("casks-changed", ());
+    if let Ok(plan) = &result
+        && plan.cask_removed
+    {
+        announce_cask_removed(&app, &plan.cask_id);
+    } else {
+        let _ = app.emit("casks-changed", ());
+    }
     result
+}
+
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+async fn pending_whole_cask_cleanup(
+    service: tauri::State<'_, Service>,
+    request: casklet_contracts::GetCask,
+    resource_plan_id: Option<String>,
+) -> Result<Option<casklet_contracts::CategoryCleanupPlan>, casklet_contracts::ApiError> {
+    let worker = service.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        worker.pending_whole_cask_cleanup(&request, resource_plan_id.as_deref(), "desktop")
+    })
+    .await
+    .map_err(|e| worker_error(&e))?
 }
 
 #[tauri::command]
@@ -1252,7 +1359,13 @@ async fn execute_category_cleanup(
         })
         .await
         .map_err(|e| worker_error(&e))?;
-        let _ = app.emit("casks-changed", ());
+        if let Ok(plan) = &result
+            && plan.cask_removed
+        {
+            announce_cask_removed(&app, &plan.cask_id);
+        } else {
+            let _ = app.emit("casks-changed", ());
+        }
         result
     }
     #[cfg(not(any(feature = "reviewed-removal", feature = "alpha-cleanup")))]

@@ -86,8 +86,21 @@ pub trait ResourceRepository {
     /// Returns typed installer artifacts, which are not installed applications.
     fn installer_resource_ids(&self, cask_id: &str) -> Result<Vec<String>, String>;
     /// # Errors
-    /// Atomically records explicit in-place authority, rejecting locks and overlapping resources.
-    fn commit_adoption(&self, resource: &Resource) -> Result<(), String>;
+    /// Atomically records explicit in-place authority, reusing the exact local item ID.
+    /// Rejects locks and other overlapping dependencies; returns the persisted resource ID.
+    fn commit_adoption(
+        &self,
+        resource: &Resource,
+        expected: Option<&str>,
+    ) -> Result<String, String>;
+    /// # Errors
+    /// Changes an exact association policy after optimistic state and lock checks.
+    fn commit_ownership_policy(
+        &self,
+        resource: &Resource,
+        expected: &str,
+        owned: bool,
+    ) -> Result<String, String>;
     /// # Errors
     /// Returns a persistence error.
     fn category_exists(&self, cask_id: &str, key: &str) -> Result<bool, String>;
@@ -110,7 +123,8 @@ pub trait ResourceRepository {
     ) -> Result<(), String>;
     /// # Errors
     /// Returns a persistence error.
-    fn commit_resource(&self, resource: &Resource, op_id: Option<&str>) -> Result<(), String>;
+    /// Reference retries reuse the active same-Cask path; returns the persisted resource ID.
+    fn commit_resource(&self, resource: &Resource, op_id: Option<&str>) -> Result<String, String>;
     /// # Errors
     /// Returns a persistence error.
     fn complete_intake(&self, op_id: &str) -> Result<(), String>;
@@ -159,6 +173,15 @@ pub trait ResourceStorage {
         entries: &[ApplicationStorageEntry],
     ) -> Result<Vec<ApplicationSize>, String>;
     /// # Errors
+    /// Validates a previously registered internal allocation for renewed ownership.
+    fn validate_internal_location(
+        &self,
+        _cask: &Cask,
+        _observed: &Observation,
+    ) -> Result<(), String> {
+        Err("Internal ownership changes are unsupported".into())
+    }
+    /// # Errors
     /// Rejects broad, linked, protected, or insufficiently verified external locations.
     fn validate_owned_location(&self, _observed: &Observation) -> Result<(), String> {
         Err("In-place ownership is not supported by this storage adapter".into())
@@ -189,6 +212,32 @@ pub trait ResourceStorage {
     ) -> Result<Option<String>, String>;
 }
 
+/// Resolves the shared intake default; explicit categories and folder handling stay intact.
+fn intake_category<'a>(requested: &'a str, name: &str, kind: ResourceKind) -> &'a str {
+    if requested != "auto" {
+        return requested;
+    }
+    if kind == ResourceKind::Directory {
+        return "other";
+    }
+    let name = name.to_lowercase();
+    let extension = std::path::Path::new(&name)
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .unwrap_or("");
+    match extension {
+        "exe" | "msi" | "msix" | "appx" | "msixbundle" => "applications",
+        "pdf" | "doc" | "docx" | "odt" | "rtf" | "txt" | "md" | "csv" | "xls" | "xlsx" | "ods"
+        | "ppt" | "pptx" | "odp" | "epub" => "documents",
+        "jpg" | "jpeg" | "png" | "gif" | "webp" | "bmp" | "tif" | "tiff" | "svg" | "heic"
+        | "avif" | "ico" => "images",
+        "mp4" | "mkv" | "mov" | "avi" | "webm" | "wmv" | "m4v" | "mpeg" | "mpg" => "videos",
+        "mp3" | "wav" | "flac" | "aac" | "ogg" | "opus" | "m4a" | "wma" | "aiff" => "audio",
+        "zip" | "7z" | "rar" | "tar" | "gz" | "bz2" | "xz" | "tgz" | "tbz2" | "zst" => "archives",
+        _ => "other",
+    }
+}
+
 impl<
     R: CaskRepository + ResourceRepository + ProjectionRepository,
     S: ResourceStorage + ManifestProjection,
@@ -197,6 +246,10 @@ impl<
     /// Registers explicit cleanup authority without moving or copying user data.
     /// # Errors
     /// Rejects missing consent, inactive Casks, unsafe locations, and overlapping associations.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "intake validation, identity and authority registration form one auditable use case"
+    )]
     pub fn adopt_resource(
         &self,
         request: &casklet_contracts::AdoptResource,
@@ -204,9 +257,6 @@ impl<
         progress: &dyn Fn(u64, u64),
     ) -> Result<ResourceView, ApiError> {
         check(request.version, correlation_id)?;
-        if !request.confirm_ownership {
-            return Err(err("OWNERSHIP_CONSENT", "Confirm this data is dedicated to this activity and may be cleaned up after plan approval".into(), correlation_id));
-        }
         let cask = self
             .repository
             .get(&request.cask_id)
@@ -219,9 +269,15 @@ impl<
                 correlation_id,
             ));
         }
+        let observed = self
+            .storage
+            .inspect(&request.source_path, progress)
+            .map_err(|e| err("SOURCE", e, correlation_id))?;
+        let category_key =
+            intake_category(&request.category_key, &observed.name, observed.kind).to_string();
         if !self
             .repository
-            .category_exists(&cask.id, &request.category_key)
+            .category_exists(&cask.id, &category_key)
             .map_err(|e| err("PERSISTENCE", e, correlation_id))?
         {
             return Err(err(
@@ -230,10 +286,34 @@ impl<
                 correlation_id,
             ));
         }
-        let observed = self
-            .storage
-            .inspect(&request.source_path, progress)
-            .map_err(|e| err("SOURCE", e, correlation_id))?;
+        if let Some(existing) = self
+            .repository
+            .list_resources(&cask.id)
+            .map_err(|e| err("PERSISTENCE", e, correlation_id))?
+            .into_iter()
+            .find(|item| {
+                observed
+                    .file_identity
+                    .matches_path(&item.path)
+                    .unwrap_or(false)
+            })
+        {
+            return self.add_resource(
+                &AddResource {
+                    version: CONTRACT_VERSION,
+                    cask_id: cask.id,
+                    source_path: observed.source_path,
+                    mode: AddMode::Reference,
+                    category_key: existing.category_key,
+                },
+                correlation_id,
+                progress,
+            );
+        }
+        if !request.confirm_ownership {
+            return Err(err("OWNERSHIP_CONSENT", "Confirm this data is dedicated to this activity and may be cleaned up after plan approval".into(), correlation_id));
+        }
+
         self.storage
             .validate_owned_location(&observed)
             .map_err(|e| err("UNSAFE_OWNERSHIP", e, correlation_id))?;
@@ -250,32 +330,13 @@ impl<
             observed.source_path.clone(),
             observed.kind,
             IntakeMode::Adopt,
-            request.category_key.clone(),
+            category_key,
             observed.size_bytes,
             observed.unknown_entries,
             now,
         )
         .map_err(|e| err("INVALID_RESOURCE", format!("{e:?}"), correlation_id))?;
         resource.identity_key = observed.recordable_identity;
-        if resource.kind == ResourceKind::Directory {
-            // An explicit new consent can renew legacy directory evidence. Never
-            // promote a reference or silently replace another association.
-            if let Some(existing) = self
-                .repository
-                .list_resources(&resource.cask_id)
-                .map_err(|e| err("PERSISTENCE", e, correlation_id))?
-                .into_iter()
-                .find(|existing| {
-                    existing.path == resource.path
-                        && existing.kind == "DIRECTORY"
-                        && existing.management == "MANAGED"
-                        && existing.containment == "EXTERNAL"
-                        && existing.ownership == "OWNED"
-                })
-            {
-                resource.id = existing.id;
-            }
-        }
         if !observed
             .file_identity
             .matches_path(&resource.path)
@@ -287,8 +348,9 @@ impl<
                 correlation_id,
             ));
         }
-        self.repository
-            .commit_adoption(&resource)
+        resource.id = self
+            .repository
+            .commit_adoption(&resource, None)
             .map_err(|e| err("OWNERSHIP_CONFLICT", e, correlation_id))?;
         let _ = self.retry_manifest_projections(correlation_id);
         self.get_resource(
@@ -298,6 +360,134 @@ impl<
             },
             correlation_id,
         )
+    }
+    /// Explicitly changes policy without moving or modifying file bytes.
+    /// # Errors
+    /// Rejects stale policy, missing consent, unsafe ownership and busy Casks.
+    #[expect(
+        clippy::too_many_lines,
+        reason = "explicit consent, source validation and policy commit form one auditable use case"
+    )]
+    pub fn set_resource_ownership(
+        &self,
+        request: &casklet_contracts::SetResourceOwnership,
+        correlation_id: &str,
+    ) -> Result<ResourceView, ApiError> {
+        check(request.version, correlation_id)?;
+        let current = self
+            .repository
+            .list_resources(&request.cask_id)
+            .map_err(|e| err("PERSISTENCE", e, correlation_id))?
+            .into_iter()
+            .find(|item| item.id == request.resource_id)
+            .ok_or_else(|| {
+                err(
+                    "NOT_FOUND",
+                    "Item not found in this Cask".into(),
+                    correlation_id,
+                )
+            })?;
+        if current.ownership != request.expected_ownership {
+            return Err(err(
+                "OWNERSHIP_CHANGED",
+                "Ownership changed; refresh this item and try again".into(),
+                correlation_id,
+            ));
+        }
+        let cask = self
+            .repository
+            .get(&request.cask_id)
+            .map_err(|e| err("PERSISTENCE", e, correlation_id))?
+            .filter(|cask| cask.state == CaskState::Active)
+            .ok_or_else(|| {
+                err(
+                    "CASK_READ_ONLY",
+                    "Cask is unavailable or not active".into(),
+                    correlation_id,
+                )
+            })?;
+        let kind = ResourceKind::from_code(&current.kind).ok_or_else(|| {
+            err(
+                "INVALID_RESOURCE",
+                "Unsupported item kind".into(),
+                correlation_id,
+            )
+        })?;
+        let mut resource = Resource::new(
+            cask.id.clone(),
+            current.name,
+            current.path.clone(),
+            kind,
+            IntakeMode::Adopt,
+            current.category_key,
+            current.size_bytes,
+            current.unknown_entries,
+            i64::try_from(
+                SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .map_err(|e| err("CLOCK", e.to_string(), correlation_id))?
+                    .as_millis(),
+            )
+            .map_err(|e| err("CLOCK", e.to_string(), correlation_id))?,
+        )
+        .map_err(|e| err("INVALID_RESOURCE", format!("{e:?}"), correlation_id))?;
+        resource.id = current.id;
+        if request.owned {
+            if !request.confirm_ownership {
+                return Err(err("OWNERSHIP_CONSENT", "Confirm this item is dedicated to this Cask and may be removed by reviewed cleanup".into(), correlation_id));
+            }
+            let observed = self
+                .storage
+                .inspect(&current.path, &|_, _| {})
+                .map_err(|e| err("SOURCE", e, correlation_id))?;
+            if observed.kind != kind {
+                return Err(err(
+                    "SOURCE_CHANGED",
+                    "Item kind changed; inspect it before changing ownership".into(),
+                    correlation_id,
+                ));
+            }
+            if current.containment == "INTERNAL" {
+                self.storage.validate_internal_location(&cask, &observed)
+            } else {
+                self.storage.validate_owned_location(&observed)
+            }
+            .map_err(|e| err("UNSAFE_OWNERSHIP", e, correlation_id))?;
+            if !observed
+                .file_identity
+                .matches_path(&current.path)
+                .unwrap_or(false)
+            {
+                return Err(err(
+                    "SOURCE_CHANGED",
+                    "Item changed during ownership review".into(),
+                    correlation_id,
+                ));
+            }
+            resource.identity_key = observed.recordable_identity;
+            resource.size_bytes = observed.size_bytes;
+            resource.unknown_entries = observed.unknown_entries;
+        }
+        let id = self
+            .repository
+            .commit_ownership_policy(&resource, &request.expected_ownership, request.owned)
+            .map_err(|e| err("OWNERSHIP_CONFLICT", e, correlation_id))?;
+        let _ = self.retry_manifest_projections(correlation_id);
+        let mut updated = self
+            .repository
+            .list_resources(&request.cask_id)
+            .map_err(|e| err("PERSISTENCE", e, correlation_id))?
+            .into_iter()
+            .find(|item| item.id == id)
+            .ok_or_else(|| {
+                err(
+                    "NOT_FOUND",
+                    "Item is no longer associated".into(),
+                    correlation_id,
+                )
+            })?;
+        self.refresh_availability(&mut updated, correlation_id)?;
+        Ok(updated)
     }
     /// # Errors
     /// Returns validation, persistence, or filesystem errors with a correlation ID.
@@ -353,17 +543,6 @@ impl<
                 correlation_id,
             ));
         }
-        if !self
-            .repository
-            .category_exists(&cask.id, &request.category_key)
-            .map_err(|e| err("PERSISTENCE", e, correlation_id))?
-        {
-            return Err(err(
-                "INVALID_CATEGORY",
-                "Category is unavailable for this Cask".into(),
-                correlation_id,
-            ));
-        }
         let mode = match request.mode {
             AddMode::Copy => IntakeMode::Copy,
             AddMode::Move => IntakeMode::Move,
@@ -373,6 +552,20 @@ impl<
             .storage
             .inspect(&request.source_path, progress)
             .map_err(|e| err("SOURCE", e, correlation_id))?;
+        let category_key =
+            intake_category(&request.category_key, &observed.name, observed.kind).to_string();
+        if !self
+            .repository
+            .category_exists(&cask.id, &category_key)
+            .map_err(|e| err("PERSISTENCE", e, correlation_id))?
+        {
+            return Err(err(
+                "INVALID_CATEGORY",
+                "Category is unavailable for this Cask".into(),
+                correlation_id,
+            ));
+        }
+
         let now = i64::try_from(
             SystemTime::now()
                 .duration_since(UNIX_EPOCH)
@@ -386,14 +579,32 @@ impl<
             observed.source_path.clone(),
             observed.kind,
             mode,
-            request.category_key.clone(),
+            category_key,
             observed.size_bytes,
             observed.unknown_entries,
             now,
         )
         .map_err(|e| err("INVALID_RESOURCE", format!("{e:?}"), correlation_id))?;
         if mode == IntakeMode::Reference {
-            self.repository
+            resource
+                .identity_key
+                .clone_from(&observed.recordable_identity);
+            if let Some(existing) = self
+                .repository
+                .list_resources(&cask.id)
+                .map_err(|e| err("PERSISTENCE", e, correlation_id))?
+                .into_iter()
+                .find(|item| {
+                    observed
+                        .file_identity
+                        .matches_path(&item.path)
+                        .unwrap_or(false)
+                })
+            {
+                resource.id = existing.id;
+            }
+            resource.id = self
+                .repository
                 .commit_resource(&resource, None)
                 .map_err(|e| err("PERSISTENCE", e, correlation_id))?;
         } else {
@@ -729,7 +940,7 @@ impl<
                 continue;
             }
             if let Some(size) = item.size_bytes {
-                if item.management == "MANAGED" {
+                if item.ownership == "OWNED" {
                     managed = managed.saturating_add(size);
                 } else {
                     referenced = referenced.saturating_add(size);
