@@ -2,13 +2,13 @@
 
 Implemented 2026-09-30. See ADR 0018 for window and application decisions.
 
-The main window uses a narrow navigation rail, page header with creation, one compact totals strip, a separate search toolbar, and a sortable inventory list. A row opens its dedicated native workspace without replacing inventory. Menus provide secondary actions. Global Installations, Activity, and Settings expose discovery, operation/recovery status, database backup, and diagnostics.
+The main window uses a narrow navigation rail, page header with creation, a known-size totals strip, dedicated search and switchable collection cards/sortable list. Each collection opens its dedicated native workspace without replacing inventory. Menus provide secondary actions. Global Installations, Activity, and Settings expose discovery, operation/recovery status, database backup, and diagnostics. The current collection-desk system and complete UI validation are documented in [collection-desk-ui.md](collection-desk-ui.md).
 
 Each Cask workspace has a compact title/description, five tabs, an independently scrolling content area, and persistent Add Items / red Cleanup navigation actions. Overview summarizes measured logical storage, counts, location, and dates. Files & Folders identifies managed, referenced, and shared associations, with compact name/size rows and expandable inline location, ownership, availability, measurement, and category details. Applications separates portable installations, registered associations, WinGet lifecycle, and reviewed installer artifacts. Advanced workflows are revealed deliberately through application-method choices. Activity queries durable state; Settings edits metadata, archives without deleting content, manages categories, and exports.
 
 Resource intake explicitly offers file, folder, and reference selection and requires explicit reference or in-place ownership choice and consent; generic Copy/Move intake is temporarily disabled under ADR 0020. Drops never imply a move. Cleanup shows the application's plan and warnings before approval; execution remains disabled in distributable builds pending independent review.
 
-The visual system uses local Inter, charcoal controls, white/light gray surfaces, one-pixel neutral borders, 6–8 px radii, and Lucide outline icons. Green/yellow/red are reserved for state. Paths and names truncate with full values available through native browser tooltips. There are no browser responsive breakpoints, fabricated capacities, decorative charts, or permanent right-side inspector.
+The visual system uses local Inter, petrol actions, cool neutral surfaces, one-pixel borders, 8 px controls, 12 px panels, and Lucide outline icons. Dark uses charcoal surfaces with pale petrol actions. Green/yellow/red retain semantic state roles. Long workspace names wrap; full paths remain available in inline details and tooltips. Responsive CSS reflows smaller logical viewports while native window sizes remain unchanged. There are no fabricated capacities, decorative charts, or permanent right-side inspector.
 
 ## Interaction polish
 

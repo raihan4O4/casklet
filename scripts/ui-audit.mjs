@@ -68,9 +68,11 @@ let pageFailures;
 const contexts = [];
 async function start(theme, options = {}) {
   current = await browser.newContext({
-    viewport: options.detail
-      ? { width: 560, height: 760 }
-      : { width: 1024, height: 720 },
+    viewport:
+      options.viewport ??
+      (options.detail
+        ? { width: 560, height: 760 }
+        : { width: 1024, height: 720 }),
     reducedMotion: options.reduced ? "reduce" : "no-preference",
     deviceScaleFactor: options.scale ?? 1,
   });
@@ -174,10 +176,15 @@ try {
   for (const theme of ["light", "dark"]) {
     await start(theme);
     await shot(theme + "-inventory");
+    await page.getByRole("button", { name: "List view", exact: true }).click();
+    await shot(theme + "-list-view");
+    await page.getByRole("button", { name: "Card view", exact: true }).click();
     const row = page.getByRole("button", { name: "Open Photography Course" });
     await row.hover();
     await shot(theme + "-row-hover", { audit: false });
     await row.focus();
+    await page.keyboard.press("Tab");
+    await page.keyboard.press("Shift+Tab");
     await shot(theme + "-row-focus", { audit: false });
     await page.getByRole("button", { name: "Items", exact: true }).click();
     const sorted = await page
@@ -200,7 +207,14 @@ try {
       .fill("");
     await page.getByRole("button", { name: "New Cask", exact: true }).click();
     await shot(theme + "-create");
-    await page.getByRole("button", { name: "Cancel", exact: true }).click();
+    await page.keyboard.press("Escape");
+    await page.getByRole("dialog").waitFor({ state: "hidden" });
+    if (
+      !(await page
+        .getByRole("button", { name: "New Cask", exact: true })
+        .evaluate((el) => el === document.activeElement))
+    )
+      throw Error("Creation dialog did not restore focus");
     await page.getByRole("button", { name: "Activity", exact: true }).click();
     await shot(theme + "-activity");
     await page.getByRole("button", { name: "Settings", exact: true }).click();
@@ -226,6 +240,13 @@ try {
     await start(theme, { detail: true });
     await shot(theme + "-overview");
     await page
+      .getByRole("button", { name: "Browse files and folders", exact: true })
+      .click();
+    await page
+      .getByRole("region", { name: "Resource inventory", exact: true })
+      .waitFor();
+    await page.getByRole("button", { name: "Overview", exact: true }).click();
+    await page
       .getByRole("button", { name: "Cask actions", exact: true })
       .click();
     await shot(theme + "-workspace-menu");
@@ -233,6 +254,12 @@ try {
     await page.getByRole("menu").waitFor({ state: "hidden" });
     if (await page.getByRole("menu").count())
       throw Error("Menu did not close on Escape");
+    if (
+      !(await page
+        .getByRole("button", { name: "Cask actions", exact: true })
+        .evaluate((el) => el === document.activeElement))
+    )
+      throw Error("Workspace menu did not restore focus");
     await page
       .getByRole("button", { name: "Files & Folders", exact: true })
       .click();
@@ -244,13 +271,65 @@ try {
       })
       .click();
     await shot(theme + "-resource-details");
+    await page
+      .getByRole("button", { name: "Change Category", exact: true })
+      .click();
+    await shot(theme + "-category-editor");
+    await page.keyboard.press("Escape");
+    if (
+      !(await page
+        .getByRole("button", { name: "Change Category", exact: true })
+        .evaluate((el) => el === document.activeElement))
+    )
+      throw Error("Category Escape did not restore focus");
+    await page
+      .getByRole("button", { name: "Change ownership", exact: true })
+      .click();
+    await page.getByRole("radio", { name: /^Owned by Cask/ }).check();
+    await shot(theme + "-ownership-editor");
+    if (
+      await page
+        .getByRole("button", { name: "Save ownership", exact: true })
+        .isEnabled()
+    )
+      throw Error("Ownership save did not require consent");
+    await page.keyboard.press("Escape");
+    if (
+      !(await page
+        .getByRole("button", { name: "Change ownership", exact: true })
+        .evaluate((el) => el === document.activeElement))
+    )
+      throw Error("Ownership Escape did not restore focus");
+    await page
+      .getByRole("button", {
+        name: "Details for Editing references",
+        exact: true,
+      })
+      .click();
+    await page.getByText("reference.jpg", { exact: true }).waitFor();
+    await shot(theme + "-folder-details");
     await page.getByRole("button", { name: "Add Items", exact: true }).click();
     await shot(theme + "-add-items");
     await page.getByRole("button", { name: "Add File", exact: true }).click();
     await shot(theme + "-resource-mode");
     await page
+      .getByRole("radio", {
+        name: "Reference at current location",
+        exact: true,
+      })
+      .check();
+    await shot(theme + "-reference-choice");
+    await page
+      .getByRole("radio", { name: "Manage at current location", exact: true })
+      .check();
+    await shot(theme + "-ownership-consent");
+    await page
       .getByRole("button", { name: "Close resource intake", exact: true })
-      .click();
+      .focus();
+    await page.keyboard.press("Enter");
+    await page
+      .getByRole("region", { name: "Resource inventory", exact: true })
+      .waitFor();
     await page
       .getByRole("button", { name: "Applications", exact: true })
       .click();
@@ -259,11 +338,88 @@ try {
       .getByRole("button", { name: "Add Application", exact: true })
       .click();
     await shot(theme + "-application-picker");
+    for (const [name, suffix] of [
+      ["Install Application", "installer"],
+      ["Associate existing app", "associate"],
+      ["Install portable ZIP", "portable"],
+      ["Install with WinGet", "winget"],
+    ]) {
+      await page.getByRole("button", { name: new RegExp("^" + name) }).click();
+      await shot(theme + "-" + suffix);
+      await page
+        .getByRole("button", {
+          name: "Close application workflow",
+          exact: true,
+        })
+        .click();
+      if (suffix !== "winget")
+        await page
+          .getByRole("button", { name: "Add Application", exact: true })
+          .click();
+    }
     await page.getByRole("button", { name: "Settings", exact: true }).click();
     await shot(theme + "-cask-settings");
+    await page
+      .getByLabel("New category", { exact: true })
+      .fill("Field research");
+    await shot(theme + "-category-settings");
+    await page
+      .getByRole("button", { name: "Create category", exact: true })
+      .click();
+    await page
+      .getByRole("list", { name: "Available categories" })
+      .getByText("Field research", { exact: true })
+      .waitFor();
+    await page
+      .getByRole("region", { name: "Export Cask", exact: true })
+      .scrollIntoViewIfNeeded();
+    await page.getByText("Machine-specific export", { exact: true }).click();
+    await shot(theme + "-export-settings");
+    await page.getByRole("button", { name: "Overview", exact: true }).click();
     await page.getByRole("button", { name: "Cleanup", exact: true }).click();
     await shot(theme + "-cleanup");
+    await page
+      .getByLabel("Cleanup scope", { exact: true })
+      .selectOption("documents");
+    await page
+      .getByRole("button", { name: "Create cleanup plan", exact: true })
+      .click();
+    await page
+      .getByRole("button", { name: "Review Cleanup", exact: true })
+      .waitFor();
+    await shot(theme + "-cleanup-plan");
+    await page
+      .getByRole("button", { name: "Review Cleanup", exact: true })
+      .click();
+    await shot(theme + "-cleanup-reviewed");
+    if (
+      await page
+        .getByRole("button", { name: "Approve Cleanup", exact: true })
+        .isEnabled()
+    )
+      throw Error("Review-only cleanup became enabled");
   }
+  await start("light", { detail: true, removalEnabled: true });
+  await page.getByRole("button", { name: "Cleanup", exact: true }).click();
+  await page
+    .getByLabel("Cleanup scope", { exact: true })
+    .selectOption("documents");
+  await page
+    .getByRole("button", { name: "Create cleanup plan", exact: true })
+    .click();
+  await page
+    .getByRole("button", { name: "Review Cleanup", exact: true })
+    .click();
+  await page
+    .getByRole("button", { name: "Approve Cleanup", exact: true })
+    .click();
+  await shot("light-capable-cleanup-confirmation");
+  if (
+    await page
+      .getByRole("button", { name: "Execute Cleanup", exact: true })
+      .isEnabled()
+  )
+    throw Error("Cleanup execution did not require confirmation");
   await start("light", { empty: true });
   await shot("light-empty");
   await start("dark", { failed: true });
@@ -274,6 +430,45 @@ try {
   await shot("light-cpu4-paint");
   await start("dark", { detail: true, long: true, reduced: true });
   await shot("dark-long-reduced-motion");
+  for (const width of [768, 390]) {
+    await start("light", { viewport: { width, height: 844 } });
+    await shot(`light-library-${width}`);
+    await page.getByRole("button", { name: "Settings", exact: true }).click();
+    await shot(`light-settings-${width}`);
+    await start("dark", {
+      detail: true,
+      viewport: { width: Math.min(width, 560), height: 844 },
+    });
+    await shot(`dark-workspace-${Math.min(width, 560)}`);
+    if (width === 390) {
+      await page
+        .getByRole("button", { name: "Files & Folders", exact: true })
+        .click();
+      await page
+        .getByRole("button", {
+          name: "Details for Course notes.pdf",
+          exact: true,
+        })
+        .click();
+      await page
+        .getByRole("button", { name: "Change ownership", exact: true })
+        .click();
+      await page.getByRole("radio", { name: /^Owned by Cask/ }).check();
+      await shot("dark-ownership-editor-390");
+      await page.keyboard.press("Escape");
+      await page
+        .getByRole("button", { name: "Change Category", exact: true })
+        .click();
+      await shot("dark-category-editor-390");
+      await page.keyboard.press("Escape");
+    }
+    await page
+      .getByRole("button", { name: "Applications", exact: true })
+      .click();
+    await shot(`dark-applications-${Math.min(width, 560)}`);
+    await page.getByRole("button", { name: "Cleanup", exact: true }).click();
+    await shot(`dark-cleanup-${Math.min(width, 560)}`);
+  }
   await start("light", { reduced: true });
   await page.keyboard.press("Tab");
   await page.keyboard.press("Tab");
@@ -328,6 +523,14 @@ try {
       "reduced motion",
       "125% pixel scale",
       "long text",
+      "collection card/list switch",
+      "Overview shortcuts",
+      "dialog/menu Escape focus restoration",
+      "keyboard intake close",
+      "all application-add methods",
+      "reference/ownership consent",
+      "cleanup review/approval/confirmation gates",
+      "390/768 browser reflow",
     ],
   };
   await fs.writeFile(

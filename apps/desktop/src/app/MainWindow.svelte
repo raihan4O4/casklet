@@ -49,6 +49,7 @@
   let error = $state("");
   let notice = $state("");
   let search = $state("");
+  let collectionView: "grid" | "list" = $state("grid");
   let creating = $state(false);
   let creationBusy = $state(false);
   let recoveryCount = $state(0);
@@ -310,7 +311,7 @@
         <div
           title="Sum of known Cask sizes, including references. Content associated with multiple Casks is counted in each. This is not physical disk usage or reclaimable space."
         >
-          <dt>Used Storage</dt>
+          <dt>Known Cask size</dt>
           <dd>
             {bytes(usedStorageBytes)}<small class="measurement-note"
               >Includes references{library?.unknownEntries
@@ -330,7 +331,14 @@
             aria-label="Search casks"
             bind:value={search}
             placeholder="Search casks…"
-          /></label
+          />{#if search}<button
+              class="icon-button"
+              type="button"
+              aria-label="Clear Cask search"
+              onclick={() => {
+                search = "";
+              }}><Icon name="close" size={14} /></button
+            >{/if}</label
         >
         <span class="list-context" aria-live="polite"
           >{#if !loading && library}{search.trim()
@@ -338,8 +346,30 @@
               : `${library.casks.length}`}
             {library.casks.length === 1 ? "cask" : "casks"}{/if}</span
         >
+        <div class="view-control" role="group" aria-label="Collection layout">
+          <button
+            type="button"
+            aria-label="Card view"
+            aria-pressed={collectionView === "grid"}
+            onclick={() => {
+              collectionView = "grid";
+            }}><Icon name="installations" size={16} /></button
+          >
+          <button
+            type="button"
+            aria-label="List view"
+            aria-pressed={collectionView === "list"}
+            onclick={() => {
+              collectionView = "list";
+            }}><Icon name="list" size={16} /></button
+          >
+        </div>
       </div>
-      <section class="cask-table" aria-label="Casks">
+      <section
+        class="cask-table"
+        class:collection-grid={collectionView === "grid"}
+        aria-label="Casks"
+      >
         <div class="table-heading">
           {#each [{ key: "name", title: "Name" }, { key: "items", title: "Items" }, { key: "storage", title: "Storage" }, { key: "updated", title: "Updated" }] as column (column.key)}
             <button
@@ -404,12 +434,13 @@
                     onclick={() => void openCask(item.cask.id)}
                     ><div class="cask-name-cell">
                       <span
-                        class="status-dot"
-                        style:background={item.cask.state === "ACTIVE"
+                        class="collection-mark"
+                        style:--cask-color={item.cask.state === "ACTIVE"
                           ? caskColor(item.cask.id)
                           : "#999"}
                         title={label(item.cask.state)}
-                      ></span>
+                        ><Icon name="casks" size={22} /></span
+                      >
                       <div>
                         <strong title={item.cask.name}>{item.cask.name}</strong>
                         <p title={item.cask.description}>
@@ -418,12 +449,18 @@
                         </p>
                       </div>
                     </div>
-                    <span>{item.itemCount}</span><span
+                    <span class="collection-items"
+                      ><Icon name="folder" size={14} />{item.itemCount}<span
+                        class="card-only">items</span
+                      ></span
+                    ><span
+                      class="collection-size"
                       title="Known logical size including references"
                       >{bytes(
                         item.managedBytes + item.referencedBytes,
                       )}{item.unknownEntries ? " +" : ""}</span
                     ><time
+                      class="collection-updated"
                       title={new Date(item.cask.updatedAtMs).toLocaleString()}
                       >{relativeTime(item.cask.updatedAtMs)}</time
                     ></button

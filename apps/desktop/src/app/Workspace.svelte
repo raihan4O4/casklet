@@ -147,6 +147,13 @@
   let editArchived = $state(false);
   let metadataBusy = $state(false);
   let selected: CaskView | null = $state(null);
+  const settingsChanged = $derived.by(
+    () =>
+      !!selected &&
+      (editName !== selected.name ||
+        editDescription !== (selected.description ?? "") ||
+        editArchived !== (selected.state === "ARCHIVED")),
+  );
   let detailTab: "overview" | "files" | "apps" | "settings" | "cleanup" =
     $state("overview");
   let error = $state("");
@@ -167,6 +174,35 @@
   let pendingCategory = $state("auto");
   let progress = $state("");
   let categoryName = $state("");
+  let categoryCreating = $state(false);
+  let categoryNotice = $state("");
+  let categoryError = $state("");
+  async function focusControl(id: string) {
+    await tick();
+    document.getElementById(id)?.focus();
+  }
+  function cancelManagementEditor(event: KeyboardEvent) {
+    if (event.key !== "Escape" || !(event.target instanceof HTMLElement))
+      return;
+    if (
+      categoryEditor &&
+      !categoryBusy &&
+      event.target.closest("#category-editor")
+    ) {
+      event.stopPropagation();
+      categoryEditor = false;
+      void focusControl("change-category");
+    } else if (
+      ownershipEditor &&
+      !busy &&
+      event.target.closest("#ownership-editor")
+    ) {
+      event.stopPropagation();
+      ownershipEditor = false;
+      policyConfirmed = false;
+      void focusControl("change-ownership");
+    }
+  }
   let selectedResource: ResourceView | null = $state(null);
   let recovery: RecoveryStatus | null = $state(null);
   let recoveryInspection: RecoveryInspection | null = $state(null);
@@ -1048,7 +1084,9 @@
           : "Cleanup plan ready.";
       error = "";
       await tick();
-      document.getElementById("cleanup-plan-heading")?.focus();
+      const heading = document.getElementById("cleanup-plan-heading");
+      heading?.scrollIntoView?.({ block: "start", behavior: "instant" });
+      heading?.focus({ preventScroll: true });
     } catch (cause) {
       error = message(cause);
     } finally {
@@ -1627,7 +1665,10 @@
     }
   }
   async function createCategory() {
-    if (!selected || !categoryName.trim()) return;
+    if (!selected || !categoryName.trim() || categoryCreating) return;
+    categoryCreating = true;
+    categoryNotice = "";
+    categoryError = "";
     try {
       const category = await invoke<CategoryView>("create_category", {
         request: {
@@ -1637,15 +1678,24 @@
         },
       });
       categories = [...categories, category];
-      progress = "Category created.";
+      categoryNotice = `Category created: ${category.name}.`;
       categoryName = "";
       pendingCategory = category.key;
     } catch (cause) {
-      error = message(cause);
+      categoryError = message(cause);
+    } finally {
+      categoryCreating = false;
     }
   }
   async function changeOwnership() {
-    if (!selectedResource || !selected || (ownershipTarget && !policyConfirmed))
+    if (
+      !selectedResource ||
+      !selected ||
+      busy ||
+      removalBusy ||
+      (ownershipTarget && !policyConfirmed) ||
+      (!ownershipTarget && selectedResource.ownership !== "OWNED")
+    )
       return;
     busy = true;
     error = "";
@@ -1867,7 +1917,8 @@
     }
   }
   async function saveMetadata() {
-    if (!selected) return;
+    if (!selected || metadataBusy || !editName.trim() || !settingsChanged)
+      return;
     metadataBusy = true;
     try {
       selected = await invoke<CaskView>("update_cask", {
@@ -1904,9 +1955,13 @@
   }
 </script>
 
+<svelte:window onkeydown={cancelManagementEditor} />
+
 <div
   class:detail-window={mode === "detail"}
   class:drag-active={dragActive}
+  class:task-focused={((adding || selectedResource) && detailTab === "files") ||
+    detailTab === "cleanup"}
   class="workspace"
 >
   {#if dragActive}
@@ -1930,6 +1985,7 @@
           title="Close Cask workspace"
           onclick={() => void closeWorkspace()}><Icon name="back" /></button
         >
+        <span class="workspace-location">Cask workspace</span>
         <div class="workspace-menu">
           <PopupMenu id="workspace-actions" label="Cask actions">
             <button
@@ -2038,7 +2094,10 @@
     {#if selected && detailTab === "overview"}
       <section class="storage-panel" aria-label="Storage summary">
         <div class="section-heading">
-          <h2>Storage</h2>
+          <div>
+            <h2>Storage</h2>
+            <p class="storage-caption">Known size, including references</p>
+          </div>
           <strong class="storage-total">{bytes(totalKnownBytes)}</strong>
         </div>
         <div
@@ -2099,12 +2158,28 @@
             >Total Items<strong>{fileResources.length + appCount}</strong></span
           >
         </div>
-        <div>
-          <span>Files & Folders<strong>{fileResources.length}</strong></span>
-        </div>
-        <div>
-          <span>Applications<strong>{appCount}</strong></span>
-        </div>
+        <button
+          type="button"
+          aria-label="Browse files and folders"
+          onclick={() => {
+            detailTab = "files";
+          }}
+        >
+          <Icon name="folder" size={20} /><span
+            >Files & Folders<strong>{fileResources.length}</strong></span
+          ><Icon name="forward" size={15} />
+        </button>
+        <button
+          type="button"
+          aria-label="Browse applications"
+          onclick={() => {
+            detailTab = "apps";
+          }}
+        >
+          <Icon name="package" size={20} /><span
+            >Applications<strong>{appCount}</strong></span
+          ><Icon name="forward" size={15} />
+        </button>
       </div>
       <section class="information-panel" aria-label="Cask information">
         <dl class="cask-dates">
@@ -2774,14 +2849,35 @@
               ><Icon name="close" size={16} /></button
             >
           </div>
-          {#if !pendingPath}<p>
-              Choose a file or folder, or drop one into this window.
-            </p>
+          {#if !pendingPath}<div class="intake-welcome">
+              <span class="intake-welcome-icon"
+                ><Icon name="folder" size={30} /></span
+              >
+              <h2>Bring this activity together</h2>
+              <p>
+                Choose a file or folder, or drop one into this window. You’ll
+                review how it belongs to this Cask next.
+              </p>
+            </div>
             <div class="resource-source-actions">
-              <button type="button" onclick={() => void pick(false)}
-                ><Icon name="file" size={16} />Add File</button
-              ><button type="button" onclick={() => void pick(true)}
-                ><Icon name="folder" size={16} />Add Folder</button
+              <button
+                type="button"
+                aria-label="Add File"
+                onclick={() => void pick(false)}
+                ><Icon name="file" size={22} /><span
+                  ><strong>Add File</strong><small
+                    >Choose a document or any file</small
+                  ></span
+                ><Icon name="forward" size={16} /></button
+              ><button
+                type="button"
+                aria-label="Add Folder"
+                onclick={() => void pick(true)}
+                ><Icon name="folder" size={22} /><span
+                  ><strong>Add Folder</strong><small
+                    >Keep a folder and its contents together</small
+                  ></span
+                ><Icon name="forward" size={16} /></button
               >
             </div>
             {#if referencePicker}<div class="reference-picker">
@@ -2830,7 +2926,7 @@
                   bind:group={pendingMode}
                 /><span
                   ><strong>Manage at current location</strong><small
-                    >Leave data here and explicitly grant cleanup authority.</small
+                    >Keep it here. Allow removal only through reviewed cleanup.</small
                   ></span
                 ></label
               >
@@ -2843,7 +2939,8 @@
                   bind:group={pendingMode}
                 /><span
                   ><strong>Reference at current location</strong><small
-                    >Track the item without changing its location.</small
+                    >Keep it here. Cleanup removes the link and preserves the
+                    data.</small
                   ></span
                 ></label
               >
@@ -2859,11 +2956,6 @@
                   >{/each}</select
               >
             </div>
-            {#if pendingMode}<p class="intake-explanation">
-                {pendingMode === "adopt"
-                  ? "The item stays here. Cleanup requires your ownership confirmation and an approved plan."
-                  : "The item stays here. Referencing never grants permission to delete it."}
-              </p>{/if}
             {#if pendingMode === "adopt"}<label class="checkbox-label"
                 ><input type="checkbox" bind:checked={ownershipConfirmed} /> This
                 data is dedicated to this Cask, is not needed elsewhere, and may
@@ -2912,6 +3004,7 @@
               >
                 <button
                   class="resource-toggle"
+                  id={`resource-toggle-${resource.id}`}
                   type="button"
                   aria-label={`Details for ${resource.name}`}
                   aria-expanded={selectedResource?.id === resource.id}
@@ -2922,8 +3015,17 @@
                     policyConfirmed = false;
                     selectedResource =
                       selectedResource?.id === resource.id ? null : resource;
-                    if (selectedResource) void inspectFolder(selectedResource);
-                    else folderContents = null;
+                    if (selectedResource) {
+                      void inspectFolder(selectedResource);
+                      void tick().then(() =>
+                        document
+                          .getElementById(`resource-toggle-${resource.id}`)
+                          ?.scrollIntoView?.({
+                            block: "start",
+                            behavior: "instant",
+                          }),
+                      );
+                    } else folderContents = null;
                   }}
                 >
                   <Icon
@@ -2956,38 +3058,237 @@
                     role="region"
                     aria-label={`Details for ${resource.name}`}
                   >
-                    <div class="section-heading">
-                      <h3 title={selectedResource.name}>
-                        {selectedResource.name}
-                      </h3>
+                    <div class="inspector-heading">
+                      <h3>Management details</h3>
                       <button
                         class="icon-button"
                         type="button"
                         aria-label="Close resource details"
                         onclick={() => {
                           selectedResource = null;
-                        }}><Icon name="close" /></button
+                          void focusControl(`resource-toggle-${resource.id}`);
+                        }}><Icon name="close" size={16} /></button
                       >
                     </div>
-                    <dl>
-                      <dt>Location</dt>
-                      <dd>{selectedResource.path}</dd>
-                      <dt>Management</dt>
-                      <dd>
-                        {selectedResource.management === "MANAGED" &&
-                        selectedResource.containment === "EXTERNAL"
-                          ? "Managed in place"
-                          : label(selectedResource.management)}
-                      </dd>
-                      <dt>Availability</dt>
-                      <dd>{label(selectedResource.availability)}</dd>
-                      <dt>Size</dt>
-                      <dd>
-                        {bytes(selectedResource.sizeBytes)} · {label(
-                          selectedResource.sizeMeasurement,
-                        )}
-                      </dd>
+                    <div class="resource-location">
+                      <span><Icon name="folder" size={14} />Location</span>
+                      <p>{selectedResource.path}</p>
+                    </div>
+                    <dl class="resource-facts">
+                      <div>
+                        <dt>Size</dt>
+                        <dd>
+                          {bytes(selectedResource.sizeBytes)}<small
+                            title="File sizes can differ from physical disk usage."
+                            >{selectedResource.sizeMeasurement === "LOGICAL"
+                              ? "Logical size"
+                              : label(selectedResource.sizeMeasurement)}</small
+                          >
+                        </dd>
+                      </div>
+                      <div>
+                        <dt>Availability</dt>
+                        <dd>{label(selectedResource.availability)}</dd>
+                      </div>
+                      <div>
+                        <dt>Management</dt>
+                        <dd>
+                          {selectedResource.management === "MANAGED" &&
+                          selectedResource.containment === "EXTERNAL"
+                            ? "Managed in place"
+                            : label(selectedResource.management)}
+                        </dd>
+                      </div>
                     </dl>
+                    <div class="management-setting">
+                      <div class="management-setting-row">
+                        <span class="setting-symbol"
+                          ><Icon name="casks" size={18} /></span
+                        >
+                        <div>
+                          <h4>Category</h4>
+                          <p>
+                            {categories.find(
+                              (category) =>
+                                category.key === selectedResource?.categoryKey,
+                            )?.name ?? label(selectedResource.categoryKey)}
+                          </p>
+                        </div>
+                        <button
+                          id="change-category"
+                          type="button"
+                          class="setting-edit"
+                          aria-expanded={categoryEditor}
+                          aria-controls="category-editor"
+                          disabled={busy ||
+                            removalBusy ||
+                            categoryBusy ||
+                            selected?.state !== "ACTIVE"}
+                          onclick={() => {
+                            categoryChoice =
+                              selectedResource?.categoryKey ?? "";
+                            categoryEditor = !categoryEditor;
+                            ownershipEditor = false;
+                            if (categoryEditor)
+                              void focusControl("category-choice");
+                          }}>Change Category</button
+                        >
+                      </div>
+                      {#if categoryEditor}<form
+                          id="category-editor"
+                          class="management-editor"
+                          aria-label="Change item category"
+                          onsubmit={(event) => {
+                            event.preventDefault();
+                            if (selectedResource)
+                              void recategorize(
+                                selectedResource,
+                                categoryChoice,
+                              );
+                          }}
+                        >
+                          <p class="editor-target">
+                            Editing <strong>{selectedResource.name}</strong>
+                          </p>
+                          <label for="category-choice">Category</label>
+                          <div class="select-control">
+                            <select
+                              id="category-choice"
+                              bind:value={categoryChoice}
+                              disabled={categoryBusy}
+                              >{#each categories as category (category.key)}<option
+                                  value={category.key}>{category.name}</option
+                                >{/each}</select
+                            ><Icon name="down" size={16} />
+                          </div>
+                          <p>
+                            Organize this item within the Cask. Its location and
+                            ownership stay the same.
+                          </p>
+                        </form>{/if}
+                    </div>
+                    <div class="management-setting">
+                      <div class="management-setting-row">
+                        <span class="setting-symbol"
+                          ><Icon name="link" size={18} /></span
+                        >
+                        <div>
+                          <h4>Ownership</h4>
+                          <p>
+                            {selectedResource.ownership === "OWNED"
+                              ? "Owned by Cask"
+                              : selectedResource.management === "REFERENCED"
+                                ? "Reference"
+                                : label(selectedResource.management)}
+                          </p>
+                        </div>
+                        <button
+                          id="change-ownership"
+                          type="button"
+                          class="setting-edit"
+                          aria-expanded={ownershipEditor}
+                          aria-controls="ownership-editor"
+                          disabled={busy ||
+                            removalBusy ||
+                            selected?.state !== "ACTIVE"}
+                          onclick={() => {
+                            categoryEditor = false;
+                            ownershipEditor = !ownershipEditor;
+                            ownershipTarget =
+                              selectedResource?.ownership === "OWNED";
+                            policyConfirmed = false;
+                            if (ownershipEditor)
+                              void focusControl(
+                                ownershipTarget
+                                  ? "ownership-owned"
+                                  : "ownership-reference",
+                              );
+                          }}>Change ownership</button
+                        >
+                      </div>
+                      {#if !ownershipEditor}<p class="management-consequence">
+                          {selectedResource.management === "REFERENCED"
+                            ? "Cleanup removes the link to this Cask and keeps the data."
+                            : "Removal always requires a reviewed cleanup plan and current verification."}
+                        </p>{/if}
+                      {#if ownershipEditor}<form
+                          id="ownership-editor"
+                          class="management-editor"
+                          aria-label="Change item ownership"
+                          onsubmit={(event) => {
+                            event.preventDefault();
+                            void changeOwnership();
+                          }}
+                        >
+                          <p class="editor-target">
+                            Editing <strong>{selectedResource.name}</strong>
+                          </p>
+                          <fieldset class="ownership-options" disabled={busy}>
+                            <legend>Ownership</legend>
+                            <label class:chosen={ownershipTarget}
+                              ><input
+                                id="ownership-owned"
+                                type="radio"
+                                name="ownership-policy"
+                                value={true}
+                                bind:group={ownershipTarget}
+                                onchange={() => {
+                                  policyConfirmed = false;
+                                }}
+                              /><span
+                                ><strong>Owned by Cask</strong><small
+                                  >Eligible for reviewed cleanup after
+                                  verification.</small
+                                ></span
+                              ></label
+                            >
+                            <label class:chosen={!ownershipTarget}
+                              ><input
+                                id="ownership-reference"
+                                type="radio"
+                                name="ownership-policy"
+                                value={false}
+                                bind:group={ownershipTarget}
+                                onchange={() => {
+                                  policyConfirmed = false;
+                                }}
+                              /><span
+                                ><strong>Reference</strong><small
+                                  >Remove only the link. Keep the original data.</small
+                                ></span
+                              ></label
+                            >
+                          </fieldset>
+                          <p>
+                            Files stay in place. Folder contents inherit the
+                            selected policy.
+                          </p>
+                          {#if ownershipTarget}<label class="policy-consent"
+                              ><input
+                                type="checkbox"
+                                bind:checked={policyConfirmed}
+                                disabled={busy}
+                              />This data is dedicated to this Cask and may be
+                              removed through reviewed cleanup.</label
+                            >{/if}
+                        </form>{/if}
+                      {#if selectedResource.kind === "DIRECTORY" && selectedResource.ownership === "OWNED" && !ownershipEditor}<button
+                          class="text-button renewal-action"
+                          type="button"
+                          disabled={busy ||
+                            removalBusy ||
+                            selected?.state !== "ACTIVE"}
+                          onclick={() => {
+                            categoryEditor = false;
+                            ownershipEditor = true;
+                            ownershipTarget = true;
+                            policyConfirmed = false;
+                            void focusControl("ownership-owned");
+                          }}
+                          ><Icon name="refresh" size={14} />Renew folder
+                          ownership</button
+                        >{/if}
+                    </div>
                     {#if selectedResource.kind === "DIRECTORY"}
                       <div class="folder-contents">
                         <h4>Folder contents</h4>
@@ -3028,164 +3329,16 @@
                         {:else}<p>Inspecting folder contents…</p>{/if}
                       </div>
                     {/if}
-                    <dl class="resource-category-display">
-                      <dt>Category</dt>
-                      <dd>
-                        {categories.find(
-                          (category) =>
-                            category.key === selectedResource?.categoryKey,
-                        )?.name ?? label(selectedResource.categoryKey)}
-                      </dd>
-                    </dl>
-                    <div class="resource-inspector-actions">
+                    <div class="resource-cleanup-action">
+                      <div>
+                        <h4>Cleanup this item</h4>
+                        <p>Preview what will be removed or kept.</p>
+                      </div>
                       <button
-                        type="button"
-                        class="secondary-button"
-                        disabled={busy ||
-                          removalBusy ||
-                          categoryBusy ||
-                          selected?.state !== "ACTIVE"}
-                        onclick={() => {
-                          categoryChoice = selectedResource?.categoryKey ?? "";
-                          categoryEditor = true;
-                          ownershipEditor = false;
-                        }}>Change Category</button
-                      >
-                      {#if categoryEditor}
-                        <form
-                          class="ownership-policy-form"
-                          aria-label="Change item category"
-                          onsubmit={(event) => {
-                            event.preventDefault();
-                            if (selectedResource)
-                              void recategorize(
-                                selectedResource,
-                                categoryChoice,
-                              );
-                          }}
-                        >
-                          <label for="category-choice">Category</label><select
-                            id="category-choice"
-                            bind:value={categoryChoice}
-                            disabled={categoryBusy}
-                          >
-                            {#each categories as category (category.key)}<option
-                                value={category.key}>{category.name}</option
-                              >{/each}
-                          </select>
-                          <div>
-                            <button
-                              type="submit"
-                              disabled={categoryBusy ||
-                                !categoryChoice ||
-                                categoryChoice === selectedResource.categoryKey}
-                              >Save category</button
-                            >
-                            <button
-                              type="button"
-                              disabled={categoryBusy}
-                              onclick={() => {
-                                categoryEditor = false;
-                              }}>Cancel</button
-                            >
-                          </div>
-                        </form>
-                      {/if}
-                      <button
-                        type="button"
-                        class="secondary-button"
-                        disabled={busy ||
-                          removalBusy ||
-                          selected?.state !== "ACTIVE"}
-                        onclick={() => {
-                          categoryEditor = false;
-                          ownershipEditor = true;
-                          ownershipTarget =
-                            selectedResource?.ownership !== "OWNED";
-                          policyConfirmed = false;
-                        }}
-                      >
-                        Change ownership
-                      </button>
-                      {#if selectedResource.kind === "DIRECTORY" && selectedResource.ownership === "OWNED"}
-                        <button
-                          type="button"
-                          class="secondary-button"
-                          disabled={busy ||
-                            removalBusy ||
-                            selected?.state !== "ACTIVE"}
-                          onclick={() => {
-                            categoryEditor = false;
-                            ownershipEditor = true;
-                            ownershipTarget = true;
-                            policyConfirmed = false;
-                          }}>Renew folder ownership</button
-                        >
-                      {/if}
-                      {#if ownershipEditor}
-                        <form
-                          class="ownership-policy-form"
-                          aria-label="Change item ownership"
-                          onsubmit={(event) => {
-                            event.preventDefault();
-                            void changeOwnership();
-                          }}
-                        >
-                          <label for="ownership-policy">Ownership</label>
-                          <select
-                            id="ownership-policy"
-                            bind:value={ownershipTarget}
-                            disabled={busy}
-                            onchange={() => {
-                              policyConfirmed = false;
-                            }}
-                          >
-                            <option value={true}>Owned by Cask</option><option
-                              value={false}>Reference</option
-                            >
-                          </select>
-                          <p>
-                            Current: {selectedResource.ownership === "OWNED"
-                              ? "Owned by Cask"
-                              : "Reference"}. This changes management only;
-                            files stay in place. Folder contents inherit this
-                            policy.
-                          </p>
-                          {#if ownershipTarget}<label
-                              ><input
-                                type="checkbox"
-                                bind:checked={policyConfirmed}
-                                disabled={busy}
-                              /> This data is dedicated to this Cask and may be removed
-                              through reviewed cleanup.</label
-                            >
-                          {:else}<p>
-                              Future cleanup will preserve this item and its
-                              contents.
-                            </p>{/if}
-                          <button
-                            type="submit"
-                            disabled={busy ||
-                              removalBusy ||
-                              selected?.state !== "ACTIVE" ||
-                              (ownershipTarget && !policyConfirmed)}
-                            >Save ownership</button
-                          >
-                          <button
-                            type="button"
-                            disabled={busy}
-                            onclick={() => {
-                              ownershipEditor = false;
-                              policyConfirmed = false;
-                            }}>Cancel</button
-                          >
-                        </form>
-                      {/if}
-                      <button
-                        class="secondary-button"
+                        class="danger-button"
                         type="button"
                         onclick={previewSelectedResource}
-                        >Cleanup this item</button
+                        ><Icon name="trash" size={15} />Cleanup this item</button
                       >
                     </div>
                   </div>{/if}
@@ -3381,9 +3534,17 @@
       </section>
     {/if}
     {#if selected && detailTab === "settings"}
-      <section aria-label="Cask settings">
-        <h2>Cask settings</h2>
+      <section class="settings-card" aria-label="Cask settings">
+        <div class="settings-heading">
+          <span class="setting-symbol"><Icon name="casks" size={20} /></span>
+          <div>
+            <h2>Cask settings</h2>
+            <p>The name and purpose of this activity.</p>
+          </div>
+        </div>
         <form
+          id="cask-settings-form"
+          class="settings-form"
           onsubmit={(event) => {
             event.preventDefault();
             void saveMetadata();
@@ -3394,119 +3555,269 @@
             bind:value={editName}
             maxlength="120"
             required
-          /><label for="edit-description">Description</label><input
+            disabled={metadataBusy}
+          />
+          <label for="edit-description"
+            >Description <span class="optional-label">Optional</span></label
+          ><textarea
             id="edit-description"
             bind:value={editDescription}
             maxlength="500"
+            rows="3"
+            disabled={metadataBusy}
             placeholder="What is this activity for?"
-          />
-          <label class="checkbox-label"
-            ><input type="checkbox" bind:checked={editArchived} /> Archive this Cask</label
-          >
-          <p class="footnote">
-            Archiving makes the Cask read-only and preserves its resources.
-            Clear this option to restore it.
-          </p>
-          <button
-            class="primary-button"
-            disabled={metadataBusy || !editName.trim()}
-            >{metadataBusy ? "Saving…" : "Save changes"}</button
-          >
+          ></textarea>
+          <div class="archive-setting">
+            <label class="checkbox-label"
+              ><input
+                type="checkbox"
+                aria-label="Archive this Cask"
+                bind:checked={editArchived}
+                disabled={metadataBusy}
+              /><span
+                ><strong>Archive this Cask</strong><small
+                  >Keep its resources and make the Cask read-only. Clear this
+                  option to restore it.</small
+                ></span
+              ></label
+            >
+          </div>
         </form>
       </section>
-      <section aria-label="Categories">
-        <h3>New category</h3>
+      <section class="settings-card" aria-label="Categories">
+        <div class="settings-heading">
+          <span class="setting-symbol"><Icon name="folder" size={20} /></span>
+          <div>
+            <h2>Categories</h2>
+            <p>Give resources a role in this Cask.</p>
+          </div>
+        </div>
+        <ul class="category-chips" aria-label="Available categories">
+          {#each categories as category (category.key)}<li>
+              {category.name}
+            </li>{/each}
+        </ul>
         <form
+          class="settings-form category-create"
           onsubmit={(event) => {
             event.preventDefault();
             void createCategory();
           }}
         >
-          <label for="category-name">Name</label>
+          <label for="category-name">New category</label>
+          <p class="category-save-note">Categories are saved immediately.</p>
           <div class="form-row">
             <input
               id="category-name"
               bind:value={categoryName}
               maxlength="80"
-            /><button>Create category</button>
+              disabled={categoryCreating}
+              placeholder="e.g. Research"
+            /><button
+              class="secondary-button"
+              disabled={categoryCreating || !categoryName.trim()}
+              >{categoryCreating ? "Creating…" : "Create category"}</button
+            >
           </div>
         </form>
-      </section>
-      <section aria-label="Export Cask">
-        <h2>Export Cask</h2>
-        <p class="intro">
-          Portable exports exclude machine-specific paths by default.
+        <p class="category-feedback" role="status" aria-live="polite">
+          {categoryNotice}
         </p>
-        <div class="action-row">
-          <button type="button" onclick={() => void exportCask("json")}
-            >Portable JSON</button
-          ><button type="button" onclick={() => void exportCask("markdown")}
-            >Export report</button
-          ><button type="button" onclick={() => void exportCask("json", true)}
-            >Machine JSON</button
-          >
+        {#if categoryError}<p class="category-feedback error" role="alert">
+            {categoryError}
+          </p>{/if}
+      </section>
+      <section class="settings-card" aria-label="Export Cask">
+        <div class="settings-heading">
+          <span class="setting-symbol"><Icon name="download" size={20} /></span>
+          <div>
+            <h2>Export Cask</h2>
+            <p>Save an inventory of this activity.</p>
+          </div>
+        </div>
+        <div class="settings-action-list">
+          <div>
+            <div>
+              <h3>Readable report</h3>
+              <p>A Markdown summary for reading or sharing.</p>
+            </div>
+            <button type="button" onclick={() => void exportCask("markdown")}
+              >Export report<Icon name="download" size={15} /></button
+            >
+          </div>
+          <div>
+            <div>
+              <h3>Portable inventory</h3>
+              <p>JSON without machine-specific paths.</p>
+            </div>
+            <button type="button" onclick={() => void exportCask("json")}
+              >Portable JSON<Icon name="download" size={15} /></button
+            >
+          </div>
+          <details class="settings-advanced">
+            <summary>Machine-specific export</summary>
+            <p>Includes local paths. Review before sharing.</p>
+            <button type="button" onclick={() => void exportCask("json", true)}
+              >Machine JSON<Icon name="download" size={15} /></button
+            >
+          </details>
         </div>
       </section>
     {/if}
     {#if mode === "settings"}
       <ThemeSettings />
-      <section id="settings" aria-label="Settings and privacy">
-        <h2>Settings and privacy</h2>
-        <p>
-          Casklet stores its database locally. A database backup contains
-          metadata only; managed files need a separate backup. Casklet has no
-          account or default telemetry.
-        </p>
-        <button
-          type="button"
-          disabled={backupBusy}
-          onclick={() => void backupDatabase()}
-          >{backupBusy ? "Backing up…" : "Back up database metadata"}</button
-        >
-        <button type="button" onclick={() => void saveDiagnostics()}
-          >Save diagnostics</button
-        >
-        <p>
-          Review diagnostics before sharing them because paths and operation
-          details may be sensitive.
-        </p>
-        <p>
-          Destructive cleanup is {removalEnabled
-            ? "available after plan review, approval, and confirmation"
-            : "disabled pending independent security review"}.
-        </p>
+      <section
+        id="settings"
+        class="settings-card"
+        aria-label="Settings and privacy"
+      >
+        <div class="settings-heading">
+          <span class="setting-symbol"><Icon name="database" size={20} /></span>
+          <div>
+            <h2>Local data</h2>
+            <p>Stored on this computer. No account or default telemetry.</p>
+          </div>
+        </div>
+        <div class="settings-action-list">
+          <div>
+            <div>
+              <h3>Database backup</h3>
+              <p>
+                Save Cask metadata and associations. Back up your files
+                separately.
+              </p>
+            </div>
+            <button
+              type="button"
+              disabled={backupBusy}
+              onclick={() => void backupDatabase()}
+              ><Icon name="database" size={16} />{backupBusy
+                ? "Backing up…"
+                : "Back up database metadata"}</button
+            >
+          </div>
+          <div>
+            <div>
+              <h3>Diagnostics</h3>
+              <p>
+                Save a local diagnostic bundle. It may include private paths and
+                operation details; review it before sharing.
+              </p>
+            </div>
+            <button type="button" onclick={() => void saveDiagnostics()}
+              ><Icon name="download" size={16} />Save diagnostics</button
+            >
+          </div>
+        </div>
+      </section>
+      <section
+        class="settings-card cleanup-capability"
+        aria-label="Cleanup availability"
+      >
+        <div class="settings-heading">
+          <span class="setting-symbol"><Icon name="trash" size={20} /></span>
+          <div>
+            <h2>Cleanup availability</h2>
+            <p>
+              {removalEnabled
+                ? "Available after plan review, approval, and confirmation."
+                : "Review only in this build. Destructive cleanup is disabled pending independent security review."}
+            </p>
+          </div>
+        </div>
       </section>
     {/if}
   </div>
   {#if mode === "detail"}<footer class="workspace-footer">
-      <button
-        class:primary-button={!(adding && detailTab === "files") &&
-          detailTab !== "cleanup"}
-        class:secondary-button={(adding && detailTab === "files") ||
-          detailTab === "cleanup"}
-        aria-expanded={adding && detailTab === "files"}
-        type="button"
-        disabled={!selected || busy || selected.state !== "ACTIVE"}
-        onclick={() => {
-          const nextAdding = !(adding && detailTab === "files");
-          detailTab = "files";
-          adding = nextAdding;
-          if (adding) selectedResource = null;
-          else closeResourceIntake();
-        }}
-        ><Icon name={adding && detailTab === "files" ? "close" : "plus"} />
-        {adding && detailTab === "files"
-          ? "Close Add Items"
-          : "Add Items"}</button
-      >
-      {#if detailTab !== "cleanup"}
+      {#if detailTab === "settings" && selected}
         <button
           type="button"
-          disabled={!selected || removalBusy}
-          class="danger-button"
-          onclick={() => navigateCleanup()}
-          ><Icon name="trash" size={17} /> Cleanup</button
-        >{/if}
+          class="secondary-button"
+          disabled={metadataBusy || !settingsChanged}
+          onclick={() => {
+            editName = selected!.name;
+            editDescription = selected!.description ?? "";
+            editArchived = selected!.state === "ARCHIVED";
+          }}>Reset changes</button
+        >
+        <button
+          form="cask-settings-form"
+          type="submit"
+          class="primary-button"
+          disabled={metadataBusy || !editName.trim() || !settingsChanged}
+          >{metadataBusy ? "Saving…" : "Save changes"}</button
+        >
+      {:else if detailTab === "files" && selectedResource && categoryEditor}
+        <button
+          type="button"
+          class="secondary-button"
+          disabled={categoryBusy}
+          onclick={() => {
+            categoryEditor = false;
+            void focusControl("change-category");
+          }}>Cancel</button
+        >
+        <button
+          form="category-editor"
+          type="submit"
+          class="primary-button"
+          disabled={categoryBusy ||
+            !categoryChoice ||
+            categoryChoice === selectedResource.categoryKey}
+          >{categoryBusy ? "Saving…" : "Save category"}</button
+        >
+      {:else if detailTab === "files" && selectedResource && ownershipEditor}
+        <button
+          type="button"
+          class="secondary-button"
+          disabled={busy}
+          onclick={() => {
+            ownershipEditor = false;
+            policyConfirmed = false;
+            void focusControl("change-ownership");
+          }}>Cancel</button
+        >
+        <button
+          form="ownership-editor"
+          type="submit"
+          class="primary-button"
+          disabled={busy ||
+            removalBusy ||
+            selected?.state !== "ACTIVE" ||
+            (ownershipTarget && !policyConfirmed) ||
+            (!ownershipTarget && selectedResource.ownership !== "OWNED")}
+          >{busy ? "Saving…" : "Save ownership"}</button
+        >
+      {:else}
+        <button
+          class:primary-button={!(adding && detailTab === "files") &&
+            ["overview", "files"].includes(detailTab)}
+          class:secondary-button={(adding && detailTab === "files") ||
+            !["overview", "files"].includes(detailTab)}
+          aria-expanded={adding && detailTab === "files"}
+          type="button"
+          disabled={!selected || busy || selected.state !== "ACTIVE"}
+          onclick={() => {
+            const nextAdding = !(adding && detailTab === "files");
+            detailTab = "files";
+            adding = nextAdding;
+            if (adding) selectedResource = null;
+            else closeResourceIntake();
+          }}
+          ><Icon name={adding && detailTab === "files" ? "close" : "plus"} />
+          {adding && detailTab === "files"
+            ? "Close Add Items"
+            : "Add Items"}</button
+        >
+        {#if detailTab !== "cleanup" && !(detailTab === "files" && (adding || pendingPath)) && !(detailTab === "apps" && applicationWorkflow)}
+          <button
+            type="button"
+            disabled={!selected || removalBusy}
+            class="danger-button"
+            onclick={() => navigateCleanup()}
+            ><Icon name="trash" size={17} /> Cleanup</button
+          >{/if}
+      {/if}
     </footer>{/if}
 </div>
 

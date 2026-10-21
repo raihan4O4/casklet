@@ -66,7 +66,7 @@ export function installFixture(options = {}) {
     shared: i === 2,
     containment: management === "MANAGED" ? "INTERNAL" : "EXTERNAL",
     availability: "PRESENT",
-    ownership: management === "MANAGED" ? "CASKLET" : "USER",
+    ownership: management === "MANAGED" ? "OWNED" : "REFERENCED",
     provenance: "USER_REFERENCE",
   }));
   const apps = ["Adobe Lightroom", "Blender"].map((name, i) => ({
@@ -111,6 +111,7 @@ export function installFixture(options = {}) {
     }),
   );
   const callbackMap = new Map();
+  let cleanupPlan = null;
   let nextId = 1;
   window.__QA_CALLS__ = [];
   window.__TAURI_EVENT_PLUGIN_INTERNALS__ = { unregisterListener() {} };
@@ -184,6 +185,44 @@ export function installFixture(options = {}) {
       if (command === "list_operations") return options.empty ? [] : operations;
       if (command === "list_resources") return options.empty ? [] : resources;
       if (command === "list_categories") return categories;
+      if (command === "categorize_resource") {
+        const item = resources.find(
+          (item) => item.id === args.request.resourceId,
+        );
+        item.categoryKey = args.request.categoryKey;
+        return { ...item };
+      }
+      if (command === "set_resource_ownership") {
+        const item = resources.find(
+          (item) => item.id === args.request.resourceId,
+        );
+        item.ownership = args.request.owned ? "OWNED" : "REFERENCED";
+        item.management = args.request.owned ? "MANAGED" : "REFERENCED";
+        return { ...item };
+      }
+      if (command === "create_category") {
+        const category = {
+          version: 1,
+          key: "qa-custom",
+          name: args.request.name,
+          isBuiltin: false,
+        };
+        categories.push(category);
+        return category;
+      }
+      if (command === "resource_contents")
+        return {
+          version: 1,
+          resourceId: args.request.id,
+          ownership: "REFERENCED",
+          availability: "PRESENT",
+          totalEntries: 2,
+          unknownEntries: 0,
+          entries: [
+            { relativePath: "reference.jpg", kind: "FILE", sizeBytes: 102400 },
+            { relativePath: "notes.txt", kind: "FILE", sizeBytes: 2048 },
+          ],
+        };
       if (
         command === "list_associated_applications" ||
         command === "search_installed_applications"
@@ -218,7 +257,49 @@ export function installFixture(options = {}) {
           applicationCount: 2,
           unfinishedOperations: 0,
         };
-      if (command === "removal_capability") return false;
+      if (command === "removal_capability") return !!options.removalEnabled;
+      if (command === "create_removal_plan") {
+        cleanupPlan = {
+          version: 1,
+          id: "qa-plan",
+          caskId: "qa-cask-0",
+          state: "DRAFT",
+          scope: "CATEGORY",
+          planHash: "qa-exact-preview-hash",
+          permanent: !!args.request.permanent,
+          cleanupOnly: true,
+          createdAtMs: now,
+          expiresAtMs: now + 600000,
+          items: resources
+            .filter((item) => item.categoryKey === args.request.categoryKey)
+            .map((item) => ({
+              id: `plan-${item.id}`,
+              resourceId: item.id,
+              name: item.name,
+              path: item.path,
+              action:
+                item.management === "REFERENCED"
+                  ? "DETACH"
+                  : args.request.permanent
+                    ? "DELETE_PERMANENTLY"
+                    : "TRASH",
+              reasonCode:
+                item.management === "REFERENCED"
+                  ? "NO_DELETE_AUTHORITY"
+                  : "ELIGIBLE_MANAGED",
+              state: "PENDING",
+              expectedSizeBytes: item.sizeBytes,
+              resultCode: null,
+              recoveryPath: null,
+            })),
+        };
+        return cleanupPlan;
+      }
+      if (command === "approve_removal_plan") {
+        cleanupPlan = { ...cleanupPlan, state: "APPROVED" };
+        return cleanupPlan;
+      }
+      if (command === "get_removal_plan") return cleanupPlan;
       if (
         command === "pending_whole_cask_cleanup" ||
         command === "explorer_pending" ||

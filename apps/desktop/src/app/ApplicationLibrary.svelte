@@ -138,7 +138,7 @@
           role="group"
           aria-label="Filter applications"
         >
-          {#each [{ key: "all", label: "All" }, { key: "managed", label: "Managed" }, { key: "associated", label: "Associated" }] as option (option.key)}
+          {#each [{ key: "all", label: "All" }, { key: "managed", label: "Owned" }, { key: "associated", label: "References" }] as option (option.key)}
             <button
               type="button"
               class:chosen={filter === option.key}

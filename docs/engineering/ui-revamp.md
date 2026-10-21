@@ -1,5 +1,7 @@
 # Collected workspace UI
 
+The subsequent complete collection-desk redesign supersedes this presentation. See [collection-desk-ui.md](collection-desk-ui.md) and [DESIGN.md](../../DESIGN.md) for the current implementation and evidence. The results below remain the historical collected-workspace pass.
+
 Date: October 21, 2026. Concept, alternatives and presentation system: [DESIGN.md](../../DESIGN.md).
 
 The redesign retains Svelte/Tauri, supplied logos, Inter, Lucide, fixed native windows, global appearance, typed IPC and all existing ownership/cleanup safeguards. It adds no application dependencies or production sample data.

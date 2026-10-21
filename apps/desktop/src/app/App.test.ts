@@ -310,6 +310,89 @@ function ownershipWorkspace(
   return cask;
 }
 
+test("Overview shortcuts browse contents without creating plans or changing data", async () => {
+  ownershipWorkspace();
+  await screen.findByRole("heading", { name: "Ownership" });
+  await fireEvent.click(
+    screen.getByRole("button", { name: "Browse files and folders" }),
+  );
+  expect(
+    screen.getByRole("region", { name: "Resource inventory" }),
+  ).toBeTruthy();
+  await fireEvent.click(screen.getByRole("button", { name: "Overview" }));
+  await fireEvent.click(
+    screen.getByRole("button", { name: "Browse applications" }),
+  );
+  expect(
+    screen.getByRole("region", { name: "Cask applications" }),
+  ).toBeTruthy();
+  expect(
+    calls.invoke.mock.calls.some(([command]) =>
+      /^(create_|approve_|execute_|add_|adopt_|remove_)/.test(command),
+    ),
+  ).toBe(false);
+});
+
+test("collection layout and search controls preserve the selected Cask command", async () => {
+  calls.invoke.mockImplementation(async (command) => {
+    if (command === "cask_library")
+      return {
+        version: 1,
+        totalItems: 2,
+        managedBytes: 0,
+        referencedBytes: 0,
+        unknownEntries: 0,
+        casks: [
+          {
+            cask: {
+              version: 1,
+              id: "stable-id",
+              name: "Field notes",
+              description: "Research",
+              state: "ACTIVE",
+              createdAtMs: 1,
+              updatedAtMs: 1,
+              revision: 0,
+            },
+            itemCount: 2,
+            managedBytes: 0,
+            referencedBytes: 0,
+            unknownEntries: 0,
+          },
+        ],
+      };
+    if (command === "recovery_status")
+      return { version: 1, operations: [], pendingManifestCasks: [] };
+    return null;
+  });
+  render(App);
+  await screen.findByRole("button", { name: "Open Field notes" });
+  expect(
+    screen
+      .getByRole("button", { name: "Card view" })
+      .getAttribute("aria-pressed"),
+  ).toBe("true");
+  await fireEvent.click(screen.getByRole("button", { name: "List view" }));
+  expect(
+    screen
+      .getByRole("button", { name: "List view" })
+      .getAttribute("aria-pressed"),
+  ).toBe("true");
+  await fireEvent.input(screen.getByRole("textbox", { name: "Search casks" }), {
+    target: { value: "missing" },
+  });
+  expect(screen.queryByRole("button", { name: "Open Field notes" })).toBeNull();
+  await fireEvent.click(
+    screen.getByRole("button", { name: "Clear Cask search" }),
+  );
+  await fireEvent.click(
+    screen.getByRole("button", { name: "Open Field notes" }),
+  );
+  expect(calls.invoke).toHaveBeenCalledWith("open_cask_window", {
+    request: { version: 1, id: "stable-id" },
+  });
+});
+
 test("an empty Cask removes after confirmation without creating a cleanup plan", async () => {
   const cask = ownershipWorkspace([], (command) =>
     command === "remove_cask" ? null : undefined,
@@ -665,7 +748,7 @@ test("Applications keeps Add above a large library and supports focused navigati
   await fireEvent.click(
     within(
       screen.getByRole("group", { name: "Filter applications" }),
-    ).getByRole("button", { name: "Managed" }),
+    ).getByRole("button", { name: "Owned" }),
   );
   expect(screen.getByText("No matching applications")).toBeTruthy();
   await fireEvent.click(screen.getByRole("button", { name: "Reset filters" }));
@@ -1051,7 +1134,12 @@ test("cleanup review explains actions and blocks concurrent duplicate submission
     screen
       .getByRole("button", { name: "Approve Cleanup" })
       .getAttribute("aria-describedby"),
-  ).toBe("cleanup-limit");
+  ).toBe("cleanup-next");
+  expect(
+    screen.getByText(
+      "You can review the effects below. This build cannot approve or run cleanup.",
+    ),
+  ).toBeTruthy();
   expect(
     calls.invoke.mock.calls.some(
       ([command]) => command === "execute_removal_plan",
@@ -1606,6 +1694,7 @@ test("resource intake hides Copy and Move and Settings retains Archive without s
   calls.drop?.({ payload: { type: "drop", paths: ["D:/project.txt"] } });
   await screen.findByLabelText("Reference at current location");
   expect(screen.queryByRole("radio", { name: /^Copy/ })).toBeNull();
+  expect(screen.queryByRole("button", { name: "Cleanup" })).toBeNull();
   expect(screen.queryByRole("radio", { name: /^Move/ })).toBeNull();
   expect(screen.queryByRole("button", { name: "Archive Cask" })).toBeNull();
   const nav = screen.getByRole("navigation", { name: "Cask sections" });
@@ -1613,7 +1702,9 @@ test("resource intake hides Copy and Move and Settings retains Archive without s
   expect(screen.getByLabelText("Archive this Cask")).toBeTruthy();
   expect(screen.queryByLabelText("Storage location")).toBeNull();
   // Reopening intake from a different tab must not toggle the retained review off.
-  await fireEvent.click(screen.getByRole("button", { name: "Add Items" }));
+  await fireEvent.click(
+    within(nav).getByRole("button", { name: "Files & Folders" }),
+  );
   expect(screen.getByLabelText("Reference at current location")).toBeTruthy();
   expect(
     screen.queryByRole("region", { name: "Resource inventory" }),
@@ -1622,6 +1713,7 @@ test("resource intake hides Copy and Move and Settings retains Archive without s
     screen.getByRole("button", { name: "Close Add Items" }),
   );
   expect(screen.queryByRole("region", { name: "Resource intake" })).toBeNull();
+  expect(screen.getByRole("button", { name: "Cleanup" })).toBeTruthy();
   expect(
     screen.getByRole("region", { name: "Resource inventory" }),
   ).toBeTruthy();
@@ -2533,7 +2625,7 @@ test.each([true, false])(
   },
 );
 
-test("Used Storage includes references and follows library changes and removal", async () => {
+test("Known Cask size includes references and follows library changes and removal", async () => {
   let managedBytes = 0;
   let referencedBytes = 2048;
   let unknownEntries = 0;
@@ -2575,7 +2667,7 @@ test("Used Storage includes references and follows library changes and removal",
     return null;
   });
   render(App);
-  const counter = () => screen.getByText("Used Storage").parentElement!;
+  const counter = () => screen.getByText("Known Cask size").parentElement!;
   await waitFor(() => expect(within(counter()).getByText("2 KB")).toBeTruthy());
   expect(within(counter()).getByText("Includes references")).toBeTruthy();
   await waitFor(() => expect(calls.events.has("casks-changed")).toBe(true));
@@ -2972,14 +3064,25 @@ test.each([true, false])(
       ),
     ).toBe(false);
     if (!owned) {
+      await fireEvent.click(
+        within(form).getByRole("radio", { name: /^Owned by Cask/ }),
+      );
       expect(
-        within(form)
+        screen
           .getByRole("button", { name: "Save ownership" })
           .hasAttribute("disabled"),
       ).toBe(true);
       await fireEvent.click(within(form).getByRole("checkbox"));
     }
-    await fireEvent.click(within(form).getByRole("button", { name: "Cancel" }));
+    await fireEvent.keyDown(
+      within(form).getByRole("radio", { name: /^Owned by Cask/ }),
+      { key: "Escape" },
+    );
+    await waitFor(() =>
+      expect(document.activeElement).toBe(
+        screen.getByRole("button", { name: "Change ownership" }),
+      ),
+    );
     expect(
       calls.invoke.mock.calls.some(
         ([command]) => command === "set_resource_ownership",
@@ -2987,6 +3090,11 @@ test.each([true, false])(
     ).toBe(false);
     await fireEvent.click(
       screen.getByRole("button", { name: "Change ownership" }),
+    );
+    await fireEvent.click(
+      screen.getByRole("radio", {
+        name: owned ? /^Reference/ : /^Owned by Cask/,
+      }),
     );
     if (!owned) await fireEvent.click(screen.getByRole("checkbox"));
     await fireEvent.click(
@@ -3012,6 +3120,58 @@ test.each([true, false])(
     expect(resource.categoryKey).toBe("documents");
   },
 );
+
+test("category creation blocks duplicate requests and retains input after failure", async () => {
+  let attempts = 0;
+  const currentCategories = [
+    { version: 1, key: "other", name: "Other", isBuiltin: true },
+  ];
+  let rejectCreate!: (reason: unknown) => void;
+  ownershipWorkspace([], (command) => {
+    if (command === "list_categories") return [...currentCategories];
+    if (command === "create_category") {
+      attempts++;
+      if (attempts === 1)
+        return new Promise((_, reject) => {
+          rejectCreate = reject;
+        });
+      const category = {
+        version: 1,
+        key: "research",
+        name: "Research",
+        isBuiltin: false,
+      };
+      currentCategories.push(category);
+      return category;
+    }
+  });
+  await screen.findByRole("heading", { name: "Ownership" });
+  await fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+  const input = screen.getByLabelText("New category") as HTMLInputElement;
+  const form = input.closest("form")!;
+  expect(
+    screen
+      .getByRole("button", { name: "Create category" })
+      .hasAttribute("disabled"),
+  ).toBe(true);
+  await fireEvent.input(input, { target: { value: "Research" } });
+  await fireEvent.submit(form);
+  await fireEvent.submit(form);
+  expect(attempts).toBe(1);
+  rejectCreate({ message: "Category could not be saved" });
+  await screen.findByText("Category could not be saved");
+  expect(input.value).toBe("Research");
+  await fireEvent.submit(form);
+  await waitFor(() =>
+    expect(
+      within(
+        screen.getByRole("list", { name: "Available categories" }),
+      ).getByText("Research"),
+    ).toBeTruthy(),
+  );
+  expect(attempts).toBe(2);
+  expect(input.value).toBe("");
+});
 
 test("category action shows the current category and saves only after explicit selection", async () => {
   let resource = {
@@ -3063,14 +3223,14 @@ test("category action shows the current category and saves only after explicit s
   );
   const editor = screen.getByRole("form", { name: "Change item category" });
   expect(
-    within(editor)
+    screen
       .getByRole("button", { name: "Save category" })
       .hasAttribute("disabled"),
   ).toBe(true);
   await fireEvent.change(within(editor).getByRole("combobox"), {
     target: { value: "projects" },
   });
-  await fireEvent.click(within(editor).getByRole("button", { name: "Cancel" }));
+  await fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
   expect(
     calls.invoke.mock.calls.some(
       ([command]) => command === "categorize_resource",
