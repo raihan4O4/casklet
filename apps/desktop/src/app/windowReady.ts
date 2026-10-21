@@ -2,7 +2,7 @@ import { invoke } from "@tauri-apps/api/core";
 import { syncNativeTheme } from "./theme";
 import { tick } from "svelte";
 
-/** Reveal the native window only after data, CSS, fonts and layout have settled. */
+/** Reveal the native window after its initial UI, CSS, fonts and layout settle. */
 export async function revealWindow() {
   await tick();
   await document.fonts?.ready;
