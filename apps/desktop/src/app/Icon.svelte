@@ -24,6 +24,8 @@
   import Database from "@lucide/svelte/icons/database";
   import Check from "@lucide/svelte/icons/check";
   import Info from "@lucide/svelte/icons/info";
+  import List from "@lucide/svelte/icons/list";
+  import ArrowRight from "@lucide/svelte/icons/arrow-right";
   const icons = {
     casks: Boxes,
     installations: Grid2X2,
@@ -50,6 +52,8 @@
     database: Database,
     check: Check,
     info: Info,
+    list: List,
+    forward: ArrowRight,
   };
   let { name, size = 18 }: { name: keyof typeof icons; size?: number } =
     $props();

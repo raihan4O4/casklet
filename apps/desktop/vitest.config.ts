@@ -4,5 +4,5 @@ import { defineConfig } from "vitest/config";
 export default defineConfig({
   plugins: [svelte()],
   resolve: { conditions: ["browser"] },
-  test: { environment: "jsdom", css: { include: [/global\.css/] } },
+  test: { environment: "jsdom", css: { include: [/(global|workspace)\.css/] } },
 });

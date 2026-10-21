@@ -139,8 +139,36 @@
   </p>{/if}
 {#if expired}<p>Plan expired. Create a new cleanup plan.</p>{/if}
 {#if plan.state === "DRAFT" || plan.state === "APPROVED"}
+  <p class="cleanup-next" id="cleanup-next" aria-live="polite">
+    {#if expired}Create a new plan to continue; this preview has expired.
+    {:else if removalBusy}Updating this cleanup plan…
+    {:else if !removalEnabled}You can review the effects below. This build
+      cannot approve or run cleanup.
+    {:else if reviewedPlanHash !== plan.planHash}Next: Review the planned
+      actions. Nothing has been removed.
+    {:else if plan.state === "DRAFT"}Next: Approve this exact plan. Approval
+      does not run cleanup.
+    {:else if !executionConfirmed || (plan.permanent && !permanentConfirmation)}Next:
+      Confirm the actions below to enable Execute Cleanup.
+    {:else}Ready to execute. Casklet will revalidate the plan before removing
+      anything.{/if}
+  </p>
+  {#if plan.state === "APPROVED" && removalEnabled && !expired && reviewedPlanHash === plan.planHash}
+    <label class="checkbox-label"
+      ><input type="checkbox" bind:checked={executionConfirmed} /> I confirm the
+      cleanup actions shown above{removeCask
+        ? " and removal of this Cask after they succeed"
+        : ""}</label
+    >
+    {#if plan.permanent}<label class="checkbox-label"
+        ><input type="checkbox" bind:checked={permanentConfirmation} /> I understand
+        permanent deletion cannot be undone</label
+      >{/if}
+  {/if}
   <div class="cleanup-actions">
     <button
+      class:primary-button={plan.state === "DRAFT" &&
+        reviewedPlanHash !== plan.planHash}
       type="button"
       disabled={expired || removalBusy || reviewedPlanHash === plan.planHash}
       onclick={() => {
@@ -152,6 +180,9 @@
         : "Review Cleanup"}</button
     >
     <button
+      class:primary-button={plan.state === "DRAFT" &&
+        reviewedPlanHash === plan.planHash &&
+        removalEnabled}
       type="button"
       title={cleanupActionHint(
         plan,
@@ -161,7 +192,7 @@
         permanentConfirmation,
         nowMs,
       )}
-      aria-describedby={!removalEnabled ? "cleanup-limit" : undefined}
+      aria-describedby="cleanup-next"
       disabled={expired ||
         !removalEnabled ||
         removalBusy ||
@@ -180,7 +211,7 @@
         permanentConfirmation,
         nowMs,
       )}
-      aria-describedby={!removalEnabled ? "cleanup-limit" : undefined}
+      aria-describedby="cleanup-next"
       disabled={expired ||
         !removalEnabled ||
         removalBusy ||
@@ -191,18 +222,6 @@
       onclick={onExecute}>Execute Cleanup</button
     >
   </div>
-  {#if plan.state === "APPROVED" && removalEnabled && !expired && reviewedPlanHash === plan.planHash}
-    <label class="checkbox-label"
-      ><input type="checkbox" bind:checked={executionConfirmed} /> I confirm the
-      cleanup actions shown above{removeCask
-        ? " and removal of this Cask after they succeed"
-        : ""}</label
-    >
-    {#if plan.permanent}<label class="checkbox-label"
-        ><input type="checkbox" bind:checked={permanentConfirmation} /> I understand
-        permanent deletion cannot be undone</label
-      >{/if}
-  {/if}
 {/if}
 {#if plan.state === "PARTIAL"}<p>
     Some outcomes need inspection. Open Advanced details for recovery locations,

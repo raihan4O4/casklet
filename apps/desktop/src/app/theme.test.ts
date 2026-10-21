@@ -8,6 +8,7 @@ import {
 } from "@testing-library/svelte";
 import { get } from "svelte/store";
 import css from "../styles/global.css?raw";
+import workspaceCss from "../styles/workspace.css?raw";
 import ThemeSettings from "./ThemeSettings.svelte";
 import BrandLogo from "./BrandLogo.svelte";
 import {
@@ -149,7 +150,9 @@ test("native theme is applied before a saved-dark window is revealed", async () 
 });
 
 test("dark typography, state colors, focus and control borders meet contrast targets", () => {
-  const dark = css.match(/:root\[data-theme="dark"\] \{([^}]+)\}/)![1];
+  const dark = [css, workspaceCss]
+    .map((source) => source.match(/:root\[data-theme="dark"\] \{([^}]+)\}/)![1])
+    .join("\n");
   const palette = Object.fromEntries(
     [...dark.matchAll(/--([\w-]+): (#[\da-f]{6});/g)].map((match) => [
       match[1],
