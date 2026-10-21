@@ -257,6 +257,7 @@
       {/each}
     </nav>
     <div class="sidebar-storage">
+      <span class="local-workspace"><span></span>On this device</span>
       <span class="muted">Managed storage</span><strong
         >{bytes(library?.managedBytes)}</strong
       >
@@ -292,13 +293,7 @@
         </p>
       </div>
       {#if page === "casks"}<div class="header-actions">
-          <label class="search-field"
-            ><Icon name="search" size={17} /><input
-              aria-label="Search casks"
-              bind:value={search}
-              placeholder="Search casks…"
-            /></label
-          ><button
+          <button
             class="primary-button"
             type="button"
             onclick={() => void showCreate()}
@@ -307,34 +302,42 @@
         </div>{/if}
     </header>
     {#if page === "casks"}
-      <div class="summary-cards">
-        <div class="summary-card">
-          <span class="summary-icon"><Icon name="casks" size={22} /></span>
-          <div>
-            <strong>{library?.casks.length ?? "—"}</strong><span
-              >Total Casks</span
-            >
-          </div>
+      <dl class="library-summary" aria-label="Library summary">
+        <div>
+          <dt>Total Casks</dt>
+          <dd>{library?.casks.length ?? "—"}</dd>
         </div>
-        <div class="summary-card">
-          <span class="summary-icon"><Icon name="storage" size={22} /></span>
-          <div>
-            <strong>{bytes(usedStorageBytes)}</strong><span>Used Storage</span
-            ><small
-              title="Sum of known Cask sizes, including references. Content associated with multiple Casks is counted in each. This is not physical disk usage or reclaimable space."
+        <div
+          title="Sum of known Cask sizes, including references. Content associated with multiple Casks is counted in each. This is not physical disk usage or reclaimable space."
+        >
+          <dt>Used Storage</dt>
+          <dd>
+            {bytes(usedStorageBytes)}<small class="measurement-note"
               >Includes references{library?.unknownEntries
                 ? " · incomplete"
                 : ""}</small
             >
-          </div>
+          </dd>
         </div>
-        <div class="summary-card">
-          <span class="summary-icon"><Icon name="file" size={22} /></span>
-          <div>
-            <strong>{library?.totalItems ?? "—"}</strong><span>Total Items</span
-            ><small>Files, folders and apps</small>
-          </div>
+        <div>
+          <dt>Total Items</dt>
+          <dd>{library?.totalItems ?? "—"}</dd>
         </div>
+      </dl>
+      <div class="cask-toolbar">
+        <label class="search-field"
+          ><Icon name="search" size={17} /><input
+            aria-label="Search casks"
+            bind:value={search}
+            placeholder="Search casks…"
+          /></label
+        >
+        <span class="list-context" aria-live="polite"
+          >{#if !loading && library}{search.trim()
+              ? `${visibleCasks.length} of ${library.casks.length}`
+              : `${library.casks.length}`}
+            {library.casks.length === 1 ? "cask" : "casks"}{/if}</span
+        >
       </div>
       <section class="cask-table" aria-label="Casks">
         <div class="table-heading">

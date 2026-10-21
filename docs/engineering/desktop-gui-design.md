@@ -2,7 +2,7 @@
 
 Implemented 2026-09-30. See ADR 0018 for window and application decisions.
 
-The main window uses a narrow navigation rail, page header with search and creation, three compact summaries, and a sortable inventory list. A row opens its dedicated native workspace without replacing inventory. Menus provide secondary actions. Global Installations, Activity, and Settings expose discovery, operation/recovery status, database backup, and diagnostics.
+The main window uses a narrow navigation rail, page header with creation, one compact totals strip, a separate search toolbar, and a sortable inventory list. A row opens its dedicated native workspace without replacing inventory. Menus provide secondary actions. Global Installations, Activity, and Settings expose discovery, operation/recovery status, database backup, and diagnostics.
 
 Each Cask workspace has a compact title/description, five tabs, an independently scrolling content area, and persistent Add Items / red Cleanup navigation actions. Overview summarizes measured logical storage, counts, location, and dates. Files & Folders identifies managed, referenced, and shared associations, with compact name/size rows and expandable inline location, ownership, availability, measurement, and category details. Applications separates portable installations, registered associations, WinGet lifecycle, and reviewed installer artifacts. Advanced workflows are revealed deliberately through application-method choices. Activity queries durable state; Settings edits metadata, archives without deleting content, manages categories, and exports.
 

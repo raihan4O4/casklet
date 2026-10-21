@@ -354,8 +354,7 @@ test("an empty Cask removes after confirmation without creating a cleanup plan",
 test("Overview metadata and resource choices stay compact", async () => {
   ownershipWorkspace();
   await screen.findByRole("heading", { name: "Ownership" });
-  const info = screen.getByLabelText("Cask information") as HTMLDetailsElement;
-  expect(info.open).toBe(false);
+  const info = screen.getByRole("region", { name: "Cask information" });
   expect(within(info).queryByText("Storage Location")).toBeNull();
   expect(within(info).queryByRole("button", { name: "Open" })).toBeNull();
   expect(within(info).getByText("Created")).toBeTruthy();
@@ -779,7 +778,7 @@ test("clearing completed Activity preserves active and recovery work across relo
     (command) => (command === "list_operations" ? entries : undefined),
     true,
   );
-  await screen.findByRole("heading", { name: "Activity" });
+  await screen.findByRole("heading", { name: "Recent activity" });
   await screen.findByText("Step 0");
   expect(
     screen
@@ -808,7 +807,7 @@ test("clearing completed Activity preserves active and recovery work across relo
     (command) => (command === "list_operations" ? entries : undefined),
     true,
   );
-  await screen.findByRole("heading", { name: "Activity" });
+  await screen.findByRole("heading", { name: "Recent activity" });
   await screen.findByText("Step 1");
   expect(screen.queryByText("Step 0")).toBeNull();
 });
@@ -981,8 +980,8 @@ test("cleanup review explains actions and blocks concurrent duplicate submission
       ([command]) => command === "create_removal_plan",
     ),
   ).toBe(false);
-  await fireEvent.click(screen.getByRole("button", { name: "Cleanup" }));
-  expect(screen.getByText("Review only")).toBeTruthy();
+  expect(screen.queryByRole("button", { name: "Cleanup" })).toBeNull();
+  expect(await screen.findByText("Review only")).toBeTruthy();
   await screen.findByRole("option", { name: "Other" });
   await fireEvent.change(await screen.findByLabelText("Cleanup scope"), {
     target: { value: "other" },
@@ -1595,7 +1594,7 @@ test("application-only Casks use the same cleanup selector", async () => {
   expect(screen.queryByText("Application cleanup")).toBeNull();
   expect(screen.getByText("Review only")).toBeTruthy();
   expect(
-    screen.getByText(/Use the Alpha cleanup build to continue/),
+    screen.getByText(/You can inspect a plan; no cleanup will run/),
   ).toBeTruthy();
   expect(screen.queryByRole("button", { name: "Remove Cask" })).toBeNull();
 });
@@ -1613,6 +1612,19 @@ test("resource intake hides Copy and Move and Settings retains Archive without s
   await fireEvent.click(within(nav).getByRole("button", { name: /Settings/ }));
   expect(screen.getByLabelText("Archive this Cask")).toBeTruthy();
   expect(screen.queryByLabelText("Storage location")).toBeNull();
+  // Reopening intake from a different tab must not toggle the retained review off.
+  await fireEvent.click(screen.getByRole("button", { name: "Add Items" }));
+  expect(screen.getByLabelText("Reference at current location")).toBeTruthy();
+  expect(
+    screen.queryByRole("region", { name: "Resource inventory" }),
+  ).toBeNull();
+  await fireEvent.click(
+    screen.getByRole("button", { name: "Close Add Items" }),
+  );
+  expect(screen.queryByRole("region", { name: "Resource intake" })).toBeNull();
+  expect(
+    screen.getByRole("region", { name: "Resource inventory" }),
+  ).toBeTruthy();
 });
 
 test("deletion method is visible and changing it invalidates the reviewed preview", async () => {

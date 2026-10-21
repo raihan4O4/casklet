@@ -1895,6 +1895,13 @@
       error = message(cause);
     }
   }
+  function closeResourceIntake() {
+    adding = false;
+    pendingPath = "";
+    pendingMode = "";
+    ownershipConfirmed = false;
+    referencePicker = false;
+  }
 </script>
 
 <div
@@ -2031,10 +2038,14 @@
     {#if selected && detailTab === "overview"}
       <section class="storage-panel" aria-label="Storage summary">
         <div class="section-heading">
-          <h2><Icon name="database" size={20} /> Storage</h2>
+          <h2>Storage</h2>
           <strong class="storage-total">{bytes(totalKnownBytes)}</strong>
         </div>
-        <div class="storage-bar" aria-label="Known logical storage breakdown">
+        <div
+          class="storage-bar"
+          role="group"
+          aria-label="Known logical storage breakdown"
+        >
           <span
             class="storage-files"
             style:width={`${totalKnownBytes ? (managedFileBytes / totalKnownBytes) * 100 : 0}%`}
@@ -2068,33 +2079,34 @@
             >
           </div>
         </div>
-        <p class="footnote">
-          Known logical size · {summary?.unknownEntries
-            ? `${summary.unknownEntries} unmeasured or unavailable entries`
-            : "Physical size is not measured"}. Application sizes reflect
-          current registrations and complete folder scans;
-          {summary?.estimatedApplications ?? 0} use Windows size estimates.
-        </p>
+        <details class="storage-measurement">
+          <summary
+            >About this measurement{#if summary?.unknownEntries}
+              · incomplete{/if}</summary
+          >
+          <p class="footnote">
+            Known logical size · {summary?.unknownEntries
+              ? `${summary.unknownEntries} unmeasured or unavailable entries`
+              : "Physical size is not measured"}. Application sizes reflect
+            current registrations and complete folder scans;
+            {summary?.estimatedApplications ?? 0} use Windows size estimates.
+          </p>
+        </details>
       </section>
-      <div class="compact-stats">
+      <div class="compact-stats" aria-label="Cask contents">
         <div>
-          <Icon name="file" /><span
+          <span
             >Total Items<strong>{fileResources.length + appCount}</strong></span
           >
         </div>
         <div>
-          <Icon name="folder" /><span
-            >Files & Folders<strong>{fileResources.length}</strong></span
-          >
+          <span>Files & Folders<strong>{fileResources.length}</strong></span>
         </div>
         <div>
-          <Icon name="package" /><span
-            >Applications<strong>{appCount}</strong></span
-          >
+          <span>Applications<strong>{appCount}</strong></span>
         </div>
       </div>
-      <details class="information-panel" aria-label="Cask information">
-        <summary>Details</summary>
+      <section class="information-panel" aria-label="Cask information">
         <dl class="cask-dates">
           <div>
             <dt><Icon name="clock" size={14} />Created</dt>
@@ -2119,37 +2131,12 @@
             </dd>
           </div>
         </dl>
-      </details>
+      </section>
     {/if}
     {#if mode === "activity"}
-      <details class="activity-tools">
-        <summary>Manifest recovery tools</summary>
-        <div class="tool-actions">
-          <button type="button" onclick={() => void chooseRecoveryManifest()}
-            >Preview recovery manifest</button
-          >
-          <button type="button" onclick={() => void scanRecoveryManifests()}
-            >Scan local recovery manifests</button
-          >
-          {#if discoveredManifests}
-            <pre>{discoveredManifests}</pre>
-            {#if discoveredManifests !== "No local manifests found."}<button
-                type="button"
-                onclick={() => void recoverDiscoveredManifests()}
-                >Recover missing Casks as unverified metadata</button
-              >{/if}
-          {/if}
-          {#if recoveryManifestPreview}
-            <p>{recoveryManifestPreview}</p>
-            <button type="button" onclick={() => void recoverFromManifest()}
-              >Recover unverified metadata</button
-            >
-          {/if}
-        </div>
-      </details>
       <section id="operations" aria-label="Operation center">
         <div class="section-heading">
-          <h2>Activity</h2>
+          <h2>Recent activity</h2>
           <button
             class="secondary-button"
             type="button"
@@ -2204,7 +2191,13 @@
                       )}</time
                     >
                   </div>
-                  <span class="activity-state">{label(operation.state)}</span>
+                  <span class="activity-state"
+                    >{label(operation.state)}<span class="activity-context">
+                      · {activityCasks.find(
+                        (cask) => cask.id === operation.caskId,
+                      )?.name ?? "Removed Cask"}</span
+                    ></span
+                  >
                   {#if operation.state === "RUNNING"}<p
                       class="activity-progress"
                     >
@@ -2335,6 +2328,31 @@
             </p>{/if}
         </section>
       {/if}
+      <details class="activity-tools">
+        <summary>Manifest recovery tools</summary>
+        <div class="tool-actions">
+          <button type="button" onclick={() => void chooseRecoveryManifest()}
+            >Preview recovery manifest</button
+          >
+          <button type="button" onclick={() => void scanRecoveryManifests()}
+            >Scan local recovery manifests</button
+          >
+          {#if discoveredManifests}
+            <pre>{discoveredManifests}</pre>
+            {#if discoveredManifests !== "No local manifests found."}<button
+                type="button"
+                onclick={() => void recoverDiscoveredManifests()}
+                >Recover missing Casks as unverified metadata</button
+              >{/if}
+          {/if}
+          {#if recoveryManifestPreview}
+            <p>{recoveryManifestPreview}</p>
+            <button type="button" onclick={() => void recoverFromManifest()}
+              >Recover unverified metadata</button
+            >
+          {/if}
+        </div>
+      </details>
     {/if}
     {#if selected && detailTab === "apps"}
       <ApplicationLibrary
@@ -2752,13 +2770,8 @@
               type="button"
               aria-label="Close resource intake"
               disabled={busy}
-              onclick={() => {
-                adding = false;
-                pendingPath = "";
-                pendingMode = "";
-                ownershipConfirmed = false;
-                referencePicker = false;
-              }}><Icon name="close" size={16} /></button
+              onclick={closeResourceIntake}
+              ><Icon name="close" size={16} /></button
             >
           </div>
           {#if !pendingPath}<p>
@@ -2880,208 +2893,204 @@
             >{/if}
         </section>
       {/if}
-      <section aria-label="Resource inventory">
-        <div class="section-heading">
-          <h2>Files & folders</h2>
-          <span class="count">{fileResources.length}</span>
-        </div>
-        <p class="intro">
-          Expand an item to see its location and management details.
-        </p>
-        {#if fileResources.length === 0}<div class="empty-state compact">
-            <Icon name="folder" size={28} />
-            <h3>No files or folders yet</h3>
-            <p>Use Add Items below, or drop an item into this window.</p>
-          </div>{/if}
-        <ul class="resource-list">
-          {#each fileResources as resource (resource.id)}<li
-              class="resource-entry"
-            >
-              <button
-                class="resource-toggle"
-                type="button"
-                aria-label={`Details for ${resource.name}`}
-                aria-expanded={selectedResource?.id === resource.id}
-                aria-controls={`resource-details-${resource.id}`}
-                onclick={() => {
-                  categoryEditor = false;
-                  ownershipEditor = false;
-                  policyConfirmed = false;
-                  selectedResource =
-                    selectedResource?.id === resource.id ? null : resource;
-                  if (selectedResource) void inspectFolder(selectedResource);
-                  else folderContents = null;
-                }}
+      {#if !adding && !pendingPath}<section aria-label="Resource inventory">
+          <div class="section-heading">
+            <h2>Files & folders</h2>
+            <span class="count">{fileResources.length}</span>
+          </div>
+          <p class="intro">
+            Expand an item to see its location and management details.
+          </p>
+          {#if fileResources.length === 0}<div class="empty-state compact">
+              <Icon name="folder" size={28} />
+              <h3>No files or folders yet</h3>
+              <p>Use Add Items below, or drop an item into this window.</p>
+            </div>{/if}
+          <ul class="resource-list">
+            {#each fileResources as resource (resource.id)}<li
+                class="resource-entry"
               >
-                <Icon
-                  name={resource.kind === "DIRECTORY" ? "folder" : "file"}
-                />
-                <strong title={resource.name}>{resource.name}</strong>
-                {#if resource.availability !== "PRESENT"}<span
-                    class="resource-state warning"
-                    >{label(resource.availability)}</span
-                  >{/if}
-                <span class="resource-size">{bytes(resource.sizeBytes)}</span>
-                <span
-                  class:expanded={selectedResource?.id === resource.id}
-                  class="resource-chevron"><Icon name="down" size={16} /></span
-                >
-              </button>
-              {#if selectedResource?.id === resource.id}<div
-                  class="resource-inspector resource-details"
-                  id={`resource-details-${resource.id}`}
-                  role="region"
+                <button
+                  class="resource-toggle"
+                  type="button"
                   aria-label={`Details for ${resource.name}`}
+                  aria-expanded={selectedResource?.id === resource.id}
+                  aria-controls={`resource-details-${resource.id}`}
+                  onclick={() => {
+                    categoryEditor = false;
+                    ownershipEditor = false;
+                    policyConfirmed = false;
+                    selectedResource =
+                      selectedResource?.id === resource.id ? null : resource;
+                    if (selectedResource) void inspectFolder(selectedResource);
+                    else folderContents = null;
+                  }}
                 >
-                  <div class="section-heading">
-                    <h3 title={selectedResource.name}>
-                      {selectedResource.name}
-                    </h3>
-                    <button
-                      class="icon-button"
-                      type="button"
-                      aria-label="Close resource details"
-                      onclick={() => {
-                        selectedResource = null;
-                      }}><Icon name="close" /></button
+                  <Icon
+                    name={resource.kind === "DIRECTORY" ? "folder" : "file"}
+                  />
+                  <span class="resource-row-copy">
+                    <strong title={resource.name}>{resource.name}</strong>
+                    <small
+                      >{resource.shared
+                        ? "Shared · "
+                        : ""}{resource.management === "REFERENCED"
+                        ? "Reference"
+                        : label(resource.management)}</small
                     >
-                  </div>
-                  <dl>
-                    <dt>Location</dt>
-                    <dd>{selectedResource.path}</dd>
-                    <dt>Management</dt>
-                    <dd>
-                      {selectedResource.management === "MANAGED" &&
-                      selectedResource.containment === "EXTERNAL"
-                        ? "Managed in place"
-                        : label(selectedResource.management)}
-                    </dd>
-                    <dt>Availability</dt>
-                    <dd>{label(selectedResource.availability)}</dd>
-                    <dt>Size</dt>
-                    <dd>
-                      {bytes(selectedResource.sizeBytes)} · {label(
-                        selectedResource.sizeMeasurement,
-                      )}
-                    </dd>
-                  </dl>
-                  {#if selectedResource.kind === "DIRECTORY"}
-                    <div class="folder-contents">
-                      <h4>Folder contents</h4>
-                      <p>
-                        {selectedResource.availability === "CHANGED"
-                          ? "The registered folder was replaced or cannot be verified; its current contents have no verified cleanup authority."
-                          : selectedResource.ownership === "OWNED"
-                            ? "Contents inherit this folder’s ownership, including items added later."
-                            : "Contents are references; cleanup keeps the external data."}
-                      </p>
-                      {#if folderContents}
-                        <p>
-                          {folderContents.totalEntries} entries · {folderContents.unknownEntries
-                            ? `${folderContents.unknownEntries} entries could not be inspected`
-                            : "Current filesystem contents"}
-                        </p>
-                        <ul>
-                          {#each folderContents.entries as entry (entry.relativePath)}
-                            <li>
-                              <Icon
-                                name={entry.kind === "DIRECTORY"
-                                  ? "folder"
-                                  : "file"}
-                                size={14}
-                              /><span>{entry.relativePath}</span><small
-                                >{entry.kind === "FILE"
-                                  ? bytes(entry.sizeBytes)
-                                  : "Folder"}</small
-                              >
-                            </li>
-                          {/each}
-                        </ul>
-                        {#if folderContents.totalEntries > folderContents.entries.length}<p
-                          >
-                            Showing the first {folderContents.entries.length} entries.
-                            Storage includes all inspected files.
-                          </p>{/if}
-                      {:else}<p>Inspecting folder contents…</p>{/if}
-                    </div>
-                  {/if}
-                  <dl class="resource-category-display">
-                    <dt>Category</dt>
-                    <dd>
-                      {categories.find(
-                        (category) =>
-                          category.key === selectedResource?.categoryKey,
-                      )?.name ?? label(selectedResource.categoryKey)}
-                    </dd>
-                  </dl>
-                  <div class="resource-inspector-actions">
-                    <button
-                      type="button"
-                      class="secondary-button"
-                      disabled={busy ||
-                        removalBusy ||
-                        categoryBusy ||
-                        selected?.state !== "ACTIVE"}
-                      onclick={() => {
-                        categoryChoice = selectedResource?.categoryKey ?? "";
-                        categoryEditor = true;
-                        ownershipEditor = false;
-                      }}>Change Category</button
-                    >
-                    {#if categoryEditor}
-                      <form
-                        class="ownership-policy-form"
-                        aria-label="Change item category"
-                        onsubmit={(event) => {
-                          event.preventDefault();
-                          if (selectedResource)
-                            void recategorize(selectedResource, categoryChoice);
-                        }}
+                  </span>
+                  {#if resource.availability !== "PRESENT"}<span
+                      class="resource-state warning"
+                      >{label(resource.availability)}</span
+                    >{/if}
+                  <span class="resource-size">{bytes(resource.sizeBytes)}</span>
+                  <span
+                    class:expanded={selectedResource?.id === resource.id}
+                    class="resource-chevron"
+                    ><Icon name="down" size={16} /></span
+                  >
+                </button>
+                {#if selectedResource?.id === resource.id}<div
+                    class="resource-inspector resource-details"
+                    id={`resource-details-${resource.id}`}
+                    role="region"
+                    aria-label={`Details for ${resource.name}`}
+                  >
+                    <div class="section-heading">
+                      <h3 title={selectedResource.name}>
+                        {selectedResource.name}
+                      </h3>
+                      <button
+                        class="icon-button"
+                        type="button"
+                        aria-label="Close resource details"
+                        onclick={() => {
+                          selectedResource = null;
+                        }}><Icon name="close" /></button
                       >
-                        <label for="category-choice">Category</label><select
-                          id="category-choice"
-                          bind:value={categoryChoice}
-                          disabled={categoryBusy}
-                        >
-                          {#each categories as category (category.key)}<option
-                              value={category.key}>{category.name}</option
-                            >{/each}
-                        </select>
-                        <div>
-                          <button
-                            type="submit"
-                            disabled={categoryBusy ||
-                              !categoryChoice ||
-                              categoryChoice === selectedResource.categoryKey}
-                            >Save category</button
-                          >
-                          <button
-                            type="button"
-                            disabled={categoryBusy}
-                            onclick={() => {
-                              categoryEditor = false;
-                            }}>Cancel</button
-                          >
-                        </div>
-                      </form>
+                    </div>
+                    <dl>
+                      <dt>Location</dt>
+                      <dd>{selectedResource.path}</dd>
+                      <dt>Management</dt>
+                      <dd>
+                        {selectedResource.management === "MANAGED" &&
+                        selectedResource.containment === "EXTERNAL"
+                          ? "Managed in place"
+                          : label(selectedResource.management)}
+                      </dd>
+                      <dt>Availability</dt>
+                      <dd>{label(selectedResource.availability)}</dd>
+                      <dt>Size</dt>
+                      <dd>
+                        {bytes(selectedResource.sizeBytes)} · {label(
+                          selectedResource.sizeMeasurement,
+                        )}
+                      </dd>
+                    </dl>
+                    {#if selectedResource.kind === "DIRECTORY"}
+                      <div class="folder-contents">
+                        <h4>Folder contents</h4>
+                        <p>
+                          {selectedResource.availability === "CHANGED"
+                            ? "The registered folder was replaced or cannot be verified; its current contents have no verified cleanup authority."
+                            : selectedResource.ownership === "OWNED"
+                              ? "Contents inherit this folder’s ownership, including items added later."
+                              : "Contents are references; cleanup keeps the external data."}
+                        </p>
+                        {#if folderContents}
+                          <p>
+                            {folderContents.totalEntries} entries · {folderContents.unknownEntries
+                              ? `${folderContents.unknownEntries} entries could not be inspected`
+                              : "Current filesystem contents"}
+                          </p>
+                          <ul>
+                            {#each folderContents.entries as entry (entry.relativePath)}
+                              <li>
+                                <Icon
+                                  name={entry.kind === "DIRECTORY"
+                                    ? "folder"
+                                    : "file"}
+                                  size={14}
+                                /><span>{entry.relativePath}</span><small
+                                  >{entry.kind === "FILE"
+                                    ? bytes(entry.sizeBytes)
+                                    : "Folder"}</small
+                                >
+                              </li>
+                            {/each}
+                          </ul>
+                          {#if folderContents.totalEntries > folderContents.entries.length}<p
+                            >
+                              Showing the first {folderContents.entries.length} entries.
+                              Storage includes all inspected files.
+                            </p>{/if}
+                        {:else}<p>Inspecting folder contents…</p>{/if}
+                      </div>
                     {/if}
-                    <button
-                      type="button"
-                      class="secondary-button"
-                      disabled={busy ||
-                        removalBusy ||
-                        selected?.state !== "ACTIVE"}
-                      onclick={() => {
-                        categoryEditor = false;
-                        ownershipEditor = true;
-                        ownershipTarget =
-                          selectedResource?.ownership !== "OWNED";
-                        policyConfirmed = false;
-                      }}
-                    >
-                      Change ownership
-                    </button>
-                    {#if selectedResource.kind === "DIRECTORY" && selectedResource.ownership === "OWNED"}
+                    <dl class="resource-category-display">
+                      <dt>Category</dt>
+                      <dd>
+                        {categories.find(
+                          (category) =>
+                            category.key === selectedResource?.categoryKey,
+                        )?.name ?? label(selectedResource.categoryKey)}
+                      </dd>
+                    </dl>
+                    <div class="resource-inspector-actions">
+                      <button
+                        type="button"
+                        class="secondary-button"
+                        disabled={busy ||
+                          removalBusy ||
+                          categoryBusy ||
+                          selected?.state !== "ACTIVE"}
+                        onclick={() => {
+                          categoryChoice = selectedResource?.categoryKey ?? "";
+                          categoryEditor = true;
+                          ownershipEditor = false;
+                        }}>Change Category</button
+                      >
+                      {#if categoryEditor}
+                        <form
+                          class="ownership-policy-form"
+                          aria-label="Change item category"
+                          onsubmit={(event) => {
+                            event.preventDefault();
+                            if (selectedResource)
+                              void recategorize(
+                                selectedResource,
+                                categoryChoice,
+                              );
+                          }}
+                        >
+                          <label for="category-choice">Category</label><select
+                            id="category-choice"
+                            bind:value={categoryChoice}
+                            disabled={categoryBusy}
+                          >
+                            {#each categories as category (category.key)}<option
+                                value={category.key}>{category.name}</option
+                              >{/each}
+                          </select>
+                          <div>
+                            <button
+                              type="submit"
+                              disabled={categoryBusy ||
+                                !categoryChoice ||
+                                categoryChoice === selectedResource.categoryKey}
+                              >Save category</button
+                            >
+                            <button
+                              type="button"
+                              disabled={categoryBusy}
+                              onclick={() => {
+                                categoryEditor = false;
+                              }}>Cancel</button
+                            >
+                          </div>
+                        </form>
+                      {/if}
                       <button
                         type="button"
                         class="secondary-button"
@@ -3091,80 +3100,98 @@
                         onclick={() => {
                           categoryEditor = false;
                           ownershipEditor = true;
-                          ownershipTarget = true;
+                          ownershipTarget =
+                            selectedResource?.ownership !== "OWNED";
                           policyConfirmed = false;
-                        }}>Renew folder ownership</button
-                      >
-                    {/if}
-                    {#if ownershipEditor}
-                      <form
-                        class="ownership-policy-form"
-                        aria-label="Change item ownership"
-                        onsubmit={(event) => {
-                          event.preventDefault();
-                          void changeOwnership();
                         }}
                       >
-                        <label for="ownership-policy">Ownership</label>
-                        <select
-                          id="ownership-policy"
-                          bind:value={ownershipTarget}
-                          disabled={busy}
-                          onchange={() => {
-                            policyConfirmed = false;
-                          }}
-                        >
-                          <option value={true}>Owned by Cask</option><option
-                            value={false}>Reference</option
-                          >
-                        </select>
-                        <p>
-                          Current: {selectedResource.ownership === "OWNED"
-                            ? "Owned by Cask"
-                            : "Reference"}. This changes management only; files
-                          stay in place. Folder contents inherit this policy.
-                        </p>
-                        {#if ownershipTarget}<label
-                            ><input
-                              type="checkbox"
-                              bind:checked={policyConfirmed}
-                              disabled={busy}
-                            /> This data is dedicated to this Cask and may be removed
-                            through reviewed cleanup.</label
-                          >
-                        {:else}<p>
-                            Future cleanup will preserve this item and its
-                            contents.
-                          </p>{/if}
-                        <button
-                          type="submit"
-                          disabled={busy ||
-                            removalBusy ||
-                            selected?.state !== "ACTIVE" ||
-                            (ownershipTarget && !policyConfirmed)}
-                          >Save ownership</button
-                        >
+                        Change ownership
+                      </button>
+                      {#if selectedResource.kind === "DIRECTORY" && selectedResource.ownership === "OWNED"}
                         <button
                           type="button"
-                          disabled={busy}
+                          class="secondary-button"
+                          disabled={busy ||
+                            removalBusy ||
+                            selected?.state !== "ACTIVE"}
                           onclick={() => {
-                            ownershipEditor = false;
+                            categoryEditor = false;
+                            ownershipEditor = true;
+                            ownershipTarget = true;
                             policyConfirmed = false;
-                          }}>Cancel</button
+                          }}>Renew folder ownership</button
                         >
-                      </form>
-                    {/if}
-                    <button
-                      class="secondary-button"
-                      type="button"
-                      onclick={previewSelectedResource}
-                      >Cleanup this item</button
-                    >
-                  </div>
-                </div>{/if}
-            </li>{/each}
-        </ul>
-      </section>
+                      {/if}
+                      {#if ownershipEditor}
+                        <form
+                          class="ownership-policy-form"
+                          aria-label="Change item ownership"
+                          onsubmit={(event) => {
+                            event.preventDefault();
+                            void changeOwnership();
+                          }}
+                        >
+                          <label for="ownership-policy">Ownership</label>
+                          <select
+                            id="ownership-policy"
+                            bind:value={ownershipTarget}
+                            disabled={busy}
+                            onchange={() => {
+                              policyConfirmed = false;
+                            }}
+                          >
+                            <option value={true}>Owned by Cask</option><option
+                              value={false}>Reference</option
+                            >
+                          </select>
+                          <p>
+                            Current: {selectedResource.ownership === "OWNED"
+                              ? "Owned by Cask"
+                              : "Reference"}. This changes management only;
+                            files stay in place. Folder contents inherit this
+                            policy.
+                          </p>
+                          {#if ownershipTarget}<label
+                              ><input
+                                type="checkbox"
+                                bind:checked={policyConfirmed}
+                                disabled={busy}
+                              /> This data is dedicated to this Cask and may be removed
+                              through reviewed cleanup.</label
+                            >
+                          {:else}<p>
+                              Future cleanup will preserve this item and its
+                              contents.
+                            </p>{/if}
+                          <button
+                            type="submit"
+                            disabled={busy ||
+                              removalBusy ||
+                              selected?.state !== "ACTIVE" ||
+                              (ownershipTarget && !policyConfirmed)}
+                            >Save ownership</button
+                          >
+                          <button
+                            type="button"
+                            disabled={busy}
+                            onclick={() => {
+                              ownershipEditor = false;
+                              policyConfirmed = false;
+                            }}>Cancel</button
+                          >
+                        </form>
+                      {/if}
+                      <button
+                        class="secondary-button"
+                        type="button"
+                        onclick={previewSelectedResource}
+                        >Cleanup this item</button
+                      >
+                    </div>
+                  </div>{/if}
+              </li>{/each}
+          </ul>
+        </section>{/if}
     {/if}
     {#if selected && detailTab === "cleanup"}
       <section aria-label="Cleanup Cask">
@@ -3196,7 +3223,7 @@
             >
               <Icon name="info" size={16} /><span
                 ><strong>Review only</strong> · Approval and execution are unavailable
-                in this build. Use the Alpha cleanup build to continue.</span
+                in this build. You can inspect a plan; no cleanup will run.</span
               >
             </p>{/if}
           {#if (caskRemovalStatus?.unfinishedOperations ?? 0) > 0}<p>
@@ -3264,6 +3291,7 @@
               </fieldset>
             {/if}
             <button
+              class="primary-button"
               type="button"
               onclick={() => void previewRemoval()}
               disabled={removalBusy ||
@@ -3452,20 +3480,33 @@
   </div>
   {#if mode === "detail"}<footer class="workspace-footer">
       <button
+        class:primary-button={!(adding && detailTab === "files") &&
+          detailTab !== "cleanup"}
+        class:secondary-button={(adding && detailTab === "files") ||
+          detailTab === "cleanup"}
+        aria-expanded={adding && detailTab === "files"}
         type="button"
         disabled={!selected || busy || selected.state !== "ACTIVE"}
         onclick={() => {
+          const nextAdding = !(adding && detailTab === "files");
           detailTab = "files";
-          adding = !adding;
-        }}><Icon name="plus" /> Add Items</button
+          adding = nextAdding;
+          if (adding) selectedResource = null;
+          else closeResourceIntake();
+        }}
+        ><Icon name={adding && detailTab === "files" ? "close" : "plus"} />
+        {adding && detailTab === "files"
+          ? "Close Add Items"
+          : "Add Items"}</button
       >
-      <button
-        type="button"
-        disabled={!selected || removalBusy}
-        class="danger-button"
-        onclick={() => navigateCleanup()}
-        ><Icon name="trash" size={17} /> Cleanup</button
-      >
+      {#if detailTab !== "cleanup"}
+        <button
+          type="button"
+          disabled={!selected || removalBusy}
+          class="danger-button"
+          onclick={() => navigateCleanup()}
+          ><Icon name="trash" size={17} /> Cleanup</button
+        >{/if}
     </footer>{/if}
 </div>
 
