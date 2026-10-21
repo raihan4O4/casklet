@@ -157,6 +157,59 @@ fn retire_duplicate_references(
 }
 
 impl ResourceRepository for SqliteCasks {
+    fn cached_application_sizes(
+        &self,
+        entries: &[casklet_application::resource::ApplicationStorageEntry],
+    ) -> Result<Vec<casklet_application::resource::ApplicationSize>, String> {
+        use casklet_application::resource::ApplicationSize;
+        let connection = self.connection()?;
+        let mut query = connection.prepare("SELECT w.state,s.size_bytes,s.estimated FROM windows_installations w LEFT JOIN application_size_snapshots s ON s.source_key=w.source_key COLLATE NOCASE AND s.evidence_sha256=w.evidence_sha256 WHERE w.source_key=?1 COLLATE NOCASE").map_err(|e| e.to_string())?;
+        entries
+            .iter()
+            .map(|entry| {
+                query
+                    .query_row([&entry.source_key], |r| {
+                        let state: String = r.get(0)?;
+                        let bytes: Option<i64> = r.get(1)?;
+                        let bytes = bytes.and_then(|value| u64::try_from(value).ok());
+                        let estimated: Option<bool> = r.get(2)?;
+                        Ok(if state == "MISSING" {
+                            ApplicationSize::Missing
+                        } else if state == "PRESENT" {
+                            bytes.map_or(ApplicationSize::Unknown, |bytes| ApplicationSize::Known {
+                                bytes,
+                                estimated: estimated.unwrap_or(true),
+                            })
+                        } else {
+                            ApplicationSize::Unknown
+                        })
+                    })
+                    .optional()
+                    .map(|value| value.unwrap_or(ApplicationSize::Unknown))
+                    .map_err(|e| e.to_string())
+            })
+            .collect()
+    }
+    fn record_application_sizes(
+        &self,
+        entries: &[casklet_application::resource::ApplicationStorageEntry],
+        sizes: &[casklet_application::resource::ApplicationSize],
+    ) -> Result<(), String> {
+        use casklet_application::resource::ApplicationSize;
+        let mut connection = self.connection()?;
+        let tx = connection.transaction().map_err(|e| e.to_string())?;
+        for (entry, size) in entries.iter().zip(sizes) {
+            let (bytes, estimated) = match size {
+                ApplicationSize::Known { bytes, estimated } => {
+                    (i64::try_from(*bytes).ok(), *estimated)
+                }
+                _ => (None, false),
+            };
+            tx.execute("INSERT INTO application_size_snapshots(source_key,evidence_sha256,size_bytes,estimated,measured_at_ms) SELECT source_key,evidence_sha256,?2,?3,CAST(strftime('%s','now') AS INTEGER)*1000 FROM windows_installations WHERE source_key=?1 COLLATE NOCASE AND evidence_sha256=?4 ON CONFLICT(source_key) DO UPDATE SET evidence_sha256=excluded.evidence_sha256,size_bytes=excluded.size_bytes,estimated=excluded.estimated,measured_at_ms=excluded.measured_at_ms", params![entry.source_key,bytes,estimated,entry.evidence_sha256]).map_err(|e| e.to_string())?;
+        }
+        tx.commit().map_err(|e| e.to_string())
+    }
+
     fn recorded_resource_identity(&self, id: &str) -> Result<Option<String>, String> {
         self.connection()?.query_row("SELECT identity_key FROM resource_locations WHERE resource_id=?1 AND is_primary=1 AND retired_at_ms IS NULL", [id], |row|row.get(0)).optional().map(Option::flatten).map_err(|e|e.to_string())
     }
@@ -175,13 +228,14 @@ impl ResourceRepository for SqliteCasks {
         cask_id: &str,
     ) -> Result<Vec<casklet_application::resource::ApplicationStorageEntry>, String> {
         let connection = self.connection()?;
-        let mut query = connection.prepare("SELECT w.source_key, EXISTS(SELECT 1 FROM managed_msi_installations m WHERE m.installation_id=w.id AND m.cask_id=a.cask_id AND m.state='OWNED') FROM windows_cask_associations a JOIN windows_installations w ON w.id=a.installation_id WHERE a.cask_id=?1 AND a.removed_at_ms IS NULL UNION ALL SELECT w.source_key,1 FROM winget_installations g JOIN windows_installations w ON w.id=g.registry_installation_id WHERE g.cask_id=?1 AND g.state IN ('INSTALLED','CHANGED','RECOVERY_REQUIRED') ORDER BY source_key").map_err(|e| e.to_string())?;
+        let mut query = connection.prepare("SELECT w.source_key,w.evidence_sha256, EXISTS(SELECT 1 FROM managed_msi_installations m WHERE m.installation_id=w.id AND m.cask_id=a.cask_id AND m.state='OWNED') FROM windows_cask_associations a JOIN windows_installations w ON w.id=a.installation_id WHERE a.cask_id=?1 AND a.removed_at_ms IS NULL UNION ALL SELECT w.source_key,w.evidence_sha256,1 FROM winget_installations g JOIN windows_installations w ON w.id=g.registry_installation_id WHERE g.cask_id=?1 AND g.state IN ('INSTALLED','CHANGED','RECOVERY_REQUIRED') ORDER BY source_key").map_err(|e| e.to_string())?;
         let mut entries: Vec<casklet_application::resource::ApplicationStorageEntry> = Vec::new();
         for row in query
             .query_map([cask_id], |row| {
                 Ok(casklet_application::resource::ApplicationStorageEntry {
                     source_key: row.get(0)?,
-                    owned: row.get(1)?,
+                    evidence_sha256: row.get(1)?,
+                    owned: row.get(2)?,
                 })
             })
             .map_err(|e| e.to_string())?

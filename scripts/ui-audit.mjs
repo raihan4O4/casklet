@@ -500,6 +500,52 @@ try {
       }),
     );
   }
+  // Extreme custom fills, readable derived ink, persistence and narrow controls.
+  for (const mode of ["light", "dark"]) {
+    await start(mode);
+    await page.getByRole("button", { name: "Settings", exact: true }).click();
+    await page
+      .getByRole("heading", { name: "Appearance", exact: true })
+      .waitFor();
+    for (const color of [
+      "#7357d8",
+      "#ffffff",
+      "#000000",
+      "#ffff00",
+      "#0000ff",
+    ]) {
+      await page.getByRole("textbox", { name: "Accent hex color" }).fill(color);
+      await page.waitForFunction(
+        (value) =>
+          document.documentElement.style.getPropertyValue(
+            "--action-background",
+          ) === value,
+        color,
+      );
+      await shot(`${mode}-accent-${color.slice(1)}`);
+    }
+    await page.reload();
+    await page.getByRole("button", { name: "Settings", exact: true }).click();
+    if (
+      (await page
+        .getByRole("textbox", { name: "Accent hex color" })
+        .inputValue()) !== "#0000ff"
+    )
+      throw Error("Accent did not persist");
+    await page
+      .getByRole("button", { name: "Reset to default", exact: true })
+      .click();
+    if (
+      await page.evaluate(() =>
+        document.documentElement.style.getPropertyValue("--action-background"),
+      )
+    )
+      throw Error("Accent reset left overrides");
+  }
+  await start("dark", { viewport: { width: 390, height: 844 }, reduced: true });
+  await page.getByRole("button", { name: "Settings", exact: true }).click();
+  await page.getByRole("button", { name: "Iris", exact: true }).click();
+  await shot("dark-accent-narrow-reduced");
   const summary = {
     scope:
       "Production bundle, test-only contract-shaped IPC fixture, fixed desktop viewports. Not a native filesystem/provider/installer test. No mobile or SEO score applies.",

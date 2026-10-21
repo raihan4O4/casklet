@@ -314,11 +314,18 @@ fn availability_error(error: &std::io::Error) -> &'static str {
     }
 }
 
+fn inspect_path(source: &str, progress: &dyn Fn(u64, u64)) -> Result<Observation, String> {
+    inspect_path_with_mode(source, progress, true)
+}
 #[expect(
     clippy::too_many_lines,
     reason = "bounded directory scan is one cohesive validation pass"
 )]
-fn inspect_path(source: &str, progress: &dyn Fn(u64, u64)) -> Result<Observation, String> {
+fn inspect_path_with_mode(
+    source: &str,
+    progress: &dyn Fn(u64, u64),
+    deep: bool,
+) -> Result<Observation, String> {
     let input = Path::new(source);
     if source.is_empty() {
         return Err("Source path is empty".into());
@@ -365,7 +372,7 @@ fn inspect_path(source: &str, progress: &dyn Fn(u64, u64)) -> Result<Observation
     if kind == ResourceKind::File {
         size = metadata.len();
         progress(size, size);
-    } else {
+    } else if deep {
         let mut queue = VecDeque::from([(path.clone(), 0_usize)]);
         while let Some((directory, depth)) = queue.pop_front() {
             if depth > MAX_DEPTH {
@@ -415,7 +422,12 @@ fn inspect_path(source: &str, progress: &dyn Fn(u64, u64)) -> Result<Observation
         .ok()
         .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
         .map_or(0, |d| d.as_nanos());
-    let (recordable_identity, handle) = if kind == ResourceKind::File {
+    let (recordable_identity, handle) = if !deep {
+        (
+            None,
+            same_file::Handle::from_path(&path).map_err(|e| e.to_string())?,
+        )
+    } else if kind == ResourceKind::File {
         match recordable_file_identity(&path) {
             Some((identity, handle)) => (Some(identity), handle),
             None => (
@@ -445,8 +457,12 @@ fn inspect_path(source: &str, progress: &dyn Fn(u64, u64)) -> Result<Observation
         source_path: path.to_string_lossy().into_owned(),
         name,
         kind,
-        size_bytes: Some(size),
-        unknown_entries: unknown,
+        size_bytes: if deep || kind == ResourceKind::File {
+            Some(size)
+        } else {
+            None
+        },
+        unknown_entries: unknown + u64::from(!deep && kind == ResourceKind::Directory),
         identity: format!("{}:{size}:{entries}:{modified}", kind.code()),
         recordable_identity,
         file_identity: Arc::new(file_identity),
@@ -628,7 +644,8 @@ impl ResourceStorage for LocalStorage {
                         && path.is_absolute()
                         && path.components().count() >= 4
                         && path.is_dir()
-                        && let Ok(measured) = inspect_path(location, &|_, _| {})
+                        && let Some(measured) =
+                            self.measure_resource(location, ResourceKind::Directory, true)
                         && measured.unknown_entries == 0
                         && let Some(bytes) = measured.size_bytes
                     {
@@ -683,6 +700,13 @@ impl ResourceStorage for LocalStorage {
             return Err("Ownership requires a complete scan and stable filesystem identity".into());
         }
         Ok(())
+    }
+    fn inspect_reference(
+        &self,
+        source: &str,
+        progress: &dyn Fn(u64, u64),
+    ) -> Result<Observation, String> {
+        inspect_path_with_mode(source, progress, false)
     }
     fn inspect(&self, source: &str, progress: &dyn Fn(u64, u64)) -> Result<Observation, String> {
         inspect_path(source, progress)

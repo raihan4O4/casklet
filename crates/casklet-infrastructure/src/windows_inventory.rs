@@ -187,6 +187,9 @@ pub(crate) fn upsert(
     tx.execute("INSERT INTO windows_installations(id,application_id,source_key,scope,display_name,publisher,display_version,install_location,evidence_json,evidence_sha256,state,first_seen_at_ms,last_seen_at_ms,last_verified_at_ms) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,'PRESENT',?11,?11,?11)
         ON CONFLICT(id) DO UPDATE SET application_id=excluded.application_id,display_name=excluded.display_name,publisher=excluded.publisher,display_version=excluded.display_version,install_location=excluded.install_location,evidence_json=excluded.evidence_json,evidence_sha256=excluded.evidence_sha256,state=CASE WHEN windows_installations.evidence_sha256=excluded.evidence_sha256 THEN 'PRESENT' ELSE 'CHANGED' END,last_seen_at_ms=excluded.last_seen_at_ms,last_verified_at_ms=excluded.last_verified_at_ms,revision=windows_installations.revision+1",
         params![item.installation_id,item.application_id,item.source_key,item.scope,item.name,item.publisher,item.display_version,item.install_location,item.evidence_json,item.evidence_sha256,now]).map_err(|e|e.to_string())?;
+    // Cheap registry metadata captured during explicit inventory/association; never a tree scan.
+    let estimate = registration_size(&item.source_key).and_then(|value| i64::try_from(value).ok());
+    tx.execute("INSERT INTO application_size_snapshots(source_key,evidence_sha256,size_bytes,estimated,measured_at_ms) VALUES (?1,?2,?3,1,?4) ON CONFLICT(source_key) DO UPDATE SET evidence_sha256=excluded.evidence_sha256,size_bytes=excluded.size_bytes,estimated=1,measured_at_ms=excluded.measured_at_ms WHERE application_size_snapshots.evidence_sha256!=excluded.evidence_sha256 OR application_size_snapshots.size_bytes IS NULL", params![item.source_key,item.evidence_sha256,estimate,now]).map_err(|e|e.to_string())?;
     Ok(())
 }
 

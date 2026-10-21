@@ -151,11 +151,11 @@ a {
 .primary-button {
   background: var(--action-background, #202020);
   color: var(--action-text, #fff);
-  border-color: var(--action-background, #202020);
+  border-color: var(--action-border, var(--action-background, #202020));
 }
 .primary-button:hover {
   background: var(--action-hover, #080808);
-  border-color: var(--action-hover, #080808);
+  border-color: var(--action-border, var(--action-hover, #080808));
 }
 .danger-button {
   color: var(--danger-text, #b93838);
@@ -450,7 +450,7 @@ a {
   min-height: 72px;
   border-bottom: 1px solid var(--border-subtle, #eee);
 }
-.cask-table li:last-child {
+.cask-table:not(.collection-grid) li:last-child {
   border-bottom: 0;
 }
 .cask-table li:hover {
@@ -1050,7 +1050,7 @@ dialog p {
 .application-workflow-panel .primary {
   background: var(--action-background, #222);
   color: var(--action-text, #fff);
-  border-color: var(--action-background, #222);
+  border-color: var(--action-border, var(--action-background, #222));
 }
 .applications-heading > .primary:hover,
 .application-workflow-panel .primary:hover {

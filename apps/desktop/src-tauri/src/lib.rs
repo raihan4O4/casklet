@@ -78,6 +78,7 @@ pub fn run() {
             set_window_theme,
             open_cask_storage,
             open_storage_root,
+            open_resource_location,
             export_cask,
             preview_recovery_manifest,
             recover_manifest,
@@ -972,12 +973,33 @@ async fn add_resource(
 async fn list_resources(
     service: tauri::State<'_, Service>,
     request: casklet_contracts::ListResources,
+    refresh: Option<bool>,
 ) -> Result<Vec<casklet_contracts::ResourceView>, casklet_contracts::ApiError> {
     let service = service.inner().clone();
-    tauri::async_runtime::spawn_blocking(move || service.list_resources(&request, "desktop"))
-        .await
-        .map_err(|e| window_error(e.to_string()))?
+    tauri::async_runtime::spawn_blocking(move || {
+        if refresh.unwrap_or(false) {
+            service.list_resources(&request, "desktop")
+        } else {
+            service.list_resource_metadata(&request, "desktop")
+        }
+    })
+    .await
+    .map_err(|e| window_error(e.to_string()))?
 }
+#[tauri::command]
+#[allow(clippy::needless_pass_by_value)]
+async fn open_resource_location(
+    service: tauri::State<'_, Service>,
+    request: casklet_contracts::GetResource,
+) -> Result<(), casklet_contracts::ApiError> {
+    let service = service.inner().clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        service.open_resource_location(&request, "desktop")
+    })
+    .await
+    .map_err(|e| worker_error(&e))?
+}
+
 #[tauri::command]
 #[allow(clippy::needless_pass_by_value)]
 async fn get_resource(
@@ -1032,11 +1054,18 @@ fn categorize_resource(
 async fn storage_summary(
     service: tauri::State<'_, Service>,
     request: casklet_contracts::GetStorageSummary,
+    refresh: Option<bool>,
 ) -> Result<casklet_contracts::StorageSummary, casklet_contracts::ApiError> {
     let service = service.inner().clone();
-    tauri::async_runtime::spawn_blocking(move || service.storage_summary(&request, "desktop"))
-        .await
-        .map_err(|e| window_error(e.to_string()))?
+    tauri::async_runtime::spawn_blocking(move || {
+        if refresh.unwrap_or(false) {
+            service.storage_summary(&request, "desktop")
+        } else {
+            service.storage_summary_metadata(&request, "desktop")
+        }
+    })
+    .await
+    .map_err(|e| window_error(e.to_string()))?
 }
 
 #[tauri::command]

@@ -279,7 +279,7 @@
       <span class="muted">Managed storage</span><strong
         >{bytes(library?.managedBytes)}</strong
       >
-      <p>Known logical size{library?.unknownEntries ? " · incomplete" : ""}</p>
+      <p>Saved logical size{library?.unknownEntries ? " · incomplete" : ""}</p>
       <button
         class="text-button"
         type="button"
@@ -473,7 +473,7 @@
                       ></span
                     ><span
                       class="collection-size"
-                      title="Known logical size including references"
+                      title="Last known logical size including references; refresh sizes inside the Cask to update"
                       >{bytes(
                         item.managedBytes + item.referencedBytes,
                       )}{item.unknownEntries ? " +" : ""}</span
