@@ -1025,7 +1025,13 @@ test("in-place ownership needs explicit consent and uses the shared adoption com
   const details = screen.getByRole("region", {
     name: "Details for project.txt",
   });
-  expect(within(details).getByText("D:/Projects/project.txt")).toBeTruthy();
+  expect(within(details).queryByText("D:/Projects/project.txt")).toBeNull();
+  await fireEvent.click(
+    within(details).getByRole("button", { name: "Open location" }),
+  );
+  expect(calls.invoke).toHaveBeenCalledWith("open_resource_location", {
+    request: { version: 1, id: "owned" },
+  });
   expect(within(details).queryByText("Cleanup authority")).toBeNull();
   await fireEvent.click(toggle);
   expect(
@@ -2541,7 +2547,7 @@ test("interrupted application queue restores in unified cleanup and closes witho
 });
 
 test.each([true, false])(
-  "folder content inherits parent status and refreshes on focus (owned=%s)",
+  "folder content inherits parent status and refreshes only on request (owned=%s)",
   async (owned) => {
     let resource = {
       version: 1,
@@ -2594,11 +2600,26 @@ test.each([true, false])(
       { relativePath: "nested/later.txt", kind: "FILE", sizeBytes: 11 },
     ];
     resource = { ...resource, sizeBytes: 14 };
+    const inspections = calls.invoke.mock.calls.filter(
+      ([name]) => name === "resource_contents",
+    ).length;
     await fireEvent(window, new Event("focus"));
+    await waitFor(() =>
+      expect(calls.invoke).toHaveBeenCalledWith(
+        "list_resources",
+        expect.anything(),
+      ),
+    );
+    expect(
+      calls.invoke.mock.calls.filter(([name]) => name === "resource_contents"),
+    ).toHaveLength(inspections);
+    await fireEvent.click(
+      screen.getByRole("button", { name: "Refresh folder contents" }),
+    );
     await screen.findByText("nested/later.txt");
     expect(calls.invoke).toHaveBeenCalledWith("resource_contents", {
       request: { version: 1, id: "folder" },
-      refresh: false,
+      refresh: true,
     });
     expect(
       calls.invoke.mock.calls.some(([command]) =>
@@ -3380,3 +3401,120 @@ test.each([
     expect(retired).toBe(!failure);
   },
 );
+
+test("associating an application releases the picker while storage measurement is still pending", async () => {
+  const app = appFixture("Photo editor", "photo");
+  let linked = false;
+  let finishSummary: ((value: object) => void) | undefined;
+  ownershipWorkspace([], (command) => {
+    if (command === "search_installed_applications") return [app];
+    if (command === "associate_installed_application") {
+      linked = true;
+      return app;
+    }
+    if (command === "list_associated_applications") return linked ? [app] : [];
+    if (command === "storage_summary" && linked)
+      return new Promise((resolve) => {
+        finishSummary = resolve;
+      });
+    return undefined;
+  });
+  await screen.findByRole("heading", { name: "Ownership" });
+  await waitFor(() =>
+    expect(calls.invoke).toHaveBeenCalledWith(
+      "storage_summary",
+      expect.anything(),
+    ),
+  );
+  await fireEvent.click(screen.getByRole("button", { name: "Applications" }));
+  await fireEvent.click(
+    screen.getByRole("button", { name: "Add Application" }),
+  );
+  await fireEvent.click(
+    screen.getByRole("button", { name: /Associate existing app/ }),
+  );
+  await fireEvent.click(screen.getByRole("button", { name: "Search" }));
+  await fireEvent.click(
+    await screen.findByRole("button", { name: "Associate" }),
+  );
+  await waitFor(() =>
+    expect(
+      screen.getByRole("button", { name: "Search" }).hasAttribute("disabled"),
+    ).toBe(false),
+  );
+  expect(
+    screen.getByRole("button", { name: "Associated" }).hasAttribute("disabled"),
+  ).toBe(true);
+  expect(
+    screen
+      .getByRole("button", { name: "Refresh inventory" })
+      .hasAttribute("disabled"),
+  ).toBe(false);
+  expect(finishSummary).toBeTruthy();
+  await fireEvent.click(screen.getByRole("button", { name: "Search" }));
+  await waitFor(() =>
+    expect(
+      screen.getByRole("button", { name: "Search" }).hasAttribute("disabled"),
+    ).toBe(false),
+  );
+  finishSummary?.({
+    managedLogicalBytes: 0,
+    referencedLogicalBytes: 0,
+    reclaimableMinBytes: 0,
+    reclaimableMaxBytes: 0,
+    unknownEntries: 0,
+  });
+});
+
+test("opening and polling read saved metadata; explicit size refresh leaves navigation usable", async () => {
+  let finish: ((value: object) => void) | undefined;
+  ownershipWorkspace([], (command, args) => {
+    if (
+      command === "storage_summary" &&
+      "refresh" in args &&
+      args.refresh === true
+    )
+      return new Promise((resolve) => {
+        finish = resolve;
+      });
+    return undefined;
+  });
+  await screen.findByRole("heading", { name: "Ownership" });
+  await waitFor(() =>
+    expect(calls.invoke).toHaveBeenCalledWith(
+      "storage_summary",
+      expect.anything(),
+    ),
+  );
+  await fireEvent(window, new Event("focus"));
+  expect(
+    calls.invoke.mock.calls
+      .filter(([name]) => ["list_resources", "storage_summary"].includes(name))
+      .every(([, args]) => args.refresh !== true),
+  ).toBe(true);
+  await fireEvent.click(screen.getByRole("button", { name: "Refresh sizes" }));
+  await waitFor(() => expect(finish).toBeTruthy());
+  expect(
+    screen
+      .getByRole("button", { name: "Measuring sizes…" })
+      .hasAttribute("disabled"),
+  ).toBe(true);
+  await fireEvent.click(screen.getByRole("button", { name: "Applications" }));
+  expect(
+    screen.getByRole("region", { name: "Cask applications" }),
+  ).toBeTruthy();
+  finish?.({
+    managedLogicalBytes: 0,
+    referencedLogicalBytes: 0,
+    reclaimableMinBytes: 0,
+    reclaimableMaxBytes: 0,
+    unknownEntries: 0,
+  });
+  await screen.findByText("Saved sizes updated.");
+  await fireEvent.click(screen.getByRole("button", { name: "Overview" }));
+  expect(
+    screen
+      .getByRole("button", { name: "Refresh sizes" })
+      .hasAttribute("disabled"),
+  ).toBe(false);
+});

@@ -325,6 +325,7 @@
   let detectedApps: DetectedApplicationView[] = $state([]);
   let associatedApps: DetectedApplicationView[] = $state([]);
   let installedBusy = $state(false);
+  let installedLinking = $state(false);
   let installedSearched = $state(false);
   let referencePicker = $state(false);
   let wingetCapabilities: WingetCapabilities | null = $state(null);
@@ -786,6 +787,7 @@
     }
   }
   async function searchInstalled() {
+    if (installedBusy) return;
     installedBusy = true;
     try {
       detectedApps = await invoke<DetectedApplicationView[]>(
@@ -801,13 +803,20 @@
     }
   }
   async function refreshInstalled() {
+    if (installedBusy) return;
     installedBusy = true;
     try {
       const count = await invoke<number>("refresh_installed_applications", {
         request: { version: CONTRACT_VERSION },
       });
       progress = `Reconciled ${count} detected installations.`;
-      await searchInstalled();
+      detectedApps = await invoke<DetectedApplicationView[]>(
+        "search_installed_applications",
+        {
+          request: { version: CONTRACT_VERSION, query: installedQuery },
+        },
+      );
+      installedSearched = true;
       await refreshAssociated();
       error = "";
     } catch (cause) {
@@ -823,9 +832,27 @@
       { request: { version: CONTRACT_VERSION, caskId: selected.id } },
     );
   }
+  let associationSummaryRevision = 0;
+  async function refreshAssociationSummary(caskId: string) {
+    const revision = ++associationSummaryRevision;
+    try {
+      const value = await invoke<StorageSummary>("storage_summary", {
+        request: { version: CONTRACT_VERSION, caskId },
+      });
+      if (selected?.id === caskId && revision === associationSummaryRevision)
+        summary = value;
+    } catch (cause) {
+      if (selected?.id === caskId && revision === associationSummaryRevision)
+        notify(
+          `Application list updated, but storage size could not refresh: ${message(cause)}`,
+          "warning",
+        );
+    }
+  }
   async function associateDetected(item: DetectedApplicationView) {
-    if (!selected) return;
+    if (!selected || installedBusy) return;
     installedBusy = true;
+    installedLinking = true;
     try {
       await invoke("associate_installed_application", {
         request: {
@@ -835,9 +862,7 @@
         },
       });
       await refreshAssociated();
-      summary = await invoke<StorageSummary>("storage_summary", {
-        request: { version: CONTRACT_VERSION, caskId: selected.id },
-      });
+      void refreshAssociationSummary(selected.id);
       progress =
         "Associated existing installation. Casklet did not install or own it.";
       error = "";
@@ -845,11 +870,13 @@
       error = message(cause);
     } finally {
       installedBusy = false;
+      installedLinking = false;
     }
   }
   async function disassociateDetected(item: DetectedApplicationView) {
-    if (!selected) return;
+    if (!selected || installedBusy) return;
     installedBusy = true;
+    installedLinking = true;
     try {
       await invoke("disassociate_installed_application", {
         request: {
@@ -859,15 +886,14 @@
         },
       });
       await refreshAssociated();
-      summary = await invoke<StorageSummary>("storage_summary", {
-        request: { version: CONTRACT_VERSION, caskId: selected.id },
-      });
+      void refreshAssociationSummary(selected.id);
       progress = "Association removed. The installation is unchanged.";
       error = "";
     } catch (cause) {
       error = message(cause);
     } finally {
       installedBusy = false;
+      installedLinking = false;
     }
   }
   async function inspectPortableArchive() {
@@ -1583,8 +1609,43 @@
       error = `Folder inspection failed: ${message(cause)}`;
     }
   }
+  let measuringSizes = $state(false);
+  async function refreshSizes() {
+    if (!selected || measuringSizes) return;
+    measuringSizes = true;
+    const caskId = selected.id;
+    ++associationSummaryRevision;
+    try {
+      const value = await invoke<StorageSummary>("storage_summary", {
+        request: { version: CONTRACT_VERSION, caskId },
+        refresh: true,
+      });
+      const current = await invoke<ResourceView[]>("list_resources", {
+        request: { version: CONTRACT_VERSION, caskId },
+      });
+      if (selected?.id !== caskId) return;
+      summary = value;
+      resources = current;
+      if (selectedResource)
+        selectedResource =
+          current.find((item) => item.id === selectedResource?.id) ?? null;
+      progress = "Saved sizes updated.";
+    } catch (cause) {
+      error = `Size refresh failed: ${message(cause)}`;
+    } finally {
+      measuringSizes = false;
+    }
+  }
   async function syncFiles() {
-    if (!selected || removed || syncingFiles || busy || removalBusy) return;
+    if (
+      !selected ||
+      removed ||
+      syncingFiles ||
+      busy ||
+      removalBusy ||
+      measuringSizes
+    )
+      return;
     syncingFiles = true;
     const caskId = selected.id;
     try {
@@ -1601,7 +1662,7 @@
         selectedResource =
           current.find((resource) => resource.id === selectedResource?.id) ??
           null;
-        if (selectedResource) await inspectFolder(selectedResource, false);
+        // Poll saved state only. Folder enumeration is an explicit user inspection.
       }
     } catch (cause) {
       error = `Folder refresh failed: ${message(cause)}`;
@@ -1906,6 +1967,20 @@
       onReady();
     }
   }
+  let openingLocation = $state(false);
+  async function openResourceLocation(id: string) {
+    if (openingLocation) return;
+    openingLocation = true;
+    try {
+      await invoke("open_resource_location", {
+        request: { version: CONTRACT_VERSION, id },
+      });
+    } catch (cause) {
+      error = `Unable to open location: ${message(cause)}`;
+    } finally {
+      openingLocation = false;
+    }
+  }
   async function openStorage() {
     if (!selected) return;
     try {
@@ -2096,7 +2171,7 @@
         <div class="section-heading">
           <div>
             <h2>Storage</h2>
-            <p class="storage-caption">Known size, including references</p>
+            <p class="storage-caption">Last known size, including references</p>
           </div>
           <strong class="storage-total">{bytes(totalKnownBytes)}</strong>
         </div>
@@ -2138,6 +2213,16 @@
             >
           </div>
         </div>
+        <button
+          class="text-button"
+          type="button"
+          disabled={measuringSizes}
+          onclick={() => void refreshSizes()}
+        >
+          <Icon name="refresh" size={14} />{measuringSizes
+            ? "Measuring sizes…"
+            : "Refresh sizes"}
+        </button>
         <details class="storage-measurement">
           <summary
             >About this measurement{#if summary?.unknownEntries}
@@ -2147,7 +2232,9 @@
             Known logical size · {summary?.unknownEntries
               ? `${summary.unknownEntries} unmeasured or unavailable entries`
               : "Physical size is not measured"}. Application sizes reflect
-            current registrations and complete folder scans;
+            saved observations. Opening a Cask does not scan its content; use
+            Refresh sizes to update measurements. Of the saved application
+            sizes,
             {summary?.estimatedApplications ?? 0} use Windows size estimates.
           </p>
         </details>
@@ -2762,7 +2849,9 @@
                     placeholder="Application name or publisher…"
                   /></label
                 ><button class="primary-button" disabled={installedBusy}
-                  >{installedBusy ? "Searching…" : "Search"}</button
+                  >{installedBusy && !installedLinking
+                    ? "Searching…"
+                    : "Search"}</button
                 >
               </div>
             </form>
@@ -2779,7 +2868,10 @@
                 ><Icon name="refresh" size={14} />Refresh inventory</button
               >
             </div>
-            {#if installedBusy}<p class="loading" role="status">
+            {#if installedBusy && !installedLinking}<p
+                class="loading"
+                role="status"
+              >
                 Reading installed applications…
               </p>{:else if detectedApps.length}
               <ul class="application-list picker-results">
@@ -2991,7 +3083,8 @@
             <span class="count">{fileResources.length}</span>
           </div>
           <p class="intro">
-            Expand an item to see its location and management details.
+            Saved status and sizes. Expand an item to inspect its details;
+            refresh sizes in Overview to check for changes.
           </p>
           {#if fileResources.length === 0}<div class="empty-state compact">
               <Icon name="folder" size={28} />
@@ -3071,8 +3164,13 @@
                       >
                     </div>
                     <div class="resource-location">
-                      <span><Icon name="folder" size={14} />Location</span>
-                      <p>{selectedResource.path}</p>
+                      <button
+                        type="button"
+                        disabled={openingLocation}
+                        onclick={() => void openResourceLocation(resource.id)}
+                      >
+                        <Icon name="folder" size={16} />Open location
+                      </button>
                     </div>
                     <dl class="resource-facts">
                       <div>
@@ -3291,7 +3389,16 @@
                     </div>
                     {#if selectedResource.kind === "DIRECTORY"}
                       <div class="folder-contents">
-                        <h4>Folder contents</h4>
+                        <div class="section-heading">
+                          <h4>Folder contents</h4>
+                          <button
+                            type="button"
+                            class="text-button"
+                            onclick={() =>
+                              void inspectFolder(selectedResource!, true)}
+                            >Refresh folder contents</button
+                          >
+                        </div>
                         <p>
                           {selectedResource.availability === "CHANGED"
                             ? "The registered folder was replaced or cannot be verified; its current contents have no verified cleanup authority."
@@ -3303,7 +3410,7 @@
                           <p>
                             {folderContents.totalEntries} entries · {folderContents.unknownEntries
                               ? `${folderContents.unknownEntries} entries could not be inspected`
-                              : "Current filesystem contents"}
+                              : "Last inspected contents"}
                           </p>
                           <ul>
                             {#each folderContents.entries as entry (entry.relativePath)}

@@ -801,7 +801,7 @@ fn repeat_intake_reuses_identity_and_explicit_ownership_promotes_reference() {
         }
         let resources = f.service.repository.list_resources(&f.cask.id).unwrap();
         assert_eq!(resources.len(), 1);
-        assert_eq!(resources[0].size_bytes, Some(9));
+        assert_eq!(resources[0].size_bytes, (kind != "folder").then_some(9));
         let summary_request = casklet_contracts::GetStorageSummary {
             version: CONTRACT_VERSION,
             cask_id: f.cask.id.clone(),

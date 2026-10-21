@@ -45,6 +45,13 @@ pub trait StorageBrowser {
     /// # Errors
     /// Opens a registered directory through a typed platform adapter.
     fn open_directory(&self, path: &str) -> Result<(), String>;
+    /// Opens the containing directory of a registered resource, never the file itself.
+    /// # Errors
+    /// Returns an error when the registered location is unavailable or unsupported.
+    fn open_resource_location(&self, path: &str) -> Result<(), String> {
+        let _ = path;
+        Err("Opening resource locations is unsupported".into())
+    }
 }
 
 impl<
@@ -201,6 +208,24 @@ impl<
     S: ManagedStorage + ManifestProjection + StorageBrowser,
 > CaskService<R, S>
 {
+    /// Opens a registered resource's directory without granting ownership or executing it.
+    /// # Errors
+    /// Rejects invalid versions, unknown resources and unavailable locations.
+    pub fn open_resource_location(
+        &self,
+        request: &casklet_contracts::GetResource,
+        correlation_id: &str,
+    ) -> Result<(), ApiError> {
+        check_version(request.version, correlation_id)?;
+        let resource = self
+            .repository
+            .get_resource(&request.id)
+            .map_err(|e| api_error("PERSISTENCE", e, correlation_id))?
+            .ok_or_else(|| api_error("NOT_FOUND", "Resource not found".into(), correlation_id))?;
+        self.storage
+            .open_resource_location(&resource.path)
+            .map_err(|e| api_error("OPEN_LOCATION", e, correlation_id))
+    }
     /// # Errors
     /// Opens only the storage directory resolved from an existing Cask ID.
     pub fn open_cask_storage(
@@ -250,8 +275,8 @@ impl<
             .application_storage_entries(&summary.cask.id)
             .map_err(|e| api_error("PERSISTENCE", e, correlation_id))?;
         let sizes = self
-            .storage
-            .application_sizes(&entries)
+            .repository
+            .cached_application_sizes(&entries)
             .map_err(|e| api_error("STORAGE", e, correlation_id))?;
         for (entry, size) in entries.iter().zip(sizes) {
             match size {
@@ -287,7 +312,7 @@ impl<
     }
 
     /// # Errors
-    /// Returns current inventories; missing measurements remain unknown.
+    /// Reads saved inventories and sizes without stat, content measurement or projection writes.
     pub fn cask_library(
         &self,
         request: &ListCasks,
@@ -311,7 +336,7 @@ impl<
         let mut counted_owned_sizes = HashSet::new();
         let mut all_application_resources = HashSet::new();
         for cask in casks {
-            let resources = self.list_resources(
+            let resources = self.list_resource_metadata(
                 &ListResources {
                     version: request.version,
                     cask_id: cask.id.clone(),

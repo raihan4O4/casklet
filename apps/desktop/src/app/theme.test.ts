@@ -17,6 +17,9 @@ import {
   startThemeSync,
   theme,
   THEME_KEY,
+  ACCENT_KEY,
+  accent,
+  setAccentPreference,
 } from "./theme";
 import { clearNotices, notifications } from "./notifications";
 import { revealWindow } from "./windowReady";
@@ -26,6 +29,7 @@ const native = vi.hoisted(() => ({
   emit: vi.fn(async (name: string) => {
     if (!/^[\w:/-]+$/.test(name)) throw new Error("Invalid native event name");
   }),
+  listeners: new Map<string, (event: { payload: unknown }) => void>(),
   listener: null as null | ((event: { payload: unknown }) => void),
   unlisten: vi.fn(),
 }));
@@ -34,7 +38,8 @@ vi.mock("@tauri-apps/api/event", () => ({
   emit: native.emit,
   listen: vi.fn(async (name: string, listener: typeof native.listener) => {
     if (!/^[\w:/-]+$/.test(name)) throw new Error("Invalid native event name");
-    native.listener = listener;
+    if (listener) native.listeners.set(name, listener);
+    if (name === "appearance-changed") native.listener = listener;
     return native.unlisten;
   }),
 }));
@@ -42,6 +47,7 @@ let dispose: (() => void) | undefined;
 beforeEach(() => {
   localStorage.clear();
   initializeTheme();
+  native.listeners.clear();
   native.invoke.mockClear();
   native.emit.mockClear();
   native.unlisten.mockClear();
@@ -209,4 +215,94 @@ test("dark typography, state colors, focus and control borders meet contrast tar
   expect(
     contrast(palette["border-control"], palette["surface-input"]),
   ).toBeGreaterThanOrEqual(3);
+});
+
+test("accent picker previews, persists, validates HEX and restores the default", async () => {
+  render(ThemeSettings);
+  await fireEvent.click(screen.getByRole("button", { name: "Iris" }));
+  expect(get(accent)).toBe("#7357d8");
+  expect(localStorage.getItem(ACCENT_KEY)).toBe("#7357d8");
+  expect(
+    document.documentElement.style.getPropertyValue("--action-background"),
+  ).toBe("#7357d8");
+  await fireEvent.input(screen.getByLabelText("Custom accent color"), {
+    target: { value: "#ffffff" },
+  });
+  expect(document.documentElement.style.getPropertyValue("--action-text")).toBe(
+    "#000000",
+  );
+  const hex = screen.getByRole("textbox", { name: "Accent hex color" });
+  await fireEvent.input(hex, { target: { value: "invalid" } });
+  await fireEvent.change(hex);
+  expect(hex.getAttribute("aria-invalid")).toBe("true");
+  expect(get(accent)).toBe("#ffffff");
+  await fireEvent.input(hex, { target: { value: "#000000" } });
+  expect(get(accent)).toBe("#000000");
+  await setThemePreference("dark");
+  expect(
+    document.documentElement.style.getPropertyValue("--action-background"),
+  ).toBe("#000000");
+  expect(document.documentElement.style.getPropertyValue("--action-text")).toBe(
+    "#ffffff",
+  );
+  initializeTheme();
+  expect(get(accent)).toBe("#000000");
+  await fireEvent.click(
+    screen.getByRole("button", { name: "Reset to default" }),
+  );
+  expect(get(accent)).toBeNull();
+  expect(localStorage.getItem(ACCENT_KEY)).toBeNull();
+  expect(document.documentElement.style.getPropertyValue("--accent")).toBe("");
+});
+
+test("accent sync accepts valid native/storage changes, resets and disposes without echoes", async () => {
+  dispose = startThemeSync();
+  await Promise.resolve();
+  native.listeners.get("accent-changed")?.({ payload: "#FFAA00" });
+  expect(get(accent)).toBe("#ffaa00");
+  native.listeners.get("accent-changed")?.({ payload: "red;display:none" });
+  expect(get(accent)).toBe("#ffaa00");
+  window.dispatchEvent(
+    new StorageEvent("storage", { key: ACCENT_KEY, newValue: "#0000ff" }),
+  );
+  expect(get(accent)).toBe("#0000ff");
+  window.dispatchEvent(new StorageEvent("storage", { key: null }));
+  expect(get(accent)).toBeNull();
+  expect(native.emit).not.toHaveBeenCalled();
+  dispose();
+  dispose = undefined;
+  native.listeners.get("accent-changed")?.({ payload: "#ffaa00" });
+  expect(get(accent)).toBeNull();
+});
+
+test("invalid saved accents cannot inject CSS and storage failure keeps the session color", async () => {
+  localStorage.setItem(ACCENT_KEY, "#fff; color:red");
+  initializeTheme();
+  expect(get(accent)).toBeNull();
+  vi.spyOn(Storage.prototype, "setItem").mockImplementation(() => {
+    throw Error("Unavailable");
+  });
+  await setAccentPreference("#123456");
+  expect(get(accent)).toBe("#123456");
+  expect(get(notifications)[0].message).toContain("could not be saved");
+  await setAccentPreference("bad");
+  expect(get(accent)).toBe("#123456");
+});
+
+test("rapid accent changes broadcast the latest choice and reset restores theme defaults", async () => {
+  await Promise.all([
+    setAccentPreference("#ffffff"),
+    setAccentPreference("#000000"),
+    setAccentPreference("#7357d8"),
+  ]);
+  expect(native.emit).toHaveBeenCalledWith("accent-changed", "#7357d8");
+  expect(native.emit).not.toHaveBeenCalledWith("accent-changed", "#ffffff");
+  expect(native.emit).not.toHaveBeenCalledWith("accent-changed", "#000000");
+  expect(get(accent)).toBe("#7357d8");
+  await setAccentPreference(null);
+  expect(native.emit).toHaveBeenLastCalledWith("accent-changed", null);
+  await setThemePreference("dark");
+  expect(
+    document.documentElement.style.getPropertyValue("--action-background"),
+  ).toBe("");
 });

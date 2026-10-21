@@ -18,6 +18,8 @@ mod installer;
 mod installer_source;
 pub mod inventory;
 mod managed_msi;
+#[cfg(test)]
+mod metadata_loading_tests;
 mod msi_uninstaller;
 mod operations;
 #[cfg(all(test, windows))]
@@ -60,6 +62,7 @@ const MIGRATIONS: &[&str] = &[
     include_str!("../../../migrations/0016_application_lifecycle.sql"),
     include_str!("../../../migrations/0017_directory_plan_identity.sql"),
     include_str!("../../../migrations/0018_whole_cask_cleanup.sql"),
+    include_str!("../../../migrations/0019_application_size_snapshots.sql"),
 ];
 
 impl SqliteCasks {
@@ -314,6 +317,41 @@ impl casklet_application::library::StorageBrowser for LocalStorage {
     fn storage_root(&self) -> String {
         self.root.to_string_lossy().into_owned()
     }
+    fn open_resource_location(&self, path: &str) -> Result<(), String> {
+        let resource = Path::new(path).canonicalize().map_err(|e| e.to_string())?;
+        let directory = if resource.is_dir() {
+            resource.as_path()
+        } else {
+            resource
+                .parent()
+                .ok_or("Resource has no containing directory")?
+        };
+        if !directory.is_dir() {
+            return Err("Resource location is unavailable".into());
+        }
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            let windows = std::env::var_os("WINDIR").ok_or("Windows directory unavailable")?;
+            // Explorer expects ordinary drive/UNC paths rather than Rust's verbatim prefix.
+            let path = directory.to_string_lossy();
+            let ordinary = if let Some(unc) = path.strip_prefix(r"\\?\UNC\") {
+                format!(r"\\{unc}")
+            } else {
+                path.strip_prefix(r"\\?\").unwrap_or(&path).to_owned()
+            };
+            std::process::Command::new(PathBuf::from(windows).join("explorer.exe"))
+                .arg(ordinary)
+                .creation_flags(0x0800_0000)
+                .spawn()
+                .map_err(|e| e.to_string())?;
+            Ok(())
+        }
+        #[cfg(not(windows))]
+        {
+            Err("Opening resource locations is supported on Windows only".into())
+        }
+    }
     fn open_directory(&self, path: &str) -> Result<(), String> {
         let directory = Path::new(path).canonicalize().map_err(|e| e.to_string())?;
         let root = self.root.canonicalize().map_err(|e| e.to_string())?;
@@ -511,6 +549,65 @@ mod tests {
     };
     use casklet_domain::resource::IntakeMode;
     use casklet_domain::resource::Resource;
+
+    #[test]
+    fn resource_location_rejects_unknown_ids_versions_and_missing_files() {
+        let root = std::env::temp_dir().join(format!("casklet-location-{}", uuid::Uuid::new_v4()));
+        let service = service_at(&root, root.join("casks")).unwrap();
+        let mut request = GetResource {
+            version: CONTRACT_VERSION,
+            id: "unknown".into(),
+        };
+        assert_eq!(
+            service
+                .open_resource_location(&request, "test")
+                .unwrap_err()
+                .code,
+            "NOT_FOUND"
+        );
+        request.version += 1;
+        assert_eq!(
+            service
+                .open_resource_location(&request, "test")
+                .unwrap_err()
+                .code,
+            "UNSUPPORTED_VERSION"
+        );
+        let cask = service
+            .create(
+                &CreateCask {
+                    version: CONTRACT_VERSION,
+                    name: "Location".into(),
+                },
+                "test",
+            )
+            .unwrap();
+        let path = root.join("sample.txt");
+        fs::write(&path, b"preserved until fixture removal").unwrap();
+        let resource = service
+            .add_resource(
+                &AddResource {
+                    version: CONTRACT_VERSION,
+                    cask_id: cask.id,
+                    source_path: path.to_string_lossy().into_owned(),
+                    mode: AddMode::Reference,
+                    category_key: "other".into(),
+                },
+                "test",
+                &|_, _| {},
+            )
+            .unwrap();
+        fs::remove_file(&path).unwrap();
+        request.version = CONTRACT_VERSION;
+        request.id = resource.id;
+        assert_eq!(
+            service
+                .open_resource_location(&request, "test")
+                .unwrap_err()
+                .code,
+            "OPEN_LOCATION"
+        );
+    }
 
     #[test]
     #[allow(clippy::too_many_lines)] // Integration fixture covers cross-layer persistence and sharing.
@@ -785,7 +882,7 @@ mod tests {
             let reopened = SqliteCasks::open(db).unwrap();
             assert_eq!(reopened.list().unwrap()[0].name, "Existing");
             assert!(reopened.list().unwrap()[0].description.is_empty());
-            if version < 18 {
+            if version < MIGRATIONS.len() {
                 let backups = fs::read_dir(root.join("backups"))
                     .unwrap()
                     .collect::<Result<Vec<_>, _>>()

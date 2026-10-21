@@ -46,6 +46,7 @@ pub struct IntakePaths {
 #[derive(Debug, Clone)]
 pub struct ApplicationStorageEntry {
     pub source_key: String,
+    pub evidence_sha256: String,
     pub owned: bool,
 }
 
@@ -66,6 +67,20 @@ pub struct ResourceMeasurement {
 }
 
 pub trait ResourceRepository {
+    /// # Errors
+    /// Reads persisted presentation sizes only; must never inspect filesystem contents.
+    fn cached_application_sizes(
+        &self,
+        entries: &[ApplicationStorageEntry],
+    ) -> Result<Vec<ApplicationSize>, String>;
+    /// # Errors
+    /// Saves observations bound to current registration evidence, without ownership changes.
+    fn record_application_sizes(
+        &self,
+        entries: &[ApplicationStorageEntry],
+        sizes: &[ApplicationSize],
+    ) -> Result<(), String>;
+
     /// # Errors
     /// Reads original object evidence independently of current size observations.
     fn recorded_resource_identity(&self, _id: &str) -> Result<Option<String>, String> {
@@ -189,6 +204,13 @@ pub trait ResourceStorage {
     /// # Errors
     /// Returns a filesystem validation or inspection error.
     fn inspect(&self, source: &str, progress: &dyn Fn(u64, u64)) -> Result<Observation, String>;
+    /// # Errors
+    /// References require path/object metadata, never content digests or tree enumeration.
+    fn inspect_reference(
+        &self,
+        source: &str,
+        progress: &dyn Fn(u64, u64),
+    ) -> Result<Observation, String>;
     fn availability(&self, path: &str, kind: ResourceKind) -> &'static str;
     fn allocate(&self, cask: &Cask, resource_id: &str, name: &str) -> IntakePaths;
     /// # Errors
@@ -548,10 +570,13 @@ impl<
             AddMode::Move => IntakeMode::Move,
             AddMode::Reference => IntakeMode::Reference,
         };
-        let observed = self
-            .storage
-            .inspect(&request.source_path, progress)
-            .map_err(|e| err("SOURCE", e, correlation_id))?;
+        let observed = if mode == IntakeMode::Reference {
+            self.storage
+                .inspect_reference(&request.source_path, progress)
+        } else {
+            self.storage.inspect(&request.source_path, progress)
+        }
+        .map_err(|e| err("SOURCE", e, correlation_id))?;
         let category_key =
             intake_category(&request.category_key, &observed.name, observed.kind).to_string();
         if !self
@@ -725,6 +750,19 @@ impl<
 
     /// # Errors
     /// Returns a typed query or persistence error.
+    pub fn list_resource_metadata(
+        &self,
+        request: &ListResources,
+        correlation_id: &str,
+    ) -> Result<Vec<ResourceView>, ApiError> {
+        check(request.version, correlation_id)?;
+        self.repository
+            .list_resources(&request.cask_id)
+            .map_err(|e| err("PERSISTENCE", e, correlation_id))
+    }
+    /// Explicit live inspection, outside the ordinary presentation loading path.
+    /// # Errors
+    /// Returns a validation, inspection or persistence error.
     pub fn list_resources(
         &self,
         request: &ListResources,
@@ -915,14 +953,33 @@ impl<
         request: &GetStorageSummary,
         correlation_id: &str,
     ) -> Result<StorageSummary, ApiError> {
+        self.storage_summary_with_mode(request, correlation_id, true)
+    }
+    /// # Errors
+    /// Returns saved observations only. Unknown/stale measurements never trigger I/O.
+    pub fn storage_summary_metadata(
+        &self,
+        request: &GetStorageSummary,
+        correlation_id: &str,
+    ) -> Result<StorageSummary, ApiError> {
+        self.storage_summary_with_mode(request, correlation_id, false)
+    }
+    fn storage_summary_with_mode(
+        &self,
+        request: &GetStorageSummary,
+        correlation_id: &str,
+        refresh: bool,
+    ) -> Result<StorageSummary, ApiError> {
         check(request.version, correlation_id)?;
-        let items = self.list_resources(
-            &ListResources {
-                version: request.version,
-                cask_id: request.cask_id.clone(),
-            },
-            correlation_id,
-        )?;
+        let resource_request = ListResources {
+            version: request.version,
+            cask_id: request.cask_id.clone(),
+        };
+        let items = if refresh {
+            self.list_resources(&resource_request, correlation_id)?
+        } else {
+            self.list_resource_metadata(&resource_request, correlation_id)?
+        };
         let mut managed = 0_u64;
         let mut referenced = 0_u64;
         let mut unknown = 0_u64;
@@ -953,10 +1010,20 @@ impl<
             .repository
             .application_storage_entries(&request.cask_id)
             .map_err(|e| err("PERSISTENCE", e, correlation_id))?;
-        let sizes = self
-            .storage
-            .application_sizes(&entries)
-            .map_err(|e| err("STORAGE", e, correlation_id))?;
+        let sizes = if refresh {
+            let sizes = self
+                .storage
+                .application_sizes(&entries)
+                .map_err(|e| err("STORAGE", e, correlation_id))?;
+            self.repository
+                .record_application_sizes(&entries, &sizes)
+                .map_err(|e| err("PERSISTENCE", e, correlation_id))?;
+            sizes
+        } else {
+            self.repository
+                .cached_application_sizes(&entries)
+                .map_err(|e| err("PERSISTENCE", e, correlation_id))?
+        };
         let mut owned_applications = 0_u64;
         let mut reference_applications = 0_u64;
         let mut estimated_applications = 0_u64;

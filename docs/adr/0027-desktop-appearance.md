@@ -14,4 +14,6 @@ A typed caller-scoped shell command sets native window theme and WebView backgro
 
 ## Consequences
 
+The October 21 user request extends this decision with an optional custom accent, stored separately as `casklet.accent`. Centralized sRGB/WCAG calculations preserve the chosen action fill, choose accessible black/white foregrounds and derive readable accent ink, focus/control borders and tinted selections for each mode. Reset restores the original mode palette. Validated accent events synchronize open windows without new native commands or domain state. See [custom desktop accent colors](../engineering/desktop-accent-colors.md).
+
 Global preferences affect main and detail windows. Palette changes apply atomically to avoid low-contrast intermediate colors; existing micro-interactions respect reduced motion. Native Windows-owned dialogs may follow OS conventions; Casklet's own dialogs and controls use the shared palette. UI theme storage is not included in Cask metadata exports or database backups. Full platform accessibility and clean-machine release gates remain separate from this feature.

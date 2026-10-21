@@ -45,6 +45,8 @@
     ),
   );
   let loading = $state(true);
+  let refreshing = $state(false);
+  let libraryError = $state("");
   let refreshSequence = 0;
   let error = $state("");
   let notice = $state("");
@@ -89,6 +91,14 @@
       : String(cause);
   }
   async function refresh(quiet = false) {
+    // A library scan can outlast the polling interval. Never invalidate its
+    // result by starting another poll while it is still running.
+    if (refreshing) return;
+    refreshing = true;
+    if (!quiet) {
+      loading = !library;
+      libraryError = "";
+    }
     const sequence = ++refreshSequence;
     try {
       const result = await invoke<CaskLibraryView>("cask_library", {
@@ -96,11 +106,15 @@
       });
       if (sequence !== refreshSequence) return;
       library = result;
+      libraryError = "";
       if (!quiet) error = "";
     } catch (cause) {
-      if (!quiet) error = message(cause);
+      if (sequence !== refreshSequence) return;
+      if (!library || !quiet) libraryError = message(cause);
+      if (!quiet && library) error = message(cause);
     } finally {
       loading = false;
+      refreshing = false;
     }
   }
   async function openCask(id: string) {
@@ -186,7 +200,10 @@
     }
   }
   onMount(() => {
-    void refresh().then(onReady);
+    // Reveal the rendered loading state; resource/inventory scans must not keep
+    // an otherwise ready native window hidden for their entire duration.
+    void refresh();
+    onReady();
     const poll = window.setInterval(() => {
       void refresh(true);
       void invoke<RecoveryStatus>("recovery_status")
@@ -262,7 +279,7 @@
       <span class="muted">Managed storage</span><strong
         >{bytes(library?.managedBytes)}</strong
       >
-      <p>Known logical size{library?.unknownEntries ? " · incomplete" : ""}</p>
+      <p>Saved logical size{library?.unknownEntries ? " · incomplete" : ""}</p>
       <button
         class="text-button"
         type="button"
@@ -397,6 +414,7 @@
               <p>Loading Casks…</p>
             </div>{:else if !library}<div class="empty-state">
               <h2>Couldn’t load your Casks</h2>
+              {#if libraryError}<p role="alert">{libraryError}</p>{/if}
               <button type="button" onclick={() => void refresh()}
                 >Try again</button
               >
@@ -455,7 +473,7 @@
                       ></span
                     ><span
                       class="collection-size"
-                      title="Known logical size including references"
+                      title="Last known logical size including references; refresh sizes inside the Cask to update"
                       >{bytes(
                         item.managedBytes + item.referencedBytes,
                       )}{item.unknownEntries ? " +" : ""}</span

@@ -434,6 +434,13 @@ mod tests {
         }
     }
     impl ResourceStorage for FakeStorage {
+        fn inspect_reference(
+            &self,
+            source: &str,
+            progress: &dyn Fn(u64, u64),
+        ) -> Result<Observation, String> {
+            self.local.inspect_reference(source, progress)
+        }
         fn application_sizes(
             &self,
             entries: &[casklet_application::resource::ApplicationStorageEntry],

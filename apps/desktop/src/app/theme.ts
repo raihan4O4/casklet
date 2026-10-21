@@ -2,9 +2,28 @@ import { writable, get } from "svelte/store";
 import { invoke } from "@tauri-apps/api/core";
 import { emit, listen } from "@tauri-apps/api/event";
 import { notify } from "./notifications";
+import { accentPalette, normalizeAccent } from "./accent";
 
 export type Theme = "light" | "dark";
 export const THEME_KEY = "casklet.appearance";
+export const ACCENT_KEY = "casklet.accent";
+export const accent = writable<string | null>(null);
+const accentProperties = Object.keys(accentPalette("#235d65", "light"));
+function applyAccent(value: string | null) {
+  const root = document.documentElement;
+  root.classList.add("theme-switching");
+  for (const property of accentProperties) root.style.removeProperty(property);
+  if (value) {
+    for (const [property, color] of Object.entries(
+      accentPalette(value, get(theme)),
+    ))
+      root.style.setProperty(property, color);
+  }
+  accent.set(value);
+  root.getBoundingClientRect();
+  root.classList.remove("theme-switching");
+}
+
 export const theme = writable<Theme>("light");
 const validTheme = (value: unknown): value is Theme =>
   value === "light" || value === "dark";
@@ -16,6 +35,7 @@ function applyTheme(value: Theme) {
     .querySelector('meta[name="theme-color"]')
     ?.setAttribute("content", value === "dark" ? "#202226" : "#ffffff");
   theme.set(value);
+  applyAccent(get(accent));
   // Flush the new palette with transitions disabled, then restore normal hover
   // motion. Opposing foreground/background fades must not reduce readability.
   document.documentElement.getBoundingClientRect();
@@ -32,6 +52,43 @@ export function initializeTheme() {
     /* Storage may be unavailable; light remains the default. */
   }
   applyTheme(value);
+  let savedAccent: string | null = null;
+  try {
+    savedAccent = normalizeAccent(localStorage.getItem(ACCENT_KEY));
+  } catch {
+    /* Session default. */
+  }
+  applyAccent(savedAccent);
+}
+
+let accentBroadcast: Promise<unknown> = Promise.resolve();
+
+/** Immediate live preview, persisted independently from the Light/Dark choice. */
+export async function setAccentPreference(value: string | null) {
+  if (value !== null && !normalizeAccent(value)) return;
+  value = normalizeAccent(value);
+  applyAccent(value);
+  try {
+    if (value === null) localStorage.removeItem(ACCENT_KEY);
+    else localStorage.setItem(ACCENT_KEY, value);
+  } catch {
+    notify(
+      "Accent changed for this session. The preference could not be saved.",
+      "warning",
+      "accent",
+    );
+  }
+  try {
+    const chosen = value;
+    accentBroadcast = accentBroadcast
+      .catch(() => {})
+      .then(async () => {
+        if (get(accent) === chosen) await emit("accent-changed", chosen);
+      });
+    await accentBroadcast;
+  } catch {
+    notify("Accent synchronization is unavailable.", "warning", "accent");
+  }
 }
 
 let nativeUpdate: Promise<unknown> = Promise.resolve();
@@ -80,6 +137,29 @@ export async function setThemePreference(value: Theme) {
 export function startThemeSync() {
   let disposed = false;
   let unlisten: (() => void) | undefined;
+  let unlistenAccent: (() => void) | undefined;
+  const acceptAccent = (value: unknown) => {
+    if (disposed || (value !== null && !normalizeAccent(value))) return;
+    const normalized = normalizeAccent(value);
+    if (normalized !== get(accent)) applyAccent(normalized);
+  };
+  void listen<string | null>("accent-changed", (event) =>
+    acceptAccent(event.payload),
+  )
+    .then((fn) => {
+      if (disposed) fn();
+      else {
+        unlistenAccent = fn;
+        try {
+          acceptAccent(localStorage.getItem(ACCENT_KEY));
+        } catch {
+          /* Retain session choice. */
+        }
+      }
+    })
+    .catch(() =>
+      notify("Accent synchronization is unavailable.", "warning", "accent"),
+    );
   const accept = (value: unknown) => {
     if (!validTheme(value) || value === get(theme) || disposed) return;
     applyTheme(value);
@@ -93,7 +173,11 @@ export function startThemeSync() {
   };
   const storage = (event: StorageEvent) => {
     if (event.key === THEME_KEY) accept(event.newValue ?? "light");
-    else if (event.key === null) accept("light");
+    else if (event.key === ACCENT_KEY) acceptAccent(event.newValue);
+    else if (event.key === null) {
+      accept("light");
+      acceptAccent(null);
+    }
   };
   window.addEventListener("storage", storage);
   void listen<Theme>("appearance-changed", (event) => accept(event.payload))
@@ -120,5 +204,6 @@ export function startThemeSync() {
     disposed = true;
     window.removeEventListener("storage", storage);
     unlisten?.();
+    unlistenAccent?.();
   };
 }
