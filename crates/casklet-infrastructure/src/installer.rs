@@ -236,7 +236,7 @@ mod tests {
         CaskRepository, CaskService, ManagedStorage,
         installer::{InstallerOutcome, InstallerSource},
         projection::ManifestProjection,
-        resource::{IntakePaths, Observation, ResourceStorage},
+        resource::{IntakePaths, Observation, ResourceRepository, ResourceStorage},
         windows_inventory::{
             InstalledInventoryRepository, InstalledInventorySource, ObservedInstallation,
         },
@@ -305,6 +305,10 @@ mod tests {
         }
     }
     impl InstallerSource for FakeStorage {
+        fn installed_executable(&self, path: &str) -> Result<Option<String>, String> {
+            super::super::windows_inventory::executable_in_inventory(path, &self.scan_installed()?)
+        }
+
         fn inspect_installer(&self, path: &str) -> Result<InstallerInspection, String> {
             let canonical = PathBuf::from(path)
                 .canonicalize()
@@ -678,6 +682,149 @@ mod tests {
                 &|_| {},
             )
             .unwrap()
+    }
+
+    #[test]
+    fn installed_executable_is_rejected_before_copy_journal_or_lock() {
+        let (service, cask_id, source) = setup(Mode::ExeTreeSuccess);
+        let mut known = observed("already-installed");
+        known.install_location = Some(
+            PathBuf::from(&source)
+                .parent()
+                .unwrap()
+                .to_string_lossy()
+                .into_owned(),
+        );
+        service.storage.registry.lock().unwrap().push(known);
+        let request = InspectInstallerArtifact {
+            version: CONTRACT_VERSION,
+            path: source.clone(),
+        };
+        assert_eq!(
+            service
+                .inspect_installer_artifact(&request, "test")
+                .unwrap_err()
+                .code,
+            "INSTALLED_APPLICATION_EXECUTABLE"
+        );
+        assert_eq!(
+            service
+                .register_installer_artifact(
+                    &RegisterInstallerArtifact {
+                        version: CONTRACT_VERSION,
+                        cask_id: cask_id.clone(),
+                        path: source.clone(),
+                        expected_sha256: "irrelevant".into(),
+                    },
+                    "test"
+                )
+                .unwrap_err()
+                .code,
+            "INSTALLED_APPLICATION_EXECUTABLE"
+        );
+        assert_eq!(
+            service
+                .install_application(
+                    &casklet_contracts::InstallApplication {
+                        version: CONTRACT_VERSION,
+                        cask_id: cask_id.clone(),
+                        path: source,
+                        expected_sha256: "irrelevant".into(),
+                        accept_execution_risk: true,
+                        allow_elevation: false,
+                    },
+                    "test",
+                    &|_| {}
+                )
+                .unwrap_err()
+                .code,
+            "INSTALLED_APPLICATION_EXECUTABLE"
+        );
+        assert_eq!(service.storage.runs.load(Ordering::SeqCst), 0);
+        assert!(
+            service
+                .repository
+                .list_resources(&cask_id)
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            service
+                .repository
+                .list_installers(&cask_id)
+                .unwrap()
+                .is_empty()
+        );
+        assert!(
+            service
+                .repository
+                .list_installer_operations(&cask_id)
+                .unwrap()
+                .is_empty()
+        );
+        assert_eq!(
+            service
+                .repository
+                .connection()
+                .unwrap()
+                .query_row("SELECT COUNT(*) FROM installer_locks", [], |row| row
+                    .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+    }
+    #[test]
+    fn stored_artifact_is_rechecked_and_setup_outside_install_root_is_allowed() {
+        let (service, cask_id, source) = setup(Mode::ExeTreeSuccess);
+        let artifact = register(&service, &cask_id, &source);
+        let root = PathBuf::from(&source).parent().unwrap().join("installed");
+        fs::create_dir_all(&root).unwrap();
+        let mut known = observed("already-installed");
+        known.install_location = Some(root.to_string_lossy().into_owned());
+        service.storage.registry.lock().unwrap().push(known);
+        assert!(
+            service
+                .inspect_installer_artifact(
+                    &InspectInstallerArtifact {
+                        version: CONTRACT_VERSION,
+                        path: source.clone()
+                    },
+                    "test"
+                )
+                .is_ok()
+        );
+        service.storage.registry.lock().unwrap()[0].install_location = Some(
+            PathBuf::from(&source)
+                .parent()
+                .unwrap()
+                .to_string_lossy()
+                .into_owned(),
+        );
+        assert_eq!(
+            service
+                .launch_installer_artifact(
+                    &LaunchInstallerArtifact {
+                        version: CONTRACT_VERSION,
+                        artifact_id: artifact.id,
+                        expected_sha256: artifact.inspection.sha256,
+                        accept_execution_risk: true,
+                        allow_elevation: false,
+                    },
+                    "test",
+                    &|_| {}
+                )
+                .unwrap_err()
+                .code,
+            "INSTALLED_APPLICATION_EXECUTABLE"
+        );
+        assert_eq!(service.storage.runs.load(Ordering::SeqCst), 0);
+        assert!(
+            service
+                .repository
+                .list_installer_operations(&cask_id)
+                .unwrap()
+                .is_empty()
+        );
     }
     #[test]
     fn explicit_elevation_reaches_the_installer_adapter() {

@@ -30,6 +30,162 @@ fn trimmed(value: Option<String>, max: usize) -> Option<String> {
         .filter(|v| !v.is_empty() && v.chars().count() <= max && !v.chars().any(char::is_control))
 }
 
+fn executable_path(path: &str) -> Result<Option<std::path::PathBuf>, String> {
+    let path = std::path::Path::new(path);
+    if !path
+        .extension()
+        .is_some_and(|ext| ext.eq_ignore_ascii_case("exe"))
+    {
+        return Ok(None);
+    }
+    match path.canonicalize() {
+        Ok(path) => Ok(path.is_file().then_some(path)),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(format!("Cannot check application executable: {error}")),
+    }
+}
+
+fn broad_install_location(root: &std::path::Path) -> bool {
+    if root.parent().is_none() {
+        return true;
+    }
+    let mut protected = [
+        "USERPROFILE",
+        "LOCALAPPDATA",
+        "APPDATA",
+        "ProgramFiles",
+        "ProgramFiles(x86)",
+        "ProgramData",
+        "SystemRoot",
+    ]
+    .iter()
+    .filter_map(std::env::var_os)
+    .map(std::path::PathBuf::from)
+    .collect::<Vec<_>>();
+    if let Some(profile) = std::env::var_os("USERPROFILE") {
+        for child in ["Downloads", "Desktop", "Documents"] {
+            protected.push(std::path::PathBuf::from(&profile).join(child));
+        }
+    }
+    protected
+        .iter()
+        .filter_map(|path| path.canonicalize().ok())
+        .any(|path| path == root)
+}
+
+/// Location is only a reason to refuse installer execution, never ownership evidence.
+pub(super) fn executable_in_inventory(
+    path: &str,
+    inventory: &[ObservedInstallation],
+) -> Result<Option<String>, String> {
+    let Some(executable) = executable_path(path)? else {
+        return Ok(None);
+    };
+    for item in inventory {
+        if let Some(location) = item.install_location.as_deref()
+            && std::path::Path::new(location).is_absolute()
+            && let Ok(root) = std::path::Path::new(location).canonicalize()
+            && !broad_install_location(&root)
+            && executable.starts_with(&root)
+        {
+            return Ok(Some(item.name.clone()));
+        }
+    }
+    Ok(None)
+}
+
+/// Inspects current registration paths only; does not inspect or launch executable contents.
+pub(super) fn installed_executable(path: &str) -> Result<Option<String>, String> {
+    if executable_path(path)?.is_none() {
+        return Ok(None);
+    }
+    #[cfg(windows)]
+    {
+        let inventory = registry_scan()?;
+        if let Some(name) = executable_in_inventory(path, &inventory)? {
+            return Ok(Some(name));
+        }
+        registered_executable_path(path, &inventory)
+    }
+    #[cfg(not(windows))]
+    {
+        Ok(None)
+    }
+}
+
+#[cfg(windows)]
+fn registered_executable_path(
+    path: &str,
+    inventory: &[ObservedInstallation],
+) -> Result<Option<String>, String> {
+    use winreg::{
+        RegKey,
+        enums::{
+            HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, KEY_READ, KEY_WOW64_32KEY, KEY_WOW64_64KEY,
+        },
+    };
+    let Some(executable) = executable_path(path)? else {
+        return Ok(None);
+    };
+    let same_executable = |value: &str| {
+        let value = value.trim();
+        let file = if let Some(quoted) = value.strip_prefix('"') {
+            quoted.split_once('"').map_or(quoted, |(path, _)| path)
+        } else {
+            value
+                .rsplit_once(',')
+                .filter(|(_, index)| index.trim().parse::<i32>().is_ok())
+                .map_or(value, |(path, _)| path)
+        };
+        executable_path(file.trim())
+            .ok()
+            .flatten()
+            .is_some_and(|candidate| {
+                candidate == executable
+                    || same_file::is_same_file(&candidate, &executable).unwrap_or(false)
+            })
+    };
+    for item in inventory {
+        let Some((view, path)) = item.source_key.split_once('\\') else {
+            continue;
+        };
+        let (hive, flags) = match view {
+            "HKCU64" => (HKEY_CURRENT_USER, KEY_WOW64_64KEY),
+            "HKCU32" => (HKEY_CURRENT_USER, KEY_WOW64_32KEY),
+            "HKLM64" => (HKEY_LOCAL_MACHINE, KEY_WOW64_64KEY),
+            "HKLM32" => (HKEY_LOCAL_MACHINE, KEY_WOW64_32KEY),
+            _ => continue,
+        };
+        if let Ok(key) = RegKey::predef(hive).open_subkey_with_flags(path, KEY_READ | flags)
+            && let Ok(icon) = key.get_value::<String, _>("DisplayIcon")
+            && same_executable(&icon)
+        {
+            return Ok(Some(item.name.clone()));
+        }
+    }
+    // App Paths covers launchable applications whose uninstall record omits InstallLocation.
+    if let Some(file) = executable.file_name() {
+        for (hive, view) in [
+            (HKEY_CURRENT_USER, KEY_WOW64_64KEY),
+            (HKEY_CURRENT_USER, KEY_WOW64_32KEY),
+            (HKEY_LOCAL_MACHINE, KEY_WOW64_64KEY),
+            (HKEY_LOCAL_MACHINE, KEY_WOW64_32KEY),
+        ] {
+            let key_path = format!(
+                r"SOFTWARE\Microsoft\Windows\CurrentVersion\App Paths\{}",
+                file.to_string_lossy()
+            );
+            if let Ok(key) = RegKey::predef(hive).open_subkey_with_flags(key_path, KEY_READ | view)
+                && let Ok(value) = key.get_value::<String, _>("")
+                && same_executable(&value)
+            {
+                return Ok(Some(file.to_string_lossy().into_owned()));
+            }
+        }
+    }
+    Ok(None)
+}
+
 fn normalize(raw: RawRegistration) -> Option<ObservedInstallation> {
     if raw.system_component == Some(1) || raw.parent_key_name.is_some() {
         return None;
@@ -323,6 +479,62 @@ mod tests {
         let machine_left = normalize(raw(&format!("HKLM64\\{path}"), Some("Example"))).unwrap();
         let machine_right = normalize(raw(&format!("HKLM32\\{path}"), Some("Example"))).unwrap();
         assert!(!machine_left.is_user_registration_alias_of(&machine_right));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn installed_executable_guard_checks_registered_location_and_icon_without_execution() {
+        use winreg::{RegKey, enums::HKEY_CURRENT_USER};
+        struct Registration(String);
+        impl Drop for Registration {
+            fn drop(&mut self) {
+                let _ = RegKey::predef(HKEY_CURRENT_USER).delete_subkey(&self.0);
+            }
+        }
+        let name = format!("Casklet-executable-guard-{}", Uuid::new_v4());
+        let registration = Registration(format!(
+            r"SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\{name}"
+        ));
+        let (key, _) = RegKey::predef(HKEY_CURRENT_USER)
+            .create_subkey(&registration.0)
+            .unwrap();
+        key.set_value("DisplayName", &name).unwrap();
+        let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../target")
+            .join(&name);
+        let installed = root.join("installed");
+        std::fs::create_dir_all(&installed).unwrap();
+        let exe = installed.join("application.exe");
+        std::fs::write(
+            &exe,
+            b"not executable; detection must not execute or inspect PE bytes",
+        )
+        .unwrap();
+        key.set_value("InstallLocation", &installed.to_string_lossy().as_ref())
+            .unwrap();
+        assert_eq!(
+            installed_executable(&exe.to_string_lossy()).unwrap(),
+            Some(name.clone())
+        );
+        key.delete_value("InstallLocation").unwrap();
+        key.set_value("DisplayIcon", &format!("\"{}\",0", exe.display()))
+            .unwrap();
+        assert_eq!(
+            installed_executable(&exe.to_string_lossy()).unwrap(),
+            Some(name.clone())
+        );
+        let setup = root.join("setup.exe");
+        std::fs::write(&setup, b"separate setup").unwrap();
+        assert_eq!(
+            installed_executable(&setup.to_string_lossy()).unwrap(),
+            None
+        );
+        let alias = root.join("same-application.exe");
+        std::fs::hard_link(&exe, &alias).unwrap();
+        assert_eq!(
+            installed_executable(&alias.to_string_lossy()).unwrap(),
+            Some(name)
+        );
     }
     #[cfg(windows)]
     #[test]

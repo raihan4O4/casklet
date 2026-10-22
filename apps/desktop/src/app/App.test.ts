@@ -778,7 +778,7 @@ test("Applications keeps Add above a large library and supports focused navigati
 });
 
 test.each(["LAUNCH_UNCERTAIN"])(
-  "unconfirmed installation shows only the short message (%s)",
+  "unconfirmed installation requires confirmation before preserved closure (%s)",
   async (errorCode) => {
     const operation = {
       version: 1,
@@ -823,6 +823,11 @@ test.each(["LAUNCH_UNCERTAIN"])(
       }),
     ).toBeNull();
     expect(screen.queryByText(/Keeping changes leaves software/)).toBeNull();
+    expect(
+      screen
+        .getByRole("button", { name: "Close attempt and keep files" })
+        .hasAttribute("disabled"),
+    ).toBe(true);
     expect(
       calls.invoke.mock.calls.some(
         ([command]) => command === "close_installer_operation",
@@ -1019,12 +1024,18 @@ test("in-place ownership needs explicit consent and uses the shared adoption com
   const toggle = await screen.findByRole("button", {
     name: "Details for project.txt",
   });
-  expect(toggle.getAttribute("aria-expanded")).toBe("false");
+  expect(toggle.getAttribute("aria-haspopup")).toBe("dialog");
   expect(screen.queryByText("D:/Projects/project.txt")).toBeNull();
   await fireEvent.click(toggle);
   const details = screen.getByRole("region", {
     name: "Details for project.txt",
   });
+  const overlay = screen.getByRole("dialog", {
+    name: "Management details for project.txt",
+  });
+  expect(overlay.hasAttribute("open")).toBe(true);
+  expect(overlay.contains(details)).toBe(true);
+
   expect(within(details).queryByText("D:/Projects/project.txt")).toBeNull();
   await fireEvent.click(
     within(details).getByRole("button", { name: "Open location" }),
@@ -1033,7 +1044,9 @@ test("in-place ownership needs explicit consent and uses the shared adoption com
     request: { version: 1, id: "owned" },
   });
   expect(within(details).queryByText("Cleanup authority")).toBeNull();
-  await fireEvent.click(toggle);
+  await fireEvent.click(
+    screen.getByRole("button", { name: "Close resource details" }),
+  );
   expect(
     screen.queryByRole("region", { name: "Details for project.txt" }),
   ).toBeNull();
@@ -3168,6 +3181,9 @@ test("category creation blocks duplicate requests and retains input after failur
   });
   await screen.findByRole("heading", { name: "Ownership" });
   await fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+  await fireEvent.click(
+    screen.getByRole("heading", { name: "Categories" }).closest("summary")!,
+  );
   const input = screen.getByLabelText("New category") as HTMLInputElement;
   const form = input.closest("form")!;
   expect(
@@ -3517,4 +3533,135 @@ test("opening and polling read saved metadata; explicit size refresh leaves navi
       .getByRole("button", { name: "Refresh sizes" })
       .hasAttribute("disabled"),
   ).toBe(false);
+});
+
+test("resource overlay contains editor actions, cancels editing before closing, and restores item focus", async () => {
+  ownershipWorkspace([
+    {
+      id: "overlay-item",
+      sizeMeasurement: "EXACT",
+      containment: "EXTERNAL",
+      name: "Overlay.txt",
+      kind: "FILE",
+      path: "D:/Overlay.txt",
+      management: "REFERENCED",
+      ownership: "REFERENCED",
+      availability: "PRESENT",
+      categoryKey: "other",
+      sizeBytes: 4,
+    },
+  ]);
+  await screen.findByRole("heading", { name: "Ownership" });
+  await fireEvent.click(
+    screen.getByRole("button", { name: "Files & Folders" }),
+  );
+  const trigger = await screen.findByRole("button", {
+    name: "Details for Overlay.txt",
+  });
+  await fireEvent.click(trigger);
+  const overlay = screen.getByRole("dialog", {
+    name: "Management details for Overlay.txt",
+  });
+  await fireEvent.click(
+    within(overlay).getByRole("button", { name: "Change Category" }),
+  );
+  expect(
+    within(overlay).getByRole("button", { name: "Save category" }),
+  ).toBeTruthy();
+  await fireEvent(overlay, new Event("cancel", { cancelable: true }));
+  expect(overlay.hasAttribute("open")).toBe(true);
+  expect(within(overlay).queryByRole("combobox")).toBeNull();
+  await fireEvent(overlay, new Event("cancel", { cancelable: true }));
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  await waitFor(() => expect(document.activeElement).toBe(trigger));
+});
+
+test("installed application executable warning prevents install and routes to association", async () => {
+  ownershipWorkspace([], (command) => {
+    if (command === "inspect_installer_artifact")
+      return Promise.reject({
+        code: "INSTALLED_APPLICATION_EXECUTABLE",
+        message:
+          "This executable belongs to the installed application Chrome. Use Associate existing app instead. Nothing was launched.",
+      });
+    return undefined;
+  });
+  await screen.findByRole("heading", { name: "Ownership" });
+  await fireEvent.click(screen.getByRole("button", { name: "Applications" }));
+  await fireEvent.click(
+    screen.getByRole("button", { name: "Add Application" }),
+  );
+  await fireEvent.click(
+    screen.getByRole("button", { name: /^Install Application/ }),
+  );
+  vi.mocked(open).mockResolvedValueOnce("C:/Program Files/Chrome/chrome.exe");
+  await fireEvent.click(
+    screen.getByRole("button", { name: "Select MSI or EXE" }),
+  );
+  await screen.findByRole("alert");
+  expect(screen.queryByRole("button", { name: "Install" })).toBeNull();
+  expect(
+    calls.invoke.mock.calls.some(([name]) => name === "install_application"),
+  ).toBe(false);
+  await fireEvent.click(
+    screen.getByRole("button", { name: "Find installed application" }),
+  );
+  expect(
+    screen.getByRole("region", { name: "Existing Windows applications" }),
+  ).toBeTruthy();
+});
+
+test("confirmed preserved closure clears an existing uncertain installer attempt", async () => {
+  let closed = false;
+  const operation = {
+    version: 1,
+    id: "stuck-attempt",
+    caskId: "ownership-cask",
+    state: "RECOVERY_REQUIRED",
+    candidates: [],
+    errorCode: "LAUNCH_UNCERTAIN",
+    confirmedInstallationId: null,
+  };
+  ownershipWorkspace([], (command) => {
+    if (command === "list_installer_operations")
+      return [
+        { ...operation, state: closed ? "CLOSED_PRESERVED" : operation.state },
+      ];
+    if (command === "get_installer_operation")
+      return {
+        ...operation,
+        state: closed ? "CLOSED_PRESERVED" : operation.state,
+      };
+    if (command === "close_installer_operation") {
+      closed = true;
+      return null;
+    }
+    return undefined;
+  });
+  await screen.findByRole("heading", { name: "Ownership" });
+  await fireEvent.click(screen.getByRole("button", { name: "Applications" }));
+  await fireEvent.click(
+    await screen.findByRole("button", { name: "View installation" }),
+  );
+  const close = screen.getByRole("button", {
+    name: "Close attempt and keep files",
+  });
+  expect(close.hasAttribute("disabled")).toBe(true);
+  await fireEvent.click(
+    screen.getByRole("checkbox", {
+      name: "The installer or application and any processes it opened have finished.",
+    }),
+  );
+  await fireEvent.click(close);
+  await waitFor(() =>
+    expect(calls.invoke).toHaveBeenCalledWith("close_installer_operation", {
+      request: { version: 1, id: "stuck-attempt" },
+    }),
+  );
+  await screen.findByText(
+    "Installation attempt closed. Files and applications were kept; the Cask is available again.",
+  );
+  expect(
+    screen.queryByRole("button", { name: "Close attempt and keep files" }),
+  ).toBeNull();
 });
