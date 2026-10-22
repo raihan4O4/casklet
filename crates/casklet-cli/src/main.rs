@@ -1,3 +1,4 @@
+mod presentation;
 #[cfg(feature = "reviewed-removal")]
 use casklet_contracts::ExecuteWingetUninstallPlan;
 use casklet_contracts::{
@@ -33,10 +34,21 @@ use std::path::Path;
 use std::process::ExitCode;
 
 #[derive(Debug, Parser)]
-#[command(name = "casklet", version, about = "Manage your Casks")]
+#[command(
+    name = "casklet",
+    version,
+    about = "Organize files and applications, inspect storage, and review safe cleanup",
+    after_help = "Start here:\n  casklet cask create \"My Work\"\n  casklet cask list\n  casklet cask get <ID>\n\nUse --output json for scripts; --verbose reveals technical details.\nCleanup starts with: casklet cleanup create <CASK_ID>"
+)]
 struct Cli {
     #[arg(long, value_enum, default_value_t = Output::Table, global = true)]
     output: Output,
+    /// Include stable IDs and diagnostic details in human output.
+    #[arg(long, short, global = true)]
+    verbose: bool,
+    /// Control terminal colors (also respects `NO_COLOR` and TERM=dumb).
+    #[arg(long, value_enum, default_value_t = presentation::Color::Auto, global = true)]
+    color: presentation::Color,
     #[cfg(any(feature = "reviewed-removal", feature = "alpha-cleanup"))]
     #[arg(long, global = true)]
     no_input: bool,
@@ -52,6 +64,7 @@ enum Output {
 
 #[derive(Debug, Subcommand)]
 enum Command {
+    /// Export a portable JSON inventory or Markdown report
     Export {
         cask_id: String,
         output_path: String,
@@ -60,18 +73,22 @@ enum Command {
         #[arg(long)]
         machine: bool,
     },
+    /// Inspect and recover portable inventory manifests
     Manifest {
         #[command(subcommand)]
         action: ManifestAction,
     },
+    /// Inspect, install and launch portable ZIP applications
     Portable {
         #[command(subcommand)]
         action: PortableAction,
     },
+    /// Discover and associate existing applications without claiming ownership
     Installed {
         #[command(subcommand)]
         action: InstalledAction,
     },
+    /// Review packages and manage `WinGet` installation workflows
     Winget {
         #[command(subcommand)]
         action: WingetAction,
@@ -81,34 +98,42 @@ enum Command {
         #[command(subcommand)]
         action: MsiAction,
     },
+    /// Inspect and explicitly authorize MSI/EXE installers
     Installer {
         #[command(subcommand)]
         action: InstallerAction,
     },
+    /// Create, inspect and manage Casks
     Cask {
         #[command(subcommand)]
         action: CaskAction,
     },
+    /// Add, inspect, categorize and set ownership of files and folders
     Resource {
         #[command(subcommand)]
         action: ResourceAction,
     },
+    /// List and create Cask categories
     Category {
         #[command(subcommand)]
         action: CategoryAction,
     },
+    /// Inspect logical storage and reclaimable estimates
     Storage {
         #[command(subcommand)]
         action: StorageAction,
     },
+    /// Inspect and recover durable operations
     Operation {
         #[command(subcommand)]
         action: OperationAction,
     },
+    /// Find interrupted work and repair inventory projections
     Recovery {
         #[command(subcommand)]
         action: RecoveryAction,
     },
+    /// Back up metadata or export support diagnostics
     Diagnostics {
         #[command(subcommand)]
         action: DiagnosticsAction,
@@ -305,6 +330,10 @@ enum CaskAction {
         name: String,
     },
     List,
+    #[command(
+        visible_alias = "overview",
+        about = "Show a Cask overview with saved inventory and storage"
+    )]
     Get {
         id: String,
     },
@@ -530,6 +559,8 @@ enum PlanAction {
 )]
 fn main() -> ExitCode {
     let cli = Cli::parse();
+    presentation::configure(cli.verbose, cli.color, cli.output);
+    let _activity = presentation::Activity::start(cli.output);
     let service = match if cfg!(debug_assertions) {
         casklet_infrastructure::development_service()
     } else {
@@ -537,7 +568,19 @@ fn main() -> ExitCode {
     } {
         Ok(service) => service,
         Err(error) => {
-            eprintln!("Could not open Casklet data: {error}");
+            presentation::error(
+                &ApiError {
+                    version: CONTRACT_VERSION,
+                    code: "DATA_UNAVAILABLE".into(),
+                    message: if cli.verbose {
+                        error
+                    } else {
+                        "Could not open Casklet data. Check data-directory access and available disk space.".into()
+                    },
+                    correlation_id: "startup".into(),
+                },
+                cli.output,
+            );
             return ExitCode::FAILURE;
         }
     };
@@ -547,7 +590,7 @@ fn main() -> ExitCode {
             action: InstallerAction::Install { cask_id, path, accept_risk, allow_elevation },
         } => {
             if !accept_risk {
-                eprintln!("Choose --accept-risk to authorize running this installer");
+                presentation::error(&confirm_error("Choose --accept-risk to authorize running this installer", &correlation_id), cli.output);
                 return ExitCode::FAILURE;
             }
             service.inspect_installer_artifact(&InspectInstallerArtifact {
@@ -557,8 +600,8 @@ fn main() -> ExitCode {
                     allow_elevation,
                     version: CONTRACT_VERSION, cask_id, path,
                     expected_sha256: preview.sha256, accept_execution_risk: true,
-                }, &correlation_id, &|id| eprintln!("Installing: {id}"))
-            }).map(|v| format!("{}\n", serde_json::to_string_pretty(&v).unwrap()))
+                }, &correlation_id, &|_| presentation::progress("Installing application"))
+            }).map(|v| presentation::document(serde_json::to_value(&v).unwrap(), cli.output))
         }
         Command::Installer {
             action: InstallerAction::Inspect { path },
@@ -570,7 +613,7 @@ fn main() -> ExitCode {
                 },
                 &correlation_id,
             )
-            .map(|v| format!("{}\n", serde_json::to_string_pretty(&v).unwrap())),
+            .map(|v| presentation::document(serde_json::to_value(&v).unwrap(), cli.output)),
         Command::Installer {
             action:
                 InstallerAction::Register {
@@ -588,7 +631,7 @@ fn main() -> ExitCode {
                 },
                 &correlation_id,
             )
-            .map(|v| format!("{}\n", serde_json::to_string_pretty(&v).unwrap())),
+            .map(|v| presentation::document(serde_json::to_value(&v).unwrap(), cli.output)),
         Command::Installer {
             action: InstallerAction::List { cask_id },
         } => service
@@ -599,15 +642,15 @@ fn main() -> ExitCode {
                 },
                 &correlation_id,
             )
-            .map(|v| format!("{}\n", serde_json::to_string_pretty(&v).unwrap())),
+            .map(|v| presentation::document(serde_json::to_value(&v).unwrap(), cli.output)),
         Command::Installer {
             action:
                 InstallerAction::Launch { artifact_id, hash, accept_risk, allow_elevation, manage_msi },
         } => {
             let request = LaunchInstallerArtifact {version:CONTRACT_VERSION,artifact_id,expected_sha256:hash,accept_execution_risk:accept_risk,allow_elevation};
-            let started = |id: &str| eprintln!("Installer operation: {id}");
+            let started = |_: &str| presentation::progress("Running installer");
             let result = if manage_msi {service.launch_managed_msi_artifact(&request,&correlation_id,&started)} else {service.launch_installer_artifact(&request,&correlation_id,&started)};
-            result.map(|value|format!("{}\n",serde_json::to_string_pretty(&value).unwrap()))
+            result.map(|value|presentation::document(serde_json::to_value(&value).unwrap(), cli.output))
         }
         Command::Installer {
             action: InstallerAction::Operations { cask_id },
@@ -619,7 +662,7 @@ fn main() -> ExitCode {
                 },
                 &correlation_id,
             )
-            .map(|v| format!("{}\n", serde_json::to_string_pretty(&v).unwrap())),
+            .map(|v| presentation::document(serde_json::to_value(&v).unwrap(), cli.output)),
         Command::Installer {
             action: InstallerAction::Operation { id },
         } => service
@@ -630,7 +673,7 @@ fn main() -> ExitCode {
                 },
                 &correlation_id,
             )
-            .map(|v| format!("{}\n", serde_json::to_string_pretty(&v).unwrap())),
+            .map(|v| presentation::document(serde_json::to_value(&v).unwrap(), cli.output)),
         Command::Installer {
             action:
                 InstallerAction::Confirm {
@@ -646,7 +689,7 @@ fn main() -> ExitCode {
                 },
                 &correlation_id,
             )
-            .map(|v| format!("{}\n", serde_json::to_string_pretty(&v).unwrap())),
+            .map(|v| presentation::document(serde_json::to_value(&v).unwrap(), cli.output)),
         Command::Installer {
             action: InstallerAction::Cancel { id },
         } => service
@@ -671,10 +714,7 @@ fn main() -> ExitCode {
             .map(|()| "Installer outcome preserved and closed\n".into()),
         Command::Winget {
             action: WingetAction::Capabilities,
-        } => Ok(format!(
-            "{}\n",
-            serde_json::to_string_pretty(&service.winget_capabilities()).unwrap()
-        )),
+        } => Ok(presentation::document(serde_json::to_value(service.winget_capabilities()).unwrap(), cli.output)),
         Command::Winget {
             action: WingetAction::Search { query },
         } => service
@@ -704,7 +744,7 @@ fn main() -> ExitCode {
                 },
                 &correlation_id,
             )
-            .map(|v| format!("{}\n", serde_json::to_string_pretty(&v).unwrap())),
+            .map(|v| presentation::document(serde_json::to_value(&v).unwrap(), cli.output)),
         Command::Winget {
             action:
                 WingetAction::Install {
@@ -725,9 +765,9 @@ fn main() -> ExitCode {
                     accept_package_agreements,
                 },
                 &correlation_id,
-                &|id| eprintln!("WinGet operation: {id}"),
+                &|_| presentation::progress("Running WinGet"),
             )
-            .map(|v| format!("{}\n", serde_json::to_string_pretty(&v).unwrap())),
+            .map(|v| presentation::document(serde_json::to_value(&v).unwrap(), cli.output)),
         Command::Winget {
             action: WingetAction::List { cask_id },
         } => service
@@ -738,7 +778,7 @@ fn main() -> ExitCode {
                 },
                 &correlation_id,
             )
-            .map(|v| format!("{}\n", serde_json::to_string_pretty(&v).unwrap())),
+            .map(|v| presentation::document(serde_json::to_value(&v).unwrap(), cli.output)),
         Command::Winget {
             action: WingetAction::Operation { id },
         } => service
@@ -749,7 +789,7 @@ fn main() -> ExitCode {
                 },
                 &correlation_id,
             )
-            .map(|v| format!("{}\n", serde_json::to_string_pretty(&v).unwrap())),
+            .map(|v| presentation::document(serde_json::to_value(&v).unwrap(), cli.output)),
         Command::Winget {
             action: WingetAction::Cancel { id },
         } => service
@@ -782,7 +822,7 @@ fn main() -> ExitCode {
                 },
                 &correlation_id,
             )
-            .map(|v| format!("{}\n", serde_json::to_string_pretty(&v).unwrap())),
+            .map(|v| presentation::document(serde_json::to_value(&v).unwrap(), cli.output)),
         Command::Winget {
             action: WingetAction::Approve { plan_id, hash },
         } => service
@@ -794,11 +834,11 @@ fn main() -> ExitCode {
                 },
                 &correlation_id,
             )
-            .map(|v| format!("{}\n", serde_json::to_string_pretty(&v).unwrap())),
+            .map(|v| presentation::document(serde_json::to_value(&v).unwrap(), cli.output)),
         #[cfg(feature = "reviewed-removal")]
         Command::Winget {
             action: WingetAction::Execute { plan_id, hash, yes },
-        } => confirm_removal(&plan_id, yes, cli.no_input)
+        } => confirm_removal(&plan_id, yes, cli.no_input || matches!(cli.output, Output::Json))
             .and_then(|()| {
                 service.execute_winget_uninstall_plan(
                     &ExecuteWingetUninstallPlan {
@@ -807,10 +847,10 @@ fn main() -> ExitCode {
                         plan_hash: hash,
                     },
                     &correlation_id,
-                    &|id| eprintln!("WinGet operation: {id}"),
+                    &|_| presentation::progress("Running WinGet"),
                 )
             })
-            .map(|v| format!("{}\n", serde_json::to_string_pretty(&v).unwrap())),
+            .map(|v| presentation::document(serde_json::to_value(&v).unwrap(), cli.output)),
         Command::Installed {
             action: InstalledAction::Search { query },
         } => service
@@ -931,20 +971,7 @@ fn main() -> ExitCode {
                 },
                 &correlation_id,
             )
-            .map(|items| match cli.output {
-                Output::Json => format!("{}\n", serde_json::to_string(&items).unwrap()),
-                Output::Table => {
-                    use std::fmt::Write as _;
-                    items.iter().fold(String::new(), |mut output, item| {
-                        let _ = writeln!(
-                            output,
-                            "{} {} ({})",
-                            item.installation_id, item.application_name, item.state
-                        );
-                        output
-                    })
-                }
-            }),
+            .map(|items| presentation::document(serde_json::to_value(items).unwrap(), cli.output)),
         Command::Portable {
             action: PortableAction::Get { installation_id },
         } => service
@@ -968,8 +995,8 @@ fn main() -> ExitCode {
             )
             .map(|item| {
                 format!(
-                    "Started {} ({})\n",
-                    item.application_name, item.installation_id
+                    "Started {}\n",
+                    item.application_name
                 )
             }),
         Command::Export {
@@ -1082,7 +1109,10 @@ fn main() -> ExitCode {
                 },
                 &correlation_id,
             )
-            .map(|casks| render_cask_list(&casks, cli.output)),
+            .and_then(|casks| {
+                if matches!(cli.output, Output::Json) { return Ok(render_cask_list(&casks, cli.output)); }
+                service.cask_library(&ListCasks { version: CONTRACT_VERSION }, &correlation_id).map(|library| presentation::library(&library))
+            }),
         Command::Cask {
             action: CaskAction::Get { id },
         } => service
@@ -1093,7 +1123,12 @@ fn main() -> ExitCode {
                 },
                 &correlation_id,
             )
-            .map(|cask| render_cask_detail(&cask, cli.output)),
+            .and_then(|cask| {
+                if matches!(cli.output, Output::Json) { return Ok(render_cask_detail(&cask, cli.output)); }
+                let resources = service.list_resource_metadata(&ListResources { version: CONTRACT_VERSION, cask_id: cask.id.clone() }, &correlation_id)?;
+                let library = service.cask_library(&ListCasks { version: CONTRACT_VERSION }, &correlation_id)?;
+                Ok(presentation::overview(&cask, &resources, &library))
+            }),
         Command::Cask {
             action:
                 CaskAction::Update {
@@ -1128,7 +1163,7 @@ fn main() -> ExitCode {
                 MsiAction::Close { id, yes } => if yes { service.close_msi_cleanup(&GetRemovalPlan { version:CONTRACT_VERSION,id }, &correlation_id).map(|value|serde_json::to_value(value).unwrap()) } else { Err(confirm_error("Confirm preserved closure with --yes", &correlation_id)) },
                 MsiAction::Keep { cask_id, installation_id, yes } => if yes { service.release_managed_msi(&DisassociateInstalledApplication { version:CONTRACT_VERSION,cask_id,installation_id }, &correlation_id).map(|()|serde_json::json!({"preserved":true})) } else { Err(confirm_error("Confirm keeping and detaching the application with --yes", &correlation_id)) },
             };
-            result.map(|value|format!("{}\n",serde_json::to_string_pretty(&value).unwrap()))
+            result.map(|value|presentation::document(serde_json::to_value(&value).unwrap(), cli.output))
         }
         Command::Cask { action: CaskAction::Remove { id, yes } } => {
             service.get(&GetCask { version: CONTRACT_VERSION, id: id.clone() }, &correlation_id).and_then(|cask| {
@@ -1146,7 +1181,7 @@ fn main() -> ExitCode {
             service.get_resource(&GetResource { version: CONTRACT_VERSION, id: id.clone() }, &correlation_id).and_then(|current| service.set_resource_ownership(&casklet_contracts::SetResourceOwnership { version: CONTRACT_VERSION, cask_id, resource_id: id, expected_ownership: current.ownership, owned, confirm_ownership }, &correlation_id))
                 .map(|resource| match cli.output { Output::Json => format!("{}\n",serde_json::to_string(&resource).unwrap()), Output::Table => format!("{}: {} (file contents and location unchanged)\n", resource.name,resource.ownership) })
         },
-        Command::Resource { action: ResourceAction::Adopt { cask_id, source_path, category, confirm_ownership } } => service.adopt_resource(&casklet_contracts::AdoptResource { version: CONTRACT_VERSION, cask_id, source_path, category_key: category, confirm_ownership }, &correlation_id, &|done,_| { eprint!("\rInspected: {done} entries"); }).map(|resource| match cli.output { Output::Json => format!("{}\n",serde_json::to_string(&resource).unwrap()), Output::Table => format!("Item: {}\nOwnership: {}\nLocation unchanged: {}\nNo files deleted. Cleanup requires a reviewed plan.\n",resource.name,if resource.ownership == "OWNED" { "Owned by Cask" } else { "Reference" },resource.path) }),
+        Command::Resource { action: ResourceAction::Adopt { cask_id, source_path, category, confirm_ownership } } => service.adopt_resource(&casklet_contracts::AdoptResource { version: CONTRACT_VERSION, cask_id, source_path, category_key: category, confirm_ownership }, &correlation_id, &|done,_| presentation::progress(&format!("Inspected {done} entries"))).map(|resource| match cli.output { Output::Json => format!("{}\n",serde_json::to_string(&resource).unwrap()), Output::Table => format!("Item: {}\nOwnership: {}\nLocation unchanged: {}\nNo files deleted. Cleanup requires a reviewed plan.\n",resource.name,if resource.ownership == "OWNED" { "Owned by Cask" } else { "Reference" },resource.path) }),
         Command::Resource {
             action:
                 ResourceAction::Add {
@@ -1158,12 +1193,12 @@ fn main() -> ExitCode {
         } => {
             let progress = |done: u64, total: u64| {
                 if total == 0 {
-                    eprint!("\rInspected: {done} entries");
+                    presentation::progress(&format!("Inspected {done} entries"));
                 } else {
-                    eprint!("\rProcessed: {done}/{total} bytes");
+                    presentation::progress(&format!("Processed {done}/{total} bytes"));
                 }
             };
-            let result = service
+            service
                 .add_user_resource_with_events(
                     &AddResource {
                         version: CONTRACT_VERSION,
@@ -1176,9 +1211,7 @@ fn main() -> ExitCode {
                     &progress,
                     &|_| {},
                 )
-                .map(|resource| render_resource_added(&resource, mode, cli.output));
-            eprintln!();
-            result
+                .map(|resource| render_resource_added(&resource, mode, cli.output))
         }
         Command::Resource {
             action: ResourceAction::List { cask_id },
@@ -1196,8 +1229,8 @@ fn main() -> ExitCode {
         ).map(|contents| match cli.output {
             Output::Json => format!("{}\n",serde_json::to_string(&contents).unwrap()),
             Output::Table => {
-                let mut text = format!("{} entries · {} · {} unknown\n",contents.total_entries,contents.ownership,contents.unknown_entries);
-                for entry in &contents.entries { let _ = writeln!(text,"{}\t{}\t{}",entry.kind,entry.size_bytes.map_or_else(|| "—".into(),|bytes|bytes.to_string()),entry.relative_path); }
+                let mut text = format!("Folder contents\nOwnership: {}\nEntries: {}\nUnknown: {}\n\n",contents.ownership,contents.total_entries,contents.unknown_entries);
+                text.push_str(&presentation::document(serde_json::to_value(&contents.entries).unwrap(),cli.output));
                 if contents.total_entries > u64::try_from(contents.entries.len()).unwrap_or(u64::MAX) { text.push_str("Listing truncated; size includes all inspected contents.\n"); }
                 text
             }
@@ -1411,7 +1444,11 @@ fn main() -> ExitCode {
                     yes,
                     confirm_permanent,
                 },
-        } => confirm_removal(&id, yes, cli.no_input)
+        } => service.get_removal_plan(&GetRemovalPlan { version: CONTRACT_VERSION, id: id.clone() }, &correlation_id)
+            .and_then(|plan| {
+                if matches!(cli.output, Output::Table) { eprint!("{}", presentation::finish(&render_plan(&plan, cli.output), cli.output)); }
+                confirm_removal(&id, yes, cli.no_input || matches!(cli.output, Output::Json))
+            })
             .and_then(|()| {
                 service.execute_removal_plan(
                     &ExecuteRemovalPlan {
@@ -1427,7 +1464,7 @@ fn main() -> ExitCode {
         #[cfg(any(feature = "reviewed-removal", feature = "alpha-cleanup"))]
         Command::Plan {
             action: PlanAction::CloseUncertain { run_id, yes },
-        } => confirm_removal(&run_id, yes, cli.no_input)
+        } => confirm_removal(&run_id, yes, cli.no_input || matches!(cli.output, Output::Json))
             .and_then(|()| {
                 service.close_uncertain_removal(
                     &CloseRemovalRun {
@@ -1441,11 +1478,11 @@ fn main() -> ExitCode {
     };
     match result {
         Ok(output) => {
-            print!("{output}");
+            print!("{}", presentation::finish(&output, cli.output));
             ExitCode::SUCCESS
         }
         Err(error) => {
-            render_error(&error, cli.output);
+            presentation::error(&error, cli.output);
             ExitCode::FAILURE
         }
     }
@@ -1456,7 +1493,7 @@ fn confirm_removal(id: &str, yes: bool, no_input: bool) -> Result<(), ApiError> 
     if yes {
         return Ok(());
     }
-    if no_input {
+    if no_input || !std::io::IsTerminal::is_terminal(&std::io::stdin()) {
         return Err(ApiError {
             version: CONTRACT_VERSION,
             code: "CONFIRMATION_REQUIRED".into(),
@@ -1501,12 +1538,24 @@ fn render_plan(plan: &RemovalPlanView, output: Output) -> String {
                 } else {
                     "Recycle Bin"
                 },
-                plan.expires_at_ms,
+                presentation::date(plan.expires_at_ms),
                 plan.plan_hash,
             );
             if let Some(run_id) = &plan.run_id {
                 writeln!(result, "Run: {run_id}").expect("String write");
             }
+            writeln!(
+                result,
+                "Actions: {} remove, {} detach, {} preserve; {} failed",
+                plan.items
+                    .iter()
+                    .filter(|i| matches!(i.action.as_str(), "TRASH" | "DELETE_PERMANENTLY"))
+                    .count(),
+                plan.items.iter().filter(|i| i.action == "DETACH").count(),
+                plan.items.iter().filter(|i| i.action == "PRESERVE").count(),
+                plan.items.iter().filter(|i| i.state == "FAILED").count()
+            )
+            .expect("String write");
             for item in &plan.items {
                 writeln!(
                     result,
@@ -1525,7 +1574,11 @@ fn render_plan(plan: &RemovalPlanView, output: Output) -> String {
                     writeln!(result, "  Possible recovery location: {path}").expect("String write");
                 }
             }
-            if plan.state == "DRAFT" {
+            if plan.state == "DRAFT"
+                && !cfg!(any(feature = "alpha-cleanup", feature = "reviewed-removal"))
+            {
+                result.push_str("Review-only build: cleanup approval/execution require an Alpha cleanup or reviewed-removal build.\n");
+            } else if plan.state == "DRAFT" {
                 writeln!(result, "Next: review the actions, then casklet cleanup approve {} --hash {} (requires Alpha cleanup or reviewed-removal build)", plan.id, plan.plan_hash).expect("String write");
             } else if plan.state == "APPROVED" {
                 writeln!(
@@ -1541,79 +1594,31 @@ fn render_plan(plan: &RemovalPlanView, output: Output) -> String {
 }
 
 fn render_operations(items: &[OperationView], output: Output) -> String {
-    match output {
-        Output::Json => format!(
-            "{}\n",
-            serde_json::to_string(items).expect("Operation DTO is serializable")
-        ),
-        Output::Table => {
-            let mut result = String::new();
-            for item in items {
-                writeln!(result, "{} {} {}", item.id, item.state, item.step).expect("String write");
-            }
-            result
-        }
-    }
+    presentation::document(
+        serde_json::to_value(items).expect("serializable view"),
+        output,
+    )
 }
 
 fn render_operation(item: &OperationView, output: Output) -> String {
-    match output {
-        Output::Json => format!(
-            "{}\n",
-            serde_json::to_string(item).expect("Operation DTO is serializable")
-        ),
-        Output::Table => format!(
-            "{}\nState: {}\nStep: {}\nProgress: {}{}\n",
-            item.id,
-            item.state,
-            item.step,
-            item.progress_completed,
-            item.progress_total
-                .map_or_else(String::new, |total| format!("/{total}"))
-        ),
-    }
+    presentation::document(
+        serde_json::to_value(item).expect("serializable view"),
+        output,
+    )
 }
 
 fn render_recovery_status(status: &RecoveryStatus, output: Output) -> String {
-    match output {
-        Output::Json => format!(
-            "{}\n",
-            serde_json::to_string(status).expect("Recovery DTO is serializable")
-        ),
-        Output::Table => {
-            let mut result = String::new();
-            for item in &status.operations {
-                writeln!(result, "Operation {} needs recovery", item.id).expect("String write");
-            }
-            for id in &status.pending_manifest_casks {
-                writeln!(result, "Cask {id} has a pending manifest").expect("String write");
-            }
-            if result.is_empty() {
-                result.push_str("No recovery required.\n");
-            }
-            result
-        }
-    }
+    presentation::document(
+        serde_json::to_value(status).expect("serializable view"),
+        output,
+    )
 }
 
 fn render_recovery_inspection(item: &RecoveryInspection, output: Output) -> String {
-    match output {
-        Output::Json => format!(
-            "{}\n",
-            serde_json::to_string(item).expect("Recovery DTO is serializable")
-        ),
-        Output::Table => format!(
-            "Operation: {}\nMode: {}\nSource: {} ({})\nStaging: {} ({})\nManaged destination: {} ({})\n",
-            item.operation.id,
-            item.mode.to_ascii_lowercase(),
-            item.source_path,
-            item.source_status.to_ascii_lowercase(),
-            item.staging_path,
-            item.staging_status.to_ascii_lowercase(),
-            item.final_path,
-            item.final_status.to_ascii_lowercase()
-        ),
-    }
+    presentation::document(
+        serde_json::to_value(item).expect("serializable view"),
+        output,
+    )
 }
 
 fn render_resource_added(resource: &ResourceView, mode: Mode, output: Output) -> String {
@@ -1634,88 +1639,34 @@ fn render_resource_added(resource: &ResourceView, mode: Mode, output: Output) ->
     }
 }
 fn render_resource_list(items: &[ResourceView], output: Output) -> String {
-    match output {
-        Output::Table => {
-            let mut result = String::new();
-            for item in items {
-                writeln!(
-                    result,
-                    "{} ({})",
-                    item.name,
-                    item.management.to_ascii_lowercase()
-                )
-                .expect("String write");
-            }
-            result
-        }
-        Output::Json => format!(
-            "{}\n",
-            serde_json::to_string(items).expect("Resource DTO is serializable")
-        ),
-    }
+    presentation::document(
+        serde_json::to_value(items).expect("serializable view"),
+        output,
+    )
 }
 fn render_resource_detail(item: &ResourceView, output: Output) -> String {
-    match output {
-        Output::Table => format!(
-            "{}\nManagement: {}\nLocation: {}\nAvailability: {}\nCategory: {}\nSize: {}\n",
-            item.name,
-            item.management.to_ascii_lowercase(),
-            item.path,
-            item.availability.to_ascii_lowercase(),
-            item.category_key,
-            item.size_bytes.map_or_else(
-                || "unknown".into(),
-                |n| format!("{n} bytes ({})", item.size_measurement.to_ascii_lowercase())
-            )
-        ),
-        Output::Json => format!(
-            "{}\n",
-            serde_json::to_string(item).expect("Resource DTO is serializable")
-        ),
-    }
+    presentation::document(
+        serde_json::to_value(item).expect("serializable view"),
+        output,
+    )
 }
 fn render_category_list(items: &[CategoryView], output: Output) -> String {
-    match output {
-        Output::Table => {
-            let mut result = String::new();
-            for item in items {
-                writeln!(result, "{} ({})", item.name, item.key).expect("String write");
-            }
-            result
-        }
-        Output::Json => format!(
-            "{}\n",
-            serde_json::to_string(items).expect("Category DTO is serializable")
-        ),
-    }
+    presentation::document(
+        serde_json::to_value(items).expect("serializable view"),
+        output,
+    )
 }
 fn render_category_created(item: &CategoryView, output: Output) -> String {
-    match output {
-        Output::Table => format!("Created category: {} ({})\n", item.name, item.key),
-        Output::Json => format!(
-            "{}\n",
-            serde_json::to_string(item).expect("Category DTO is serializable")
-        ),
-    }
+    presentation::document(
+        serde_json::to_value(item).expect("serializable view"),
+        output,
+    )
 }
 fn render_storage_summary(item: &StorageSummary, output: Output) -> String {
-    match output {
-        Output::Table => format!(
-            "Managed logical: {} bytes\nReferenced logical: {} bytes\nOwned applications: {} bytes\nReference applications: {} bytes\nEstimated applications: {}\nPhysical: unknown\nReclaimable: {}â€“{} bytes\nUnknown entries: {}\n",
-            item.managed_logical_bytes,
-            item.referenced_logical_bytes,
-            item.owned_application_bytes,
-            item.reference_application_bytes,
-            item.estimated_applications,
-            item.reclaimable_min_bytes,
-            item.reclaimable_max_bytes,
-            item.unknown_entries
-        ),
-        Output::Json => format!(
-            "{}\n",
-            serde_json::to_string(item).expect("Summary DTO is serializable")
-        ),
-    }
+    presentation::document(
+        serde_json::to_value(item).expect("serializable view"),
+        output,
+    )
 }
 
 fn render_cask_created(cask: &CaskView, output: Output) -> String {
@@ -1729,82 +1680,31 @@ fn render_cask_created(cask: &CaskView, output: Output) -> String {
 }
 
 fn render_cask_list(casks: &[CaskView], output: Output) -> String {
-    match output {
-        Output::Table => {
-            let mut result = String::new();
-            for cask in casks {
-                writeln!(result, "{}", cask.name).expect("writing to a String cannot fail");
-            }
-            result
-        }
-        Output::Json => format!(
-            "{}\n",
-            serde_json::to_string(casks).expect("Cask DTO is serializable")
-        ),
-    }
+    presentation::document(
+        serde_json::to_value(casks).expect("serializable view"),
+        output,
+    )
 }
 
 fn render_cask_detail(cask: &CaskView, output: Output) -> String {
-    match output {
-        Output::Table => format!(
-            "{}\nStatus: {}\n",
-            cask.name,
-            cask.state.to_ascii_lowercase()
-        ),
-        Output::Json => format!(
-            "{}\n",
-            serde_json::to_string(cask).expect("Cask DTO is serializable")
-        ),
-    }
-}
-
-fn render_error(error: &ApiError, output: Output) {
-    match output {
-        Output::Table => eprintln!(
-            "{}: {} (reference {})",
-            error.code, error.message, error.correlation_id
-        ),
-        Output::Json => eprintln!(
-            "{}",
-            serde_json::to_string(error).expect("Error DTO is serializable")
-        ),
-    }
+    presentation::document(
+        serde_json::to_value(cask).expect("serializable view"),
+        output,
+    )
 }
 
 fn render_detected(items: &[DetectedApplicationView], output: Output) -> String {
-    match output {
-        Output::Json => format!("{}\n", serde_json::to_string(items).unwrap()),
-        Output::Table => items.iter().fold(String::new(), |mut text, item| {
-            let _ = writeln!(
-                text,
-                "{} | {} | {} | {} | {} | {}",
-                item.installation_id,
-                item.name,
-                item.display_version.as_deref().unwrap_or(""),
-                item.scope,
-                item.state,
-                item.source_key
-            );
-            text
-        }),
-    }
+    presentation::document(
+        serde_json::to_value(items).expect("serializable view"),
+        output,
+    )
 }
 
 fn render_portable(item: &PortableInstallationView, output: Output) -> String {
-    match output {
-        Output::Json => format!(
-            "{}\n",
-            serde_json::to_string(item).expect("Portable DTO is serializable")
-        ),
-        Output::Table => format!(
-            "{}\nInstallation: {}\nState: {}\nExecutable: {}\nManaged resource: {}\n",
-            item.application_name,
-            item.installation_id,
-            item.state,
-            item.executable_relative_path,
-            item.resource_id
-        ),
-    }
+    presentation::document(
+        serde_json::to_value(item).expect("serializable view"),
+        output,
+    )
 }
 
 fn confirm_error(message: &str, correlation: &str) -> ApiError {
@@ -1813,5 +1713,27 @@ fn confirm_error(message: &str, correlation: &str) -> ApiError {
         message: message.into(),
         version: CONTRACT_VERSION,
         correlation_id: correlation.into(),
+    }
+}
+
+#[cfg(test)]
+mod help_tests {
+    use super::*;
+    use clap::CommandFactory;
+    #[test]
+    fn every_command_and_subcommand_has_working_help() {
+        fn visit(command: &clap::Command, path: &[String]) {
+            let mut args = path.to_vec();
+            args.push("--help".into());
+            let help = Cli::try_parse_from(args).unwrap_err();
+            assert_eq!(help.kind(), clap::error::ErrorKind::DisplayHelp);
+            assert!(help.to_string().contains("Usage:"));
+            for child in command.get_subcommands() {
+                let mut next = path.to_vec();
+                next.push(child.get_name().into());
+                visit(child, &next);
+            }
+        }
+        visit(&Cli::command(), &["casklet".into()]);
     }
 }

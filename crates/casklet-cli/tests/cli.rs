@@ -28,7 +28,7 @@ fn archive_and_explicit_in_place_ownership_share_cleanup_semantics_across_proces
     let path = source.to_string_lossy();
     let refused = run(&["resource", "adopt", id, &path]);
     assert!(!refused.status.success());
-    assert!(String::from_utf8_lossy(&refused.stderr).contains("OWNERSHIP_CONSENT"));
+    assert!(String::from_utf8_lossy(&refused.stderr).contains("ownership"));
     assert!(
         run(&["resource", "adopt", id, &path, "--confirm-ownership"])
             .status
@@ -50,7 +50,9 @@ fn archive_and_explicit_in_place_ownership_share_cleanup_semantics_across_proces
 
 #[test]
 fn create_list_get_across_processes() {
-    let root = std::env::temp_dir().join(format!("casklet-cli-{}", std::process::id()));
+    let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../target")
+        .join(format!("casklet-cli-{}", std::process::id()));
     let binary = env!("CARGO_BIN_EXE_casklet");
     let run = |args: &[&str]| {
         Command::new(binary)
@@ -71,16 +73,22 @@ fn create_list_get_across_processes() {
     );
     let listed = run(&["cask", "list"]);
     assert!(listed.status.success());
-    assert_eq!(String::from_utf8(listed.stdout).unwrap(), "My Work\n");
+    assert!(
+        String::from_utf8(listed.stdout)
+            .unwrap()
+            .contains("My Work")
+    );
     let listed_json = run(&["cask", "list", "--output", "json"]);
     assert!(listed_json.status.success());
     let items: serde_json::Value = serde_json::from_slice(&listed_json.stdout).unwrap();
     let id = items[0]["id"].as_str().unwrap();
     let shown = run(&["cask", "get", id]);
     assert!(shown.status.success());
-    assert_eq!(
-        String::from_utf8(shown.stdout).unwrap(),
-        "My Work\nStatus: active\n"
+    let overview = String::from_utf8(shown.stdout).unwrap();
+    assert!(
+        overview.contains("My Work")
+            && overview.contains("Status: active")
+            && overview.contains("Total items: 0")
     );
     let shown_json = run(&["--output", "json", "cask", "get", id]);
     assert!(shown_json.status.success());
@@ -106,7 +114,9 @@ fn create_list_get_across_processes() {
 
 #[test]
 fn resource_commands_keep_human_output_brief_and_require_mode() {
-    let root = std::env::temp_dir().join(format!("casklet-cli-resource-{}", std::process::id()));
+    let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../target")
+        .join(format!("casklet-cli-resource-{}", std::process::id()));
     fs::create_dir_all(&root).unwrap();
     let binary = env!("CARGO_BIN_EXE_casklet");
     let run = |args: &[&str]| {
@@ -145,10 +155,8 @@ fn resource_commands_keep_human_output_brief_and_require_mode() {
         "Referenced: notes.txt\n"
     );
     let resources = run(&["resource", "list", id]);
-    assert_eq!(
-        String::from_utf8(resources.stdout).unwrap(),
-        "notes.txt (referenced)\n"
-    );
+    let listing = String::from_utf8(resources.stdout).unwrap();
+    assert!(listing.contains("notes.txt") && listing.contains("REFERENCE"));
     assert!(source.exists());
     fs::remove_dir_all(root).unwrap();
 }
@@ -156,7 +164,9 @@ fn resource_commands_keep_human_output_brief_and_require_mode() {
 #[cfg(any(feature = "reviewed-removal", feature = "alpha-cleanup"))]
 #[test]
 fn cleanup_requires_explicit_noninteractive_confirmation() {
-    let root = std::env::temp_dir().join(format!("casklet-cli-cleanup-{}", uuid::Uuid::new_v4()));
+    let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../target")
+        .join(format!("casklet-cli-cleanup-{}", uuid::Uuid::new_v4()));
     fs::create_dir_all(&root).unwrap();
     let binary = env!("CARGO_BIN_EXE_casklet");
     let run = |args: &[&str]| {
@@ -201,7 +211,7 @@ fn cleanup_requires_explicit_noninteractive_confirmation() {
     );
     let refused = run(&["plan", "execute", plan_id, "--hash", hash, "--no-input"]);
     assert!(!refused.status.success());
-    assert!(String::from_utf8_lossy(&refused.stderr).contains("CONFIRMATION_REQUIRED"));
+    assert!(String::from_utf8_lossy(&refused.stderr).contains("Pass --yes"));
     assert!(source.exists());
     assert!(!run(&["cask", "remove", cask_id, "--yes"]).status.success());
     let executed = run(&[
@@ -222,7 +232,7 @@ fn cleanup_requires_explicit_noninteractive_confirmation() {
     assert!(
         String::from_utf8(run(&["resource", "list", cask_id]).stdout)
             .unwrap()
-            .is_empty()
+            .contains("No entries.")
     );
     assert!(run(&["cask", "remove", cask_id, "--yes"]).status.success());
     assert!(source.exists());
@@ -303,5 +313,65 @@ fn folder_contents_and_storage_reconcile_changes_across_cli_processes() {
     assert_eq!(plan["items"][0]["action"], "TRASH");
     assert_eq!(plan["items"][0]["expectedSizeBytes"], 13);
     assert_eq!(fs::read(folder.join("nested/later.txt")).unwrap(), b"later");
+    fs::remove_dir_all(root).unwrap();
+}
+
+#[test]
+fn presentation_modes_errors_and_narrow_unicode_inventory() {
+    let root = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../target")
+        .join(format!("cli-presentation-{}", uuid::Uuid::new_v4()));
+    fs::create_dir_all(&root).unwrap();
+    let run = |args: &[&str]| {
+        Command::new(env!("CARGO_BIN_EXE_casklet"))
+            .args(args)
+            .env("CASKLET_DEV_ROOT", &root)
+            .env("NO_COLOR", "1")
+            .env("COLUMNS", "32")
+            .output()
+            .unwrap()
+    };
+    let created = run(&["--output", "json", "cask", "create", "研究 notes"]);
+    assert!(created.status.success());
+    let cask: serde_json::Value = serde_json::from_slice(&created.stdout).unwrap();
+    let id = cask["id"].as_str().unwrap();
+    let listing = run(&["cask", "list"]);
+    let listing = String::from_utf8(listing.stdout).unwrap();
+    assert!(listing.contains("研究 notes"));
+    assert!(!listing.contains(id));
+    assert!(!listing.contains('\u{1b}'));
+    for line in listing.lines() {
+        assert!(unicode_width::UnicodeWidthStr::width(line) <= 32, "{line}");
+    }
+    let colored = run(&["--color", "always", "cask", "list"]);
+    assert!(String::from_utf8_lossy(&colored.stdout).contains("\u{1b}["));
+    let uncolored = run(&["--color", "never", "cask", "list"]);
+    assert!(!String::from_utf8_lossy(&uncolored.stdout).contains('\u{1b}'));
+    let overview = run(&["cask", "overview", id]);
+    assert!(overview.status.success());
+    assert!(String::from_utf8_lossy(&overview.stdout).contains("Total items: 0"));
+    let details = run(&["--verbose", "--output", "json", "cask", "get", id]);
+    let details: serde_json::Value = serde_json::from_slice(&details.stdout).unwrap();
+    assert_eq!(details, cask);
+    assert!(details["revision"].is_number());
+    let missing = run(&["--output", "json", "resource", "get", "missing"]);
+    assert!(!missing.status.success());
+    assert!(missing.stdout.is_empty());
+    let error: serde_json::Value = serde_json::from_slice(&missing.stderr).unwrap();
+    assert!(error["code"].is_string() && error["correlationId"].is_string());
+    let typo = run(&["cask", "lst"]);
+    assert!(!typo.status.success());
+    assert!(String::from_utf8_lossy(&typo.stderr).contains("list"));
+    let status = run(&["--output", "json", "recovery", "retry-manifests"]);
+    assert!(status.status.success());
+    assert!(serde_json::from_slice::<serde_json::Value>(&status.stdout).is_ok());
+    let capabilities = run(&["winget", "capabilities"]);
+    assert!(capabilities.status.success());
+    assert!(
+        !String::from_utf8_lossy(&capabilities.stdout)
+            .trim_start()
+            .starts_with('{')
+    );
+    assert!(run(&["cask", "remove", id, "--yes"]).status.success());
     fs::remove_dir_all(root).unwrap();
 }
