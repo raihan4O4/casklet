@@ -474,6 +474,9 @@ fn main() {
     }
 }
 impl InstallerSource for LocalStorage {
+    fn installed_executable(&self, path: &str) -> Result<Option<String>, String> {
+        super::windows_inventory::installed_executable(path)
+    }
     fn inspect_installer(&self, path: &str) -> Result<InstallerInspection, String> {
         #[cfg(windows)]
         {

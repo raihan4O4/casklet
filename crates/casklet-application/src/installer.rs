@@ -29,6 +29,10 @@ pub enum InstallerOutcome {
 
 pub trait InstallerSource {
     /// # Errors
+    /// Returns the registered application's name for an installed executable, without executing it.
+    fn installed_executable(&self, path: &str) -> Result<Option<String>, String>;
+
+    /// # Errors
     /// Inspects bytes and native Windows metadata without executing the artifact.
     fn inspect_installer(&self, path: &str) -> Result<InstallerInspection, String>;
     /// # Errors
@@ -251,6 +255,26 @@ where
         }
         Ok(operation)
     }
+    fn reject_installed_executable(
+        &self,
+        path: &str,
+        correlation_id: &str,
+    ) -> Result<(), ApiError> {
+        if let Some(name) = self
+            .storage
+            .installed_executable(path)
+            .map_err(|e| fail("INSTALLER_SOURCE_CHECK", e, correlation_id))?
+        {
+            return Err(fail(
+                "INSTALLED_APPLICATION_EXECUTABLE",
+                format!(
+                    "This executable belongs to the installed application {name}. Use Associate existing app to link it to this Cask, or select its setup installer instead. Nothing was launched."
+                ),
+                correlation_id,
+            ));
+        }
+        Ok(())
+    }
     /// # Errors
     /// Returns file or metadata inspection errors.
     pub fn inspect_installer_artifact(
@@ -259,6 +283,7 @@ where
         correlation_id: &str,
     ) -> Result<InstallerInspection, ApiError> {
         check_version(request.version, correlation_id)?;
+        self.reject_installed_executable(&request.path, correlation_id)?;
         self.storage
             .inspect_installer(&request.path)
             .map_err(|e| fail("INSTALLER_INSPECTION", e, correlation_id))
@@ -428,6 +453,8 @@ where
                 correlation_id,
             ));
         }
+        self.reject_installed_executable(&artifact.source_path, correlation_id)?;
+        self.reject_installed_executable(&artifact.inspection.path, correlation_id)?;
         let current = self
             .storage
             .inspect_installer(&artifact.inspection.path)

@@ -271,6 +271,16 @@ try {
       })
       .click();
     await shot(theme + "-resource-details");
+    for (const key of ["Tab", "Shift+Tab"])
+      for (let step = 0; step < 14; step++) {
+        await page.keyboard.press(key);
+        if (
+          !(await page
+            .locator("dialog.resource-overlay")
+            .evaluate((el) => el.contains(document.activeElement)))
+        )
+          throw Error("Resource overlay focus escaped");
+      }
     await page
       .getByRole("button", { name: "Change Category", exact: true })
       .click();
@@ -300,6 +310,17 @@ try {
         .evaluate((el) => el === document.activeElement))
     )
       throw Error("Ownership Escape did not restore focus");
+    await page.keyboard.press("Escape");
+    await page.getByRole("dialog").waitFor({ state: "hidden" });
+    if (
+      !(await page
+        .getByRole("button", {
+          name: "Details for Course notes.pdf",
+          exact: true,
+        })
+        .evaluate((el) => el === document.activeElement))
+    )
+      throw Error("Overlay did not restore item focus");
     await page
       .getByRole("button", {
         name: "Details for Editing references",
@@ -308,6 +329,9 @@ try {
       .click();
     await page.getByText("reference.jpg", { exact: true }).waitFor();
     await shot(theme + "-folder-details");
+    await page
+      .getByRole("button", { name: "Close resource details", exact: true })
+      .click();
     await page.getByRole("button", { name: "Add Items", exact: true }).click();
     await shot(theme + "-add-items");
     await page.getByRole("button", { name: "Add File", exact: true }).click();
@@ -359,6 +383,7 @@ try {
     }
     await page.getByRole("button", { name: "Settings", exact: true }).click();
     await shot(theme + "-cask-settings");
+    await page.locator('summary[aria-label="Categories"]').click();
     await page
       .getByLabel("New category", { exact: true })
       .fill("Field research");
@@ -370,6 +395,7 @@ try {
       .getByRole("list", { name: "Available categories" })
       .getByText("Field research", { exact: true })
       .waitFor();
+    await page.locator('summary[aria-label="Export Cask"]').click();
     await page
       .getByRole("region", { name: "Export Cask", exact: true })
       .scrollIntoViewIfNeeded();
@@ -460,6 +486,7 @@ try {
         .getByRole("button", { name: "Change Category", exact: true })
         .click();
       await shot("dark-category-editor-390");
+      await page.keyboard.press("Escape");
       await page.keyboard.press("Escape");
     }
     await page
