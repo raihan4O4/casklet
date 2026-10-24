@@ -12,6 +12,7 @@ pub struct Request {
     batch_id: u64,
     batch_size: usize,
     path: String,
+    paths: Vec<String>,
     cask_id: Option<String>,
     routed: bool,
     is_installer: bool,
@@ -61,6 +62,7 @@ impl Requests {
                 batch_id,
                 batch_size,
                 path,
+                paths: Vec::new(),
                 cask_id: cask_id.map(str::to_owned),
                 routed: false,
                 is_installer: false,
@@ -84,11 +86,13 @@ impl Requests {
             .find(|request| request.visible_in(label))
             .map(|request| {
                 let mut result = request.clone();
-                result.batch_size = queue
+                result.paths = queue
                     .1
                     .iter()
                     .filter(|entry| entry.batch_id == request.batch_id)
-                    .count();
+                    .map(|entry| entry.path.clone())
+                    .collect();
+                result.batch_size = result.paths.len();
                 result
             }))
     }
@@ -102,13 +106,9 @@ impl Requests {
             .iter()
             .find(|request| request.id == id && request.visible_in(label))
             .map(|request| request.batch_id);
-        queue.1.retain(|request| {
-            if label == "main" {
-                Some(request.batch_id) != batch
-            } else {
-                request.id != id || !request.visible_in(label)
-            }
-        });
+        queue
+            .1
+            .retain(|request| Some(request.batch_id) != batch || !request.visible_in(label));
         Ok(())
     }
     fn requeue(&self, label: &str) {
@@ -161,7 +161,13 @@ fn finish_background(app: &tauri::AppHandle) {
     let handle = app.clone();
     let _ = app.run_on_main_thread(move || {
         let runtime = handle.state::<Runtime>();
-        if runtime.jobs.load(Ordering::SeqCst) == 0 && !runtime.ui.load(Ordering::SeqCst) {
+        if runtime.jobs.load(Ordering::SeqCst) == 0
+            && !runtime.ui.load(Ordering::SeqCst)
+            && !handle
+                .webview_windows()
+                .keys()
+                .any(|label| label.starts_with("cask-"))
+        {
             handle.exit(0);
         }
     });
@@ -310,12 +316,14 @@ pub fn receive(app: &tauri::AppHandle, args: &[String]) {
             if let Err(problem) = result {
                 show_error(app, &problem);
             }
-            if app.state::<Runtime>().ready.load(Ordering::SeqCst)
-                && let Some(window) = app.get_webview_window("main")
-            {
-                let _ = window.show();
-                let _ = window.unminimize();
-                let _ = window.set_focus();
+            match super::ensure_main_window(app) {
+                Ok(window) if app.state::<Runtime>().ready.load(Ordering::SeqCst) => {
+                    let _ = window.show();
+                    let _ = window.unminimize();
+                    let _ = window.set_focus();
+                }
+                Ok(_) => {}
+                Err(problem) => show_error(app, &problem),
             }
         }
         Err(problem) => {
@@ -354,7 +362,20 @@ fn direct_add(
             "This Cask is archived. Restore it in Casklet or choose another destination.".into(),
         );
     }
+    let mut known = service
+        .list_resource_metadata(
+            &casklet_contracts::ListResources {
+                version: casklet_contracts::CONTRACT_VERSION,
+                cask_id: id.into(),
+            },
+            "explorer-direct",
+        )
+        .map_err(|error| error.message)?
+        .into_iter()
+        .map(|item| item.id)
+        .collect::<std::collections::HashSet<_>>();
     let mut added = 0;
+    let mut skipped = 0;
     let mut failures = Vec::new();
     for path in paths {
         let result = if owned {
@@ -384,18 +405,24 @@ fn direct_add(
             )
         };
         match result {
-            Ok(_) => added += 1,
+            Ok(item) => {
+                if known.insert(item.id) {
+                    added += 1;
+                } else {
+                    skipped += 1;
+                }
+            }
             Err(e) => failures.push(format!("{path}: {}", e.message)),
         }
     }
     if failures.is_empty() {
         Ok(format!(
-            "Processed {added} selection(s) for {}. Existing items keep their ownership and category.",
+            "Added {added}; skipped {skipped} already included item(s) for {}. Existing items keep their ownership and category.",
             cask.name
         ))
     } else {
         Err(format!(
-            "Added {added} of {} selected items to {}. The following items could not be confirmed. Inspect this Cask and Activity, check paths and permissions, and retry only items that are still missing.\n\n{}",
+            "Added {added} of {} selected items to {}. {skipped} already included item(s) were skipped. The following items could not be confirmed. Inspect this Cask and Activity, check paths and permissions, and retry only items that are still missing.\n\n{}",
             paths.len(),
             cask.name,
             failures.join("\n")
@@ -468,17 +495,10 @@ pub async fn explorer_route(
         paths
             .into_iter()
             .map(|(id, path)| {
-                let metadata = std::fs::metadata(&path).map_err(|e| {
-                    format!(
-                        "Cannot open {path}. Check that it still exists and you have access. {e}"
-                    )
-                })?;
-                if !metadata.is_file() && !metadata.is_dir() {
-                    return Err("Choose a regular file or folder.".to_string());
-                }
+                let metadata = std::fs::metadata(&path).ok();
                 Ok((
                     id,
-                    metadata.is_file()
+                    metadata.is_some_and(|value| value.is_file())
                         && std::path::Path::new(&path)
                             .extension()
                             .is_some_and(|extension| {
@@ -505,10 +525,11 @@ pub async fn explorer_route(
             .iter_mut()
             .filter(|entry| entry.batch_id == batch && !entry.routed)
         {
-            entry.is_installer = inspected
-                .iter()
-                .find(|(id, _)| *id == entry.id)
-                .is_some_and(|(_, installer)| *installer);
+            entry.is_installer = inspected.len() == 1
+                && inspected
+                    .iter()
+                    .find(|(id, _)| *id == entry.id)
+                    .is_some_and(|(_, installer)| *installer);
             entry.cask_id = Some(cask_id.clone());
             entry.routed = true;
         }
@@ -530,6 +551,22 @@ pub async fn explorer_route(
 #[cfg(test)]
 mod tests {
     use super::{Requests, parse};
+    #[test]
+    fn routed_batch_is_reviewed_and_acknowledged_as_one_selection() {
+        let requests = Requests::default();
+        requests
+            .push_many(vec!["C:\\photo.png".into(), "C:\\Folder".into()], Some("a"))
+            .unwrap();
+        for item in &mut requests.0.lock().unwrap().1 {
+            item.routed = true;
+        }
+        let pending = requests.pending("cask-a").unwrap().unwrap();
+        assert_eq!(pending.paths, vec!["C:\\photo.png", "C:\\Folder"]);
+        assert_eq!(pending.batch_size, 2);
+        requests.ack("cask-a", pending.id).unwrap();
+        assert!(requests.pending("cask-a").unwrap().is_none());
+        assert!(requests.pending("main").unwrap().is_none());
+    }
     #[test]
     fn batch_capacity_and_cancellation_are_atomic() {
         let requests = Requests::default();

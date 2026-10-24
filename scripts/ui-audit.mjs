@@ -106,6 +106,17 @@ async function start(theme, options = {}) {
   await page.evaluate(() => document.fonts.ready);
   await page.waitForTimeout(350);
 }
+async function openResource(name) {
+  const button = page.getByRole("button", {
+    name,
+    exact: true,
+    includeHidden: true,
+  });
+  const group = page.locator(".resource-category").filter({ has: button });
+  if (!(await group.evaluate((el) => el.open)))
+    await group.locator("summary").first().click();
+  await button.click();
+}
 async function shot(name, { audit = true } = {}) {
   await page.waitForTimeout(220);
   await page.screenshot({ path: path.join(out, name + ".png") });
@@ -264,12 +275,7 @@ try {
       .getByRole("button", { name: "Files & Folders", exact: true })
       .click();
     await shot(theme + "-files");
-    await page
-      .getByRole("button", {
-        name: "Details for Course notes.pdf",
-        exact: true,
-      })
-      .click();
+    await openResource("Details for Course notes.pdf");
     await shot(theme + "-resource-details");
     for (const key of ["Tab", "Shift+Tab"])
       for (let step = 0; step < 14; step++) {
@@ -321,12 +327,7 @@ try {
         .evaluate((el) => el === document.activeElement))
     )
       throw Error("Overlay did not restore item focus");
-    await page
-      .getByRole("button", {
-        name: "Details for Editing references",
-        exact: true,
-      })
-      .click();
+    await openResource("Details for Editing references");
     await page.getByText("reference.jpg", { exact: true }).waitFor();
     await shot(theme + "-folder-details");
     await page
@@ -470,12 +471,7 @@ try {
       await page
         .getByRole("button", { name: "Files & Folders", exact: true })
         .click();
-      await page
-        .getByRole("button", {
-          name: "Details for Course notes.pdf",
-          exact: true,
-        })
-        .click();
+      await openResource("Details for Course notes.pdf");
       await page
         .getByRole("button", { name: "Change ownership", exact: true })
         .click();

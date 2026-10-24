@@ -1,0 +1,27 @@
+# Category organization and selection-wide intake
+
+October 24, 2026. Implements the existing Svelte/Tauri design with category shelves; see the scoped concept in DESIGN.md and ADR 0040 for behavior and lifecycle reasoning.
+
+Overview's compact category disclosure and Files & folders groups use the same saved-data projection. Size labels distinguish known, partial, unmeasured and included-in-folder values. Application size has its own secondary line so platform/publisher text cannot hide it. Cask Settings sections reset collapsed on reentry. Progress stays inside intake; partial outcomes retain item reasons and retry only unsuccessful paths.
+
+## Evidence
+
+- Frontend regression suite: 101 tests pass, including multi-file/multi-folder picker options, mixed drops, Settings remount defaults, group totals and continued failures. Svelte reports zero errors/warnings; ESLint and production build pass.
+- Strict workspace Clippy with all targets/features passes. The all-feature workspace test run passes 166 tests, with two documented opt-in native/performance checks ignored. The infrastructure suite accounts for 136 passing tests. Logs: `target/category-batch-clippy.log` and `target/category-batch-workspace-tests-verified.log`.
+- Native smoke passes with isolated data: four additions, one duplicate, one missing item; correct images/videos/other assignments and reference policy; main-close survival, functional resource details, main recreation, no duplicate Cask and process exit after last closure. Evidence: `.jury/category-batch/native/result.json` and screenshots. This injects the Tauri drop event rather than automating an OS drag gesture.
+- Two scoped production passes each capture 28 states, and the existing full audit captures 94 states, with zero recorded axe violations, overflow or console errors. Evidence: `.jury/category-batch/pass-1`, `pass-2`, `final`, `full-final`. Narrow captures use 4x CPU throttling and reduced motion; keyboard collapse/reopen and Settings reset are asserted.
+- Two fresh independent screenshot critics reviewed the scoped evidence without source/design notes. Weighted scores improved from 6.96 to 7.10/10. Their findings drove single-column category rows, predictable section scroll position, a separate application-size line and clearer file/folder-only breakdown copy. These are scoped desktop UI estimates, not affiliated with Awwwards; website award calibration is inapplicable. Complete motion/FPS, screen-reader behavior and native picker gestures were not scored.
+
+The first sandboxed native test run could not use required registry/filesystem fixtures; the full workspace passed after rerunning with appropriate native access. User data and installed applications were not changed. Hosted CI, physical Explorer/picker testing, clean-machine packaging and independent security review are not claimed.
+
+The full `cargo xtask check` passes Rust formatting, strict Clippy, all-feature workspace tests, default/Alpha profile tests and the workspace build. It then stops at global frontend formatting because 82 existing untracked `brag-output` HTML/CSS/tool files are unformatted. Those unrelated user files are preserved. Changed-file formatting and the remaining frontend lint/type/test/build stages are verified separately. Generated contracts match their Rust source. Hosted CI and dependency audit results are not claimed.
+
+The management overlay is outside the category groups so reassignment into a collapsed group cannot hide or recreate the modal. Closing opens the destination group before restoring row focus. Both frontend and native regression checks cover this. Final counts: 101 GUI tests, 166 all-feature Rust workspace tests, 94 full-audit states and 28 final scoped states. Independent score details: `.jury/category-batch/scorecard.md`.
+
+## Category readability refinement
+
+Files & Folders now starts with all category panels collapsed. Headers use the existing secondary surface, panel border/radius, explicit category/count/size hierarchy and a dedicated rotating chevron. Expanded item bodies use the panel surface, inset rows, 13px primary filenames and 12px secondary facts. Overview's saved-category breakdown uses aligned icon/identity/count/amount rows with explicit 13px primary labels/totals and 12px secondary counts; unknown and nested-size handling is unchanged.
+
+A pure assigned-key mapping in resourceGroups.ts extends the existing Icon.svelte Lucide registry: images/Image, videos/Film, documents/FileText, audio/Music2, archives/Archive and applications/Package. Custom/unknown categories retain file/folder fallback. Category markers never rotate with the disclosure chevron. Folder items retain their kind label. Reclassification remains in the shared core; glyphs follow manual category changes without reading referenced contents.
+
+The 103-test frontend suite passes, including fresh/reentry/new-category closed defaults, manual expansion retained during refresh, assigned-key icon mapping and glyph updates after recategorization. Svelte checks, ESLint, changed-file formatting and production/native builds pass. Production audits cover 28 scoped and 94 full-app states with no recorded axe violations, overflow or console errors, in both themes and narrow/reduced-motion layouts. Evidence: .jury/category-readability/scoped and final. The selected improve-ui handoffs are removed after implementation at the user's request. Existing unrelated global formatting limitations and release/manual gates remain unchanged.

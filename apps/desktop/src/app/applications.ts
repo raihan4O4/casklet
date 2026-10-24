@@ -3,8 +3,12 @@ import type {
   PortableInstallationView,
   WingetInstallationView,
 } from "../contracts/generated/casklet";
+import type { ApplicationIconSource } from "./applicationIcons";
 
 type AppPresentation = {
+  sizeBytes?: number | null;
+  sizeEstimated?: boolean;
+  iconSource?: ApplicationIconSource;
   id: string;
   name: string;
   version: string | null;
@@ -34,6 +38,7 @@ export function applicationRows(
   for (const item of portable) {
     rows.set(item.installationId, {
       id: item.installationId,
+      iconSource: { kind: "portable", id: item.installationId },
       name: item.applicationName,
       version: item.applicationVersion,
       publisher: null,
@@ -47,6 +52,7 @@ export function applicationRows(
   for (const item of associated) {
     if (rows.has(item.installationId)) continue;
     rows.set(item.installationId, {
+      iconSource: { kind: "registry", key: item.sourceKey },
       id: item.installationId,
       name: item.name,
       version: item.displayVersion,
@@ -68,6 +74,7 @@ export function applicationRows(
     )
       continue;
     rows.set(id, {
+      iconSource: observed?.iconSource,
       id,
       name: observed?.name ?? item.packageId,
       version: observed?.version ?? item.packageVersion,

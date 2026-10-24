@@ -143,3 +143,21 @@ The six shared palette roles, Inter/Lucide, 8/12 px radius rules, 12–16 px ope
 QA extends production captures to category/ownership editors, Escape focus restoration, folder descendants and category/export Settings. Existing safety regressions remain required; screenshots and independent reviews live under `.jury/management-settings/`.
 
 Final scoped refinements: editor and metadata commit controls live in the persistent native workspace footer, using real form associations. Reading details steps aside during an edit; the active resource name remains visible. Escape returns focus. Ownership opens with the current policy selected. Category creation is immediate with inline feedback; metadata Reset/Save applies only to its own dirty fields. The final accessory reduction removes decorative category pill surfaces in favor of passive category text.
+
+## October 24: Category shelves and batch intake
+
+Brief: retain the local-first Svelte 5/Tauri design and the existing configurable accent. Organize actual resource metadata, keep opening lightweight, make selection-wide consent explicit, and keep independent windows alive. No new motion engine, theme or dependency is needed for this scoped change.
+
+Concept alternatives (originality / fit / feasibility / portability, 1-5, lower portability is better):
+
+- Category shelves: activity resources arranged by their assigned role; signature is opening a category to its real items. Calm organization; screenshot is the grouped inventory and matching compact storage breakdown. Anchor: Cask-resource category assignments. 4/5/5/2.
+- Storage ledger: accounting-style totals first; signature is expanding byte contributions. Precise but overemphasizes measurement over activity management. Anchor: saved logical resource sizes. 3/4/5/3.
+- Selection tray: focus the selection and progress; signature is a mixed selection flowing into categories. Useful for intake, weaker as the organizing system. Anchor: shared ownership consent for one selection. 4/4/4/3.
+
+Chosen concept card: Category shelves. Idea: keep an activity's resources organized by purpose. Metaphor: labeled shelves, each with a count and saved size. Signature: the same used categories organize storage and file navigation. Emotion: calm and predictable. Motion verb: open and settle, using existing disclosure feedback. Screenshot: Files & folders with two or three distinct populated category groups.
+
+System: reuse current Inter, configured accent and semantic foregrounds; ground #ffffff/#202226, ink #17333b/#e6edf0, line #dbe5e8, default accent #235d65. Existing 20px workspace gutters, 8/12/16px rhythm, restrained borders and 8px controls remain. Numeric sizes use tabular figures. Desktop and narrow layouts share aligned labels/counts on the left and sizes on the right; long names wrap. Overview stays summary-first with a collapsed category breakdown; inventory uses initially collapsed native details; Settings uses initially collapsed native details. Existing hover/focus/press states and reduced-motion rules remain. No idle animation: this is a file-management workspace.
+
+Composition: Overview [total + existing segmented bar] / [Refresh sizes] / [collapsed Storage by category]; Files [title + count] / [category + count | saved size | chevron] / [item rows]; Intake [selection count + inspectable path list] / [ownership choice + explicit consent] / [automatic category] / [action + results]. Genericness check: categories and ownership are existing persisted Cask semantics, not a decorative taxonomy or generic dashboard. Unknown and nested sizes remain explicit rather than fabricated totals.
+
+The category readability refinement uses bounded panels with a secondary-surface header, 14px category identity, 13px filenames/amounts and 12px secondary facts. The same assigned-category Lucide mapping marks headers, items and Overview rows; no per-category palette or extension-based classification is introduced. Manual expansion survives updates within the mounted file view, while fresh entry resets all groups closed. Focus restoration after recategorization may deliberately reveal the destination group.

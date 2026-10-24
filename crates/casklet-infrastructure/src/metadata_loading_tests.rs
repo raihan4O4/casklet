@@ -172,6 +172,9 @@ fn metadata_loading_never_touches_content_and_preserves_terabyte_snapshots_after
     assert_eq!(resources[0].size_bytes, Some(1 << 40));
     assert_eq!(summary.referenced_logical_bytes, 1 << 40);
     assert_eq!(summary.reference_application_bytes, 1 << 40);
+    assert_eq!(summary.application_sizes.len(), 1);
+    assert_eq!(summary.application_sizes[0].size_bytes, Some(1 << 40));
+    assert!(summary.application_sizes[0].estimated);
     assert_eq!(library.casks[0].referenced_bytes, 2 << 40);
     assert_eq!(library.casks[0].item_count, 2);
     // Changed registration evidence invalidates old presentation values; stale workers cannot restore them.

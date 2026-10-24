@@ -15,6 +15,7 @@
   import BrandLogo from "./BrandLogo.svelte";
   import CreateCaskForm from "./CreateCaskForm.svelte";
   import Icon from "./Icon.svelte";
+  import ApplicationIcon from "./ApplicationIcon.svelte";
   import Workspace from "./Workspace.svelte";
   // Cask row actions intentionally hidden for Alpha; typed handlers retained.
   import { notify } from "./notifications";
@@ -528,7 +529,9 @@
             <p>Refresh the Windows inventory or try another search.</p>
           </div>{:else}<ul class="application-list">
             {#each installations as item (item.installationId)}<li>
-                <Icon name="package" />
+                <ApplicationIcon
+                  source={{ kind: "registry", key: item.sourceKey }}
+                />
                 <div class="item-text">
                   <strong title={item.name}>{item.name}</strong><span
                     >{item.publisher ?? "Unknown publisher"} · {item.displayVersion ??
