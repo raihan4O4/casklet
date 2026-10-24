@@ -83,3 +83,15 @@ Adding a file or folder that is already in a Cask keeps its current ownership an
 New items default to **Automatic (file type)** using the existing categories. You can choose a category explicitly or edit it later. Installer files categorized as Applications are still ordinary content unless you separately start the application installation workflow.
 
 New Recycle Bin cleanup operations preserve the original filename, extension and restore location. Use Windows Restore to recover the item; restoration does not automatically recreate its Cask association or ownership. Items recycled by older versions under a quarantine name retain their historical Windows restore metadata.
+
+## Organizing categories and adding selections
+
+Overview includes a collapsed **Storage by category** disclosure for categories used by files and folders. Application sizes also contribute to the overall total; the Applications list shows each available saved size, marks estimates, and says when a size has not been measured. Refresh sizes performs explicit measurement. Unknown folder content is never treated as an empty folder. A separately referenced child keeps its item row but its bytes are included in its containing folder rather than counted twice.
+
+Files & Folders groups items by their assigned category, with a count, category icon and saved size. Groups start collapsed whenever you enter this view; expand the categories you need. Item icons follow their assigned category, and folder items retain a Folder label. Expand or collapse each group; select an item for its existing management overlay. Changing category updates the groups and storage breakdown. Cask Settings, Categories and Export Cask start collapsed each time Settings opens.
+
+Drop a mixed selection or choose multiple entries in Add Files/Add Folders. Review the selection once, choose Reference or Manage at current location, and keep Automatic category to categorize each item individually. Manage requires the existing dedicated-data acknowledgement. Partial results show added, already included/duplicate and failed counts, with failure reasons. Successful items are already available; retry works on the remaining failed paths. Existing item ownership/category stays under the existing core rules.
+
+Explorer's Casklet menu accepts up to 32 selected files/folders for Add as Owned or Add as Reference. Its choose-destination flow reviews the whole selection. A mixed EXE/file selection is resource intake, not an automatic installer queue; a single installer retains its explicit installation workflow.
+
+Closing the main window leaves open Cask windows usable. Launch Casklet again to reopen the main window; an already open Cask is reused. Close individual Cask windows normally. The process exits after the last window and any active background work finish.

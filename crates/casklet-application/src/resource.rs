@@ -1027,7 +1027,17 @@ impl<
         let mut owned_applications = 0_u64;
         let mut reference_applications = 0_u64;
         let mut estimated_applications = 0_u64;
+        let mut application_sizes = Vec::new();
         for (entry, size) in entries.iter().zip(sizes) {
+            let (bytes, estimated) = match size {
+                ApplicationSize::Known { bytes, estimated } => (Some(bytes), estimated),
+                _ => (None, false),
+            };
+            application_sizes.push(casklet_contracts::ApplicationStorageSize {
+                source_key: entry.source_key.clone(),
+                size_bytes: bytes,
+                estimated,
+            });
             match size {
                 ApplicationSize::Missing => {}
                 ApplicationSize::Unknown => unknown = unknown.saturating_add(1),
@@ -1042,6 +1052,7 @@ impl<
             }
         }
         Ok(StorageSummary {
+            application_sizes,
             owned_application_bytes: owned_applications,
             reference_application_bytes: reference_applications,
             estimated_applications,

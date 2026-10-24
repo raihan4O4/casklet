@@ -1175,6 +1175,15 @@ dialog p {
   border-radius: 9px;
   background: var(--surface);
 }
+.application-icon.has-application-image {
+  background: var(--surface);
+}
+.application-icon img {
+  display: block;
+  width: 28px;
+  height: 28px;
+  object-fit: contain;
+}
 .managed-application-list .item-text span {
   overflow: hidden;
   text-overflow: ellipsis;

@@ -310,6 +310,17 @@ function ownershipWorkspace(
   return cask;
 }
 
+async function resourceButton(name: string) {
+  const button = await screen.findByRole("button", {
+    name: `Details for ${name}`,
+    hidden: true,
+  });
+  const group = button.closest<HTMLDetailsElement>(".resource-category");
+  if (group && !group.open)
+    await fireEvent.click(group.querySelector("summary")!);
+  return button;
+}
+
 test("Overview shortcuts browse contents without creating plans or changing data", async () => {
   ownershipWorkspace();
   await screen.findByRole("heading", { name: "Ownership" });
@@ -1021,9 +1032,7 @@ test("in-place ownership needs explicit consent and uses the shared adoption com
   expect(
     calls.invoke.mock.calls.some(([command]) => command === "add_resource"),
   ).toBe(false);
-  const toggle = await screen.findByRole("button", {
-    name: "Details for project.txt",
-  });
+  const toggle = await resourceButton("project.txt");
   expect(toggle.getAttribute("aria-haspopup")).toBe("dialog");
   expect(screen.queryByText("D:/Projects/project.txt")).toBeNull();
   await fireEvent.click(toggle);
@@ -2111,7 +2120,8 @@ test("Cask storage includes current owned and reference applications", async () 
   await screen.findByText("8 KB");
   expect(screen.getByText("2 KB")).toBeTruthy();
   expect(screen.getByText("5 KB")).toBeTruthy();
-  expect(screen.getByText(/1 use Windows size estimates/)).toBeTruthy();
+  expect(screen.queryByText(/About this measurement/)).toBeNull();
+  expect(screen.getByText(/Storage by category/)).toBeTruthy();
 });
 
 test("cancelled installations have no attention action and Cask windows have no Activity tab", async () => {
@@ -2238,7 +2248,7 @@ test.each(["Escape", "blur"])(
     expect(screen.queryByRole("button", { name: "Add resource" })).toBeNull();
   },
 );
-test("unsupported multi-item drops clear feedback and preserve the one-item workflow", async () => {
+test("multi-item drops open one consent review for the entire selection", async () => {
   ownershipWorkspace();
   await screen.findByRole("heading", { name: "Ownership" });
   await waitFor(() => expect(calls.drop).not.toBeNull());
@@ -2247,9 +2257,9 @@ test("unsupported multi-item drops clear feedback and preserve the one-item work
   calls.drop?.({
     payload: { type: "drop", paths: ["C:/file.txt", "C:/Folder"] },
   });
-  await screen.findByText("Drop one item at a time.");
+  await screen.findByText("2 selected items");
   expect(document.querySelector(".workspace.drag-active")).toBeNull();
-  expect(screen.queryByRole("button", { name: "Add resource" })).toBeNull();
+  expect(screen.getByRole("button", { name: "Add resource" })).toBeTruthy();
 });
 
 test("saved successful installer review confirms without rerunning and refreshes applications", async () => {
@@ -2597,9 +2607,7 @@ test.each([true, false])(
     await fireEvent.click(
       screen.getByRole("button", { name: "Files & Folders" }),
     );
-    await fireEvent.click(
-      await screen.findByRole("button", { name: "Details for Project" }),
-    );
+    await fireEvent.click(await resourceButton("Project"));
     await screen.findByText("initial.txt");
     expect(
       screen.getByText(
@@ -2879,7 +2887,7 @@ test("Explorer opens creation directly and resumes original Unicode folder conse
     }),
   );
   await screen.findByText(
-    "Item is in this Cask. Duplicate additions keep its current ownership and category.",
+    "1 added · 0 already included or duplicate · 0 failed.",
   );
 });
 
@@ -3085,9 +3093,7 @@ test.each([true, false])(
     await fireEvent.click(
       screen.getByRole("button", { name: "Files & Folders" }),
     );
-    await fireEvent.click(
-      await screen.findByRole("button", { name: "Details for Notes.txt" }),
-    );
+    await fireEvent.click(await resourceButton("Notes.txt"));
     await fireEvent.click(
       screen.getByRole("button", { name: "Change ownership" }),
     );
@@ -3229,13 +3235,19 @@ test("category action shows the current category and saves only after explicit s
     shared: false,
     provenance: "USER_REFERENCE",
   };
-  ownershipWorkspace([resource], (command, args) => {
+  const other = {
+    ...resource,
+    id: "existing-project",
+    name: "project.txt",
+    categoryKey: "projects",
+  };
+  ownershipWorkspace([resource, other], (command, args) => {
     if (command === "list_categories")
       return [
         { key: "documents", name: "Documents" },
         { key: "projects", name: "Projects" },
       ];
-    if (command === "list_resources") return [resource];
+    if (command === "list_resources") return [resource, other];
     if (command === "categorize_resource") {
       resource = {
         ...resource,
@@ -3248,9 +3260,20 @@ test("category action shows the current category and saves only after explicit s
   await fireEvent.click(
     screen.getByRole("button", { name: "Files & Folders" }),
   );
-  await fireEvent.click(
-    await screen.findByRole("button", { name: "Details for notes.txt" }),
-  );
+  await screen.findByRole("button", {
+    name: "Details for project.txt",
+    hidden: true,
+  });
+  const targetGroup = Array.from(
+    document.querySelectorAll<HTMLDetailsElement>(".resource-category"),
+  ).find((group) =>
+    group.querySelector("summary")?.textContent?.includes("Projects"),
+  )!;
+  targetGroup.open = false;
+  await fireEvent.click(await resourceButton("notes.txt"));
+  const originalGlyph = screen
+    .getByRole("button", { name: "Details for notes.txt" })
+    .querySelector("svg")?.outerHTML;
   const details = screen.getByRole("region", { name: "Details for notes.txt" });
   expect(within(details).getByText("Documents")).toBeTruthy();
   expect(within(details).queryByRole("combobox")).toBeNull();
@@ -3289,6 +3312,20 @@ test("category action shows the current category and saves only after explicit s
     },
   });
   expect(resource.ownership).toBe("REFERENCED");
+  expect(
+    screen
+      .getByRole("button", { name: "Details for notes.txt", hidden: true })
+      .querySelector("svg")?.outerHTML,
+  ).not.toBe(originalGlyph);
+  expect(
+    screen.getByRole("dialog", { name: "Management details for notes.txt" }),
+  ).toBeTruthy();
+  expect(targetGroup.open).toBe(false);
+  await fireEvent.click(
+    screen.getByRole("button", { name: "Close resource details" }),
+  );
+  await waitFor(() => expect(targetGroup.open).toBe(true));
+  expect(document.activeElement?.id).toBe("resource-toggle-category-file");
 });
 
 test.each([
@@ -3420,10 +3457,14 @@ test.each([
 
 test("associating an application releases the picker while storage measurement is still pending", async () => {
   const app = appFixture("Photo editor", "photo");
+  app.sourceKey =
+    "HKCU64\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\IconPickerTest";
   let linked = false;
   let finishSummary: ((value: object) => void) | undefined;
   ownershipWorkspace([], (command) => {
     if (command === "search_installed_applications") return [app];
+    if (command === "application_icons")
+      return ["data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAAB"];
     if (command === "associate_installed_application") {
       linked = true;
       return app;
@@ -3450,6 +3491,14 @@ test("associating an application releases the picker while storage measurement i
     screen.getByRole("button", { name: /Associate existing app/ }),
   );
   await fireEvent.click(screen.getByRole("button", { name: "Search" }));
+  await waitFor(() =>
+    expect(
+      document.querySelector(".picker-results .application-icon img"),
+    ).not.toBeNull(),
+  );
+  expect(calls.invoke).toHaveBeenCalledWith("application_icons", {
+    sources: [{ kind: "registry", key: app.sourceKey }],
+  });
   await fireEvent.click(
     await screen.findByRole("button", { name: "Associate" }),
   );
@@ -3555,9 +3604,7 @@ test("resource overlay contains editor actions, cancels editing before closing, 
   await fireEvent.click(
     screen.getByRole("button", { name: "Files & Folders" }),
   );
-  const trigger = await screen.findByRole("button", {
-    name: "Details for Overlay.txt",
-  });
+  const trigger = await resourceButton("Overlay.txt");
   await fireEvent.click(trigger);
   const overlay = screen.getByRole("dialog", {
     name: "Management details for Overlay.txt",
@@ -3664,4 +3711,151 @@ test("confirmed preserved closure clears an existing uncertain installer attempt
   expect(
     screen.queryByRole("button", { name: "Close attempt and keep files" }),
   ).toBeNull();
+});
+
+test("Cask Settings disclosures reset to collapsed whenever Settings opens", async () => {
+  ownershipWorkspace();
+  await screen.findByRole("heading", { name: "Ownership" });
+  await fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+  const disclosures = Array.from(
+    document.querySelectorAll<HTMLDetailsElement>(".settings-disclosure"),
+  );
+  expect(disclosures).toHaveLength(3);
+  expect(disclosures.every((item) => !item.open)).toBe(true);
+  disclosures[0].open = true;
+  await fireEvent.click(screen.getByRole("button", { name: "Overview" }));
+  await fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+  expect(
+    Array.from(
+      document.querySelectorAll<HTMLDetailsElement>(".settings-disclosure"),
+    ).every((item) => !item.open),
+  ).toBe(true);
+});
+
+test.each([false, true])(
+  "native picker supports multiple items (folders=%s) and processes each with auto category",
+  async (directory) => {
+    const paths = directory
+      ? ["C:/One", "C:/Two"]
+      : ["C:/photo.png", "C:/video.mp4"];
+    vi.mocked(open).mockResolvedValueOnce(paths);
+    ownershipWorkspace([], (command, args) =>
+      command === "add_resource" ? { id: args.request?.sourcePath } : undefined,
+    );
+    await screen.findByRole("heading", { name: "Ownership" });
+    await fireEvent.click(screen.getByRole("button", { name: "Add Items" }));
+    await fireEvent.click(
+      screen.getByRole("button", {
+        name: directory ? "Add Folder" : "Add File",
+      }),
+    );
+    expect(open).toHaveBeenCalledWith({ multiple: true, directory });
+    await screen.findByText("2 selected items");
+    await fireEvent.click(
+      screen.getByLabelText("Reference at current location"),
+    );
+    await fireEvent.click(
+      screen.getByRole("button", { name: "Add reference" }),
+    );
+    await screen.findByText(
+      "2 added · 0 already included or duplicate · 0 failed.",
+    );
+    for (const path of paths)
+      expect(calls.invoke).toHaveBeenCalledWith("add_resource", {
+        request: {
+          version: 1,
+          caskId: "ownership-cask",
+          sourcePath: path,
+          mode: "reference",
+          categoryKey: "auto",
+        },
+      });
+  },
+);
+
+test("partial intake keeps failed paths and an honest retained result", async () => {
+  ownershipWorkspace([], (command, args) => {
+    if (command !== "add_resource") return undefined;
+    if (String(args.request?.sourcePath).includes("missing"))
+      return Promise.reject({ message: "File is unavailable" });
+    return { id: "added-image" };
+  });
+  await screen.findByRole("heading", { name: "Ownership" });
+  await waitFor(() => expect(calls.drop).not.toBeNull());
+  calls.drop?.({
+    payload: { type: "drop", paths: ["C:/image.png", "C:/missing.txt"] },
+  });
+  await screen.findByText("2 selected items");
+  await fireEvent.click(screen.getByLabelText("Reference at current location"));
+  await fireEvent.click(screen.getByRole("button", { name: "Add reference" }));
+  await screen.findByText(
+    "1 added \u00b7 0 already included or duplicate \u00b7 1 failed.",
+  );
+  expect(screen.getByText("File is unavailable")).toBeTruthy();
+  expect(
+    within(screen.getByRole("alert")).getByText("missing.txt"),
+  ).toBeTruthy();
+  expect(screen.queryByText("2 selected items")).toBeNull();
+  expect(
+    await screen.findByRole("button", { name: "Add reference" }),
+  ).toBeTruthy();
+});
+
+test("category shelves start closed, keep manual expansion during refresh and reset on reentry", async () => {
+  const resources = [
+    {
+      id: "image",
+      name: "photo.png",
+      path: "C:/photo.png",
+      categoryKey: "images",
+      kind: "FILE",
+      ownership: "REFERENCED",
+      management: "REFERENCED",
+      availability: "PRESENT",
+      sizeBytes: 10,
+      unknownEntries: 0,
+    },
+  ];
+  ownershipWorkspace(resources, (command) =>
+    command === "list_resources" ? [...resources] : undefined,
+  );
+  await screen.findByRole("heading", { name: "Ownership" });
+  await fireEvent.click(
+    screen.getByRole("button", { name: "Files & Folders" }),
+  );
+  await screen.findByRole("button", {
+    name: "Details for photo.png",
+    hidden: true,
+  });
+  const images =
+    document.querySelector<HTMLDetailsElement>(".resource-category")!;
+  expect(images.open).toBe(false);
+  await fireEvent.click(images.querySelector("summary")!);
+  expect(images.open).toBe(true);
+  resources.push({
+    ...resources[0],
+    id: "doc",
+    name: "notes.txt",
+    path: "C:/notes.txt",
+    categoryKey: "documents",
+  });
+  window.dispatchEvent(new Event("focus"));
+  await screen.findByRole("button", {
+    name: "Details for notes.txt",
+    hidden: true,
+  });
+  const documents = document
+    .getElementById("resource-toggle-doc")!
+    .closest<HTMLDetailsElement>(".resource-category")!;
+  expect(documents.open).toBe(false);
+  expect(images.open).toBe(true);
+  await fireEvent.click(screen.getByRole("button", { name: "Overview" }));
+  await fireEvent.click(
+    screen.getByRole("button", { name: "Files & Folders" }),
+  );
+  expect(
+    [
+      ...document.querySelectorAll<HTMLDetailsElement>(".resource-category"),
+    ].every((group) => !group.open),
+  ).toBe(true);
 });

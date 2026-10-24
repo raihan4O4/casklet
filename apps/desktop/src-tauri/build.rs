@@ -9,11 +9,94 @@ const SYSTEM_LIBRARIES: &[&str] = &[
 ];
 
 fn main() {
+    build_application_icons();
     build_explorer();
     println!("cargo:rerun-if-changed=icons/icon.ico");
     println!("cargo:rerun-if-changed=icons/icon.png");
     println!("cargo:rerun-if-changed=installer-hooks.nsh");
     tauri_build::build();
+}
+
+fn build_application_icons() {
+    println!("cargo:rerun-if-changed=application-icons.cpp");
+    if std::env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
+        return;
+    }
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../../../target/application-icons-bundle");
+    std::fs::create_dir_all(&root).expect("Application icon adapter directory");
+    let output = root.join("casklet-icons.exe");
+    let compiler = cc::Build::new().cpp(true).static_crt(true).get_compiler();
+    let status = compiler
+        .to_command()
+        .args([
+            "/EHsc",
+            "/std:c++17",
+            "/utf-8",
+            "/W4",
+            "/WX",
+            "/O2",
+            "/DUNICODE",
+            "/D_UNICODE",
+            "application-icons.cpp",
+        ])
+        .arg(format!("/Fe{}", output.display()))
+        .arg(format!("/Fo{}", root.join("icons.obj").display()))
+        .args([
+            "/link",
+            "shell32.lib",
+            "shlwapi.lib",
+            "gdiplus.lib",
+            "ole32.lib",
+            "advapi32.lib",
+            "crypt32.lib",
+            "msi.lib",
+            "user32.lib",
+        ])
+        .status()
+        .expect("Build application icon adapter");
+    assert!(
+        status.success(),
+        "Application icon adapter compilation failed"
+    );
+    println!("cargo:rustc-env=CASKLET_ICON_HELPER={}", output.display());
+    println!("cargo:rerun-if-changed=application-icons-tests.cpp");
+    let tests =
+        std::path::PathBuf::from(std::env::var_os("OUT_DIR").expect("Cargo output directory"))
+            .join("application-icons-tests.exe");
+    let status = compiler
+        .to_command()
+        .args([
+            "/EHsc",
+            "/std:c++17",
+            "/utf-8",
+            "/W4",
+            "/WX",
+            "/UNDEBUG",
+            "/DUNICODE",
+            "/D_UNICODE",
+            "application-icons-tests.cpp",
+        ])
+        .arg(format!("/Fe{}", tests.display()))
+        .arg(format!("/Fo{}", tests.with_extension("obj").display()))
+        .args([
+            "/link",
+            "shell32.lib",
+            "shlwapi.lib",
+            "gdiplus.lib",
+            "ole32.lib",
+            "advapi32.lib",
+            "crypt32.lib",
+            "msi.lib",
+            "user32.lib",
+        ])
+        .status()
+        .expect("Build icon adapter regression tests");
+    assert!(
+        status.success(),
+        "Icon adapter regression tests compilation failed"
+    );
+    println!("cargo:rustc-env=CASKLET_ICON_TESTS={}", tests.display());
 }
 
 fn build_explorer() {

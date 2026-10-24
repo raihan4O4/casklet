@@ -236,6 +236,11 @@ export function installFixture(options = {}) {
           ownedApplicationBytes: 0,
           referenceApplicationBytes: 4.8 * gib,
           estimatedApplications: 0,
+          applicationSizes: apps.map((app) => ({
+            sourceKey: app.sourceKey,
+            sizeBytes: 2.4 * gib,
+            estimated: false,
+          })),
           physicalBytes: null,
           reclaimableMinBytes: 0,
           reclaimableMaxBytes: 0,

@@ -1,6 +1,8 @@
 <script lang="ts">
   import { tick, type Snippet } from "svelte";
   import Icon from "./Icon.svelte";
+  import ApplicationIcon from "./ApplicationIcon.svelte";
+  import { bytes } from "./format";
   import type { ApplicationRow, ApplicationWorkflow } from "./applications";
   let {
     rows,
@@ -231,17 +233,20 @@
         aria-label="Application list"
       >
         {#each visible as row (row.id)}<li>
-            <div class="application-icon">
-              <Icon
-                name={row.management === "associated" ? "link" : "package"}
-                size={20}
-              />
-            </div>
+            <ApplicationIcon
+              source={row.iconSource}
+              fallback={row.management === "associated" ? "link" : "package"}
+            />
             <div class="item-text">
               <strong title={row.name}>{row.name}</strong><span
                 >{[row.version, row.publisher, row.provider]
                   .filter(Boolean)
                   .join(" · ")}</span
+              >
+              <small class="application-size"
+                >{row.sizeBytes == null
+                  ? "Size not measured"
+                  : `${row.sizeEstimated ? "Estimated " : ""}${bytes(row.sizeBytes)}`}</small
               >
             </div>
             <span

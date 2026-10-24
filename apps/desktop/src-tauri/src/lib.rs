@@ -1,3 +1,4 @@
+mod application_icons;
 mod explorer;
 mod managed_msi;
 use tauri::{Emitter, Manager};
@@ -46,27 +47,13 @@ pub fn run() {
             }
             explorer::initialized(app.handle(), &launch_args);
             if let Some(main) = app.get_webview_window("main") {
-                let handle = app.handle().clone();
-                main.on_window_event(move |event| {
-                    if matches!(event, tauri::WindowEvent::Destroyed) {
-                        handle
-                            .state::<explorer::Runtime>()
-                            .ui
-                            .store(false, std::sync::atomic::Ordering::SeqCst);
-                        // Preserve main-close behavior without native ownership, which
-                        // would also hide every Cask when the main window minimizes.
-                        for (label, window) in handle.webview_windows() {
-                            if label.starts_with("cask-") {
-                                let _ = window.destroy();
-                            }
-                        }
-                    }
-                });
+                watch_main_window(&main);
             }
             Ok(())
         })
         .manage(std::sync::Mutex::new(()))
         .invoke_handler(tauri::generate_handler![
+            application_icons::application_icons,
             explorer::explorer_pending,
             explorer::explorer_ack,
             explorer::explorer_route,
@@ -177,6 +164,38 @@ pub fn run() {
         });
 }
 
+fn watch_main_window(main: &tauri::WebviewWindow) {
+    let app = main.app_handle().clone();
+    main.on_window_event(move |event| {
+        if matches!(event, tauri::WindowEvent::Destroyed) {
+            let runtime = app.state::<explorer::Runtime>();
+            runtime.ui.store(false, std::sync::atomic::Ordering::SeqCst);
+            runtime
+                .ready
+                .store(false, std::sync::atomic::Ordering::SeqCst);
+        }
+    });
+}
+
+fn ensure_main_window(app: &tauri::AppHandle) -> Result<tauri::WebviewWindow, String> {
+    if let Some(main) = app.get_webview_window("main") {
+        return Ok(main);
+    }
+    let config = app
+        .config()
+        .app
+        .windows
+        .iter()
+        .find(|window| window.label == "main")
+        .ok_or("Main window configuration unavailable")?;
+    let main = tauri::WebviewWindowBuilder::from_config(app, config)
+        .map_err(|e| e.to_string())?
+        .build()
+        .map_err(|e| e.to_string())?;
+    watch_main_window(&main);
+    Ok(main)
+}
+
 fn initialize_service(app: &mut tauri::App, service: Result<Service, String>) -> bool {
     match service {
         Ok(service) => {
@@ -235,9 +254,10 @@ async fn open_cask_window(
         window.show().map_err(|e| window_error(e.to_string()))?;
         return window.set_focus().map_err(|e| window_error(e.to_string()));
     }
-    let main = app
+    let anchor = app
         .get_webview_window("main")
-        .ok_or_else(|| window_error("Main window unavailable"))?;
+        .or_else(|| app.webview_windows().into_values().next());
+    let main = anchor.ok_or_else(|| window_error("Window unavailable"))?;
     let scale = main
         .scale_factor()
         .map_err(|e| window_error(e.to_string()))?;
@@ -266,14 +286,14 @@ async fn open_cask_window(
     // Independent top-level windows must not inherit Windows owner minimization.
     .build()
     .map_err(|e| window_error(e.to_string()))?;
-    let owner = main.clone();
     let closing_handle = app.clone();
     let closing_label = format!("cask-{}", cask.id);
     window.on_window_event(move |event| {
         if matches!(event, tauri::WindowEvent::Destroyed) {
             explorer::window_closed(&closing_handle, &closing_label);
-            let _ = owner.set_focus();
-            let _ = owner.emit("casks-changed", ());
+            if let Some(main) = closing_handle.get_webview_window("main") {
+                let _ = main.emit("casks-changed", ());
+            }
         }
     });
     Ok(())

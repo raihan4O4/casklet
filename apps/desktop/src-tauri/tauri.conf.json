@@ -11,7 +11,7 @@
   },
   "app": {
     "security": {
-      "csp": "default-src 'self'; connect-src ipc: http://ipc.localhost; img-src 'self' asset: http://asset.localhost; style-src 'self' 'unsafe-inline'"
+      "csp": "default-src 'self'; connect-src ipc: http://ipc.localhost; img-src 'self' data: asset: http://asset.localhost; style-src 'self' 'unsafe-inline'"
     },
     "windows": [
       {
@@ -35,6 +35,7 @@
     "license": "Apache-2.0",
     "licenseFile": "../../../LICENSE",
     "resources": {
+      "../../../target/application-icons-bundle/casklet-icons.exe": "application-icons/casklet-icons.exe",
       "../../../target/explorer-bundle/": "explorer/",
       "../../../NOTICE": "NOTICE",
       "../../../LICENSES/Inter-OFL.txt": "licenses/Inter-OFL.txt",

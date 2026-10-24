@@ -7,6 +7,10 @@
   import Plus from "@lucide/svelte/icons/plus";
   import HardDrive from "@lucide/svelte/icons/hard-drive";
   import File from "@lucide/svelte/icons/file";
+  import Image from "@lucide/svelte/icons/image";
+  import Film from "@lucide/svelte/icons/film";
+  import FileText from "@lucide/svelte/icons/file-text";
+  import Music2 from "@lucide/svelte/icons/music-2";
   import Folder from "@lucide/svelte/icons/folder";
   import MoreHorizontal from "@lucide/svelte/icons/ellipsis";
   import ArrowLeft from "@lucide/svelte/icons/arrow-left";
@@ -35,6 +39,10 @@
     plus: Plus,
     storage: HardDrive,
     file: File,
+    image: Image,
+    video: Film,
+    document: FileText,
+    audio: Music2,
     folder: Folder,
     more: MoreHorizontal,
     back: ArrowLeft,

@@ -713,6 +713,8 @@ pub struct GetStorageSummary {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StorageSummary {
+    #[serde(default)]
+    pub application_sizes: Vec<ApplicationStorageSize>,
     pub owned_application_bytes: u64,
     pub reference_application_bytes: u64,
     pub estimated_applications: u64,
@@ -723,6 +725,14 @@ pub struct StorageSummary {
     pub reclaimable_min_bytes: u64,
     pub reclaimable_max_bytes: u64,
     pub unknown_entries: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ApplicationStorageSize {
+    pub source_key: String,
+    pub size_bytes: Option<u64>,
+    pub estimated: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -997,7 +1007,7 @@ export type ListCategories = { version: number; caskId: string };
 export type CategoryView = { version: number; key: string; name: string; isBuiltin: boolean };
 export type CategorizeResource = { version: number; resourceId: string; categoryKey: string };
 export type GetStorageSummary = { version: number; caskId: string };
-export type StorageSummary = { ownedApplicationBytes: number; referenceApplicationBytes: number; estimatedApplications: number; version: number; managedLogicalBytes: number; referencedLogicalBytes: number; physicalBytes: number | null; reclaimableMinBytes: number; reclaimableMaxBytes: number; unknownEntries: number };
+export type StorageSummary = { applicationSizes?: { sourceKey: string; sizeBytes: number | null; estimated: boolean }[]; ownedApplicationBytes: number; referenceApplicationBytes: number; estimatedApplications: number; version: number; managedLogicalBytes: number; referencedLogicalBytes: number; physicalBytes: number | null; reclaimableMinBytes: number; reclaimableMaxBytes: number; unknownEntries: number };
 export type ListOperations = { version: number; caskId: string | null };
 export type GetOperation = { version: number; id: string };
 export type RecoverOperation = { version: number; id: string };
