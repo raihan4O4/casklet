@@ -13,8 +13,13 @@ const native = vi.hoisted(() => ({ invoke: vi.fn() }));
 vi.mock("@tauri-apps/api/core", () => ({ invoke: native.invoke }));
 vi.mock("@tauri-apps/api/event", () => ({
   listen: vi.fn(async () => () => {}),
+  emit: vi.fn(async () => {}),
 }));
 vi.mock("@tauri-apps/plugin-dialog", () => ({ save: vi.fn(), open: vi.fn() }));
+HTMLDialogElement.prototype.showModal = function () {
+  this.setAttribute("open", "");
+};
+
 afterEach(() => {
   cleanup();
   clearNotices();
@@ -117,4 +122,53 @@ test("load errors remain inline and Retry shows progress then accepts the succes
   finish(library);
   await screen.findByRole("button", { name: "Open Slow library" });
   expect(screen.queryByRole("alert")).toBeNull();
+});
+
+test("the installations action associates a reference and updates its row", async () => {
+  const installation = {
+    installationId: "installation",
+    name: "Editor",
+    state: "PRESENT",
+    scope: "USER",
+    sourceKey: "registry-key",
+    publisher: "Publisher",
+    displayVersion: "1",
+  };
+  native.invoke.mockImplementation(async (command) => {
+    if (command === "cask_library") return library;
+    if (command === "list_casks") return [library.casks[0].cask];
+    if (command === "search_installed_applications") return [installation];
+    if (command === "list_associated_applications") return [];
+    if (command === "associate_installed_application") return installation;
+    return { operations: [], pendingManifestCasks: [] };
+  });
+  render(MainWindow);
+  await screen.findByRole("button", { name: "Open Slow library" });
+  expect(screen.queryByText("Your library")).toBeNull();
+  expect(screen.getByLabelText("Library summary").textContent).toMatch(
+    /Casks\s*1/,
+  );
+  await fireEvent.click(screen.getByRole("button", { name: "Installations" }));
+  const origin = await screen.findByRole("button", {
+    name: "Associate Editor",
+  });
+  expect(screen.queryByText("Present")).toBeNull();
+  await fireEvent.click(origin);
+  await fireEvent.click(
+    await screen.findByRole("radio", { name: "Slow library" }),
+  );
+  await fireEvent.click(screen.getByRole("button", { name: "Associate" }));
+  await screen.findByText("Associated with Slow library");
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  expect(document.activeElement).toBe(origin);
+  expect(native.invoke).toHaveBeenCalledWith(
+    "associate_installed_application",
+    {
+      request: {
+        version: 1,
+        caskId: "slow-cask",
+        installationId: "installation",
+      },
+    },
+  );
 });

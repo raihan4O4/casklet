@@ -12,9 +12,12 @@
     RecoveryStatus,
   } from "../contracts/generated/casklet";
   import { CONTRACT_VERSION } from "../contracts/generated/casklet";
-  import BrandLogo from "./BrandLogo.svelte";
+  import NavigationRail from "./NavigationRail.svelte";
   import CreateCaskForm from "./CreateCaskForm.svelte";
+  import AssociateApplication from "./AssociateApplication.svelte";
+  import { assignCaskColors } from "./caskColors";
   import Icon from "./Icon.svelte";
+  import CaskBadge from "./CaskBadge.svelte";
   import ApplicationIcon from "./ApplicationIcon.svelte";
   import Workspace from "./Workspace.svelte";
   // Cask row actions intentionally hidden for Alpha; typed handlers retained.
@@ -32,7 +35,7 @@
       notice = "";
     }
   });
-  import { caskColor, bytes, relativeTime, label } from "./format";
+  import { bytes, relativeTime, label } from "./format";
 
   let page: "casks" | "installations" | "activity" | "settings" =
     $state("casks");
@@ -64,6 +67,15 @@
   let installations: DetectedApplicationView[] = $state([]);
   let installationsBusy = $state(false);
   let inventorySearched = $state(false);
+  let associationTarget: DetectedApplicationView | null = $state(null);
+  let associationOrigin: HTMLButtonElement | null = null;
+  let associationLabels: Record<string, string> = $state({});
+  async function closeAssociation() {
+    associationTarget = null;
+    await tick();
+    associationOrigin?.focus();
+  }
+
   let visibleCasks = $derived.by(() => {
     const items = (library?.casks ?? []).filter(({ cask }) =>
       `${cask.name} ${cask.description}`
@@ -106,6 +118,7 @@
         request: { version: CONTRACT_VERSION },
       });
       if (sequence !== refreshSequence) return;
+      assignCaskColors(result.casks.map((item) => item.cask));
       library = result;
       libraryError = "";
       if (!quiet) error = "";
@@ -247,117 +260,115 @@
 
 <a class="skip-link" href="#main-content">Skip to main content</a>
 <div class="main-window">
-  <aside class="sidebar" aria-label="Main navigation">
-    <div class="brand">
-      <BrandLogo /><span>Casklet</span>
-    </div>
-    <nav aria-label="Main sections">
-      {#each [{ key: "casks", title: "Casks" }, { key: "installations", title: "Installations" }, { key: "activity", title: "Activity" }, { key: "settings", title: "Settings" }] as item (item.key)}
-        <button
-          type="button"
-          class:active={page === item.key}
-          aria-current={page === item.key ? "page" : undefined}
-          onclick={() => {
-            page = item.key as typeof page;
-            if (page === "installations" && !inventorySearched)
-              void searchInstalled();
-          }}
-          ><Icon
-            name={item.key as
-              | "casks"
-              | "installations"
-              | "activity"
-              | "settings"}
-          />{item.title}{#if item.key === "activity" && recoveryCount}<span
-              class="nav-attention"
-              title="Recovery needs attention">{recoveryCount}</span
-            >{/if}</button
-        >
-      {/each}
-    </nav>
-    <div class="sidebar-storage">
-      <span class="local-workspace"><span></span>On this device</span>
-      <span class="muted">Managed storage</span><strong
-        >{bytes(library?.managedBytes)}</strong
-      >
-      <p>Saved logical size{library?.unknownEntries ? " · incomplete" : ""}</p>
+  <NavigationRail
+    label="Main sections"
+    current={page}
+    items={[
+      { key: "casks", title: "Casks", icon: "casks" },
+      { key: "installations", title: "Installations", icon: "installations" },
+      {
+        key: "activity",
+        title: "Activity",
+        icon: "activity",
+        badge: recoveryCount,
+      },
+      { key: "settings", title: "Settings", icon: "settings" },
+    ]}
+    onselect={(key) => {
+      page = key as typeof page;
+      if (page === "installations" && !inventorySearched)
+        void searchInstalled();
+    }}
+  >
+    {#snippet footer()}
       <button
         class="text-button"
         type="button"
         onclick={() => void openStorage()}
-        ><Icon name="folder" size={16} />Open Storage Folder</button
+        title={`Managed storage: ${bytes(library?.managedBytes)}. Saved logical size${library?.unknownEntries ? ", incomplete" : ""}`}
       >
+        <Icon name="storage" size={19} /><span>Local storage</span>
+      </button>
+    {/snippet}
+  </NavigationRail>
+  <main
+    id="main-content"
+    class="main-content"
+    class:library-page={page === "casks"}
+  >
+    <div class="page-intro" class:library-intro={page === "casks"}>
+      <header class="page-header">
+        <div>
+          <h1>
+            {page === "casks"
+              ? "Casks"
+              : page === "installations"
+                ? "Installations"
+                : page === "activity"
+                  ? "Activity"
+                  : "Settings"}
+          </h1>
+          <p>
+            {page === "casks"
+              ? "Your activities, and everything that belongs with them."
+              : page === "installations"
+                ? "Discover the applications installed on this computer."
+                : page === "activity"
+                  ? "Operations, history and recovery."
+                  : "Your local workspace and preferences."}
+          </p>
+        </div>
+      </header>
+      {#if page === "casks"}
+        <dl class="library-summary" aria-label="Library summary">
+          <div>
+            <dt>Casks</dt>
+            <dd>
+              {library?.casks.length ?? "—"}<small class="measurement-note"
+                >{library?.totalItems ?? "—"}
+                {library?.totalItems === 1 ? "item" : "items"}</small
+              >
+            </dd>
+          </div>
+          <div
+            title="Sum of known Cask sizes, including references. Content associated with multiple Casks is counted in each. This is not physical disk usage or reclaimable space."
+          >
+            <dt>Known Cask size</dt>
+            <dd>
+              {bytes(usedStorageBytes)}<small class="measurement-note"
+                >Includes references{library?.unknownEntries
+                  ? " · incomplete"
+                  : ""}</small
+              >
+            </dd>
+          </div>
+        </dl>
+      {/if}
     </div>
-  </aside>
-  <main id="main-content" class="main-content">
-    <header class="page-header">
-      <div>
-        <h1>
-          {page === "casks"
-            ? "Casks"
-            : page === "installations"
-              ? "Installations"
-              : page === "activity"
-                ? "Activity"
-                : "Settings"}
-        </h1>
-        <p>
-          {page === "casks"
-            ? "Keep everything for a project together."
-            : page === "installations"
-              ? "Discover the applications installed on this computer."
-              : page === "activity"
-                ? "Operations, history and recovery."
-                : "Your local workspace and preferences."}
-        </p>
-      </div>
-      {#if page === "casks"}<div class="header-actions">
+    {#if page === "casks"}
+      <div class="cask-toolbar">
+        <div class="library-search-actions">
+          <label class="search-field"
+            ><Icon name="search" size={17} /><input
+              aria-label="Search casks"
+              bind:value={search}
+              placeholder="Search casks…"
+            />{#if search}<button
+                class="icon-button"
+                type="button"
+                aria-label="Clear Cask search"
+                onclick={() => {
+                  search = "";
+                }}><Icon name="close" size={14} /></button
+              >{/if}</label
+          >
           <button
-            class="primary-button"
+            class="primary-button new-cask-button"
             type="button"
             onclick={() => void showCreate()}
             ><Icon name="plus" size={17} />New Cask</button
           >
-        </div>{/if}
-    </header>
-    {#if page === "casks"}
-      <dl class="library-summary" aria-label="Library summary">
-        <div>
-          <dt>Total Casks</dt>
-          <dd>{library?.casks.length ?? "—"}</dd>
         </div>
-        <div
-          title="Sum of known Cask sizes, including references. Content associated with multiple Casks is counted in each. This is not physical disk usage or reclaimable space."
-        >
-          <dt>Known Cask size</dt>
-          <dd>
-            {bytes(usedStorageBytes)}<small class="measurement-note"
-              >Includes references{library?.unknownEntries
-                ? " · incomplete"
-                : ""}</small
-            >
-          </dd>
-        </div>
-        <div>
-          <dt>Total Items</dt>
-          <dd>{library?.totalItems ?? "—"}</dd>
-        </div>
-      </dl>
-      <div class="cask-toolbar">
-        <label class="search-field"
-          ><Icon name="search" size={17} /><input
-            aria-label="Search casks"
-            bind:value={search}
-            placeholder="Search casks…"
-          />{#if search}<button
-              class="icon-button"
-              type="button"
-              aria-label="Clear Cask search"
-              onclick={() => {
-                search = "";
-              }}><Icon name="close" size={14} /></button
-            >{/if}</label
-        >
         <span class="list-context" aria-live="polite"
           >{#if !loading && library}{search.trim()
               ? `${visibleCasks.length} of ${library.casks.length}`
@@ -452,25 +463,23 @@
                     aria-label={`Open ${item.cask.name}`}
                     onclick={() => void openCask(item.cask.id)}
                     ><div class="cask-name-cell">
-                      <span
-                        class="collection-mark"
-                        style:--cask-color={item.cask.state === "ACTIVE"
-                          ? caskColor(item.cask.id)
-                          : "#999"}
+                      <CaskBadge
+                        caskId={item.cask.id}
+                        muted={item.cask.state !== "ACTIVE"}
                         title={label(item.cask.state)}
-                        ><Icon name="casks" size={22} /></span
-                      >
+                      />
                       <div>
                         <strong title={item.cask.name}>{item.cask.name}</strong>
                         <p title={item.cask.description}>
                           {item.cask.description ||
-                            "Files, applications and related resources"}
+                            "Add files and applications to this Cask"}
                         </p>
                       </div>
                     </div>
                     <span class="collection-items"
                       ><Icon name="folder" size={14} />{item.itemCount}<span
-                        class="card-only">items</span
+                        class="card-only"
+                        >{item.itemCount === 1 ? "item" : "items"}</span
                       ></span
                     ><span
                       class="collection-size"
@@ -514,8 +523,8 @@
         >
       </div>
       <p class="footnote">
-        Detected installations are references. Open a Cask to associate an
-        application with it.
+        Associate an installed application with a Cask as a reference.
+        Installation and ownership stay unchanged.
       </p>
       <section
         class="installation-inventory scroll-area"
@@ -542,7 +551,25 @@
                     >{item.installLocation ?? item.sourceKey}</small
                   >
                 </div>
-                <span class="state-label">{label(item.state)}</span>
+                <div class="installation-association">
+                  {#if item.state !== "PRESENT"}<span class="state-label"
+                      >{label(item.state)}</span
+                    >{/if}
+                  {#if associationLabels[item.installationId]}<small
+                      role="status"
+                      >Associated with {associationLabels[
+                        item.installationId
+                      ]}</small
+                    >{/if}
+                  <button
+                    type="button"
+                    aria-label={`Associate ${item.name}`}
+                    onclick={(event) => {
+                      associationOrigin = event.currentTarget;
+                      associationTarget = item;
+                    }}><Icon name="link" size={15} />Associate</button
+                  >
+                </div>
               </li>{/each}
           </ul>{/if}
       </section>
@@ -563,3 +590,19 @@
       bind:busy={creationBusy}
     />
   </dialog>{/if}
+
+{#if associationTarget}<AssociateApplication
+    application={associationTarget}
+    onClose={() => void closeAssociation()}
+    onCreate={() => {
+      associationTarget = null;
+      void showCreate();
+    }}
+    onAssociated={(cask) => {
+      if (associationTarget)
+        associationLabels[associationTarget.installationId] = cask.name;
+      notice = `Application associated with ${cask.name} as a reference.`;
+      void closeAssociation();
+      void refresh(true);
+    }}
+  />{/if}

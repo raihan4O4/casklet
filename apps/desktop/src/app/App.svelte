@@ -2,6 +2,10 @@
   import { onMount } from "svelte";
   import { startThemeSync } from "./theme";
   onMount(startThemeSync);
+  import { startCaskColorSync } from "./caskColors";
+  onMount(startCaskColorSync);
+  import { startCaskAppearanceSync } from "./caskAppearance";
+  onMount(startCaskAppearanceSync);
   import MainWindow from "./MainWindow.svelte";
   import Workspace from "./Workspace.svelte";
   import WindowChrome from "./WindowChrome.svelte";

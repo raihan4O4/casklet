@@ -1,6 +1,6 @@
 # Desktop GUI design
 
-Implemented 2026-09-30. See ADR 0018 for window and application decisions.
+Initially implemented 2026-09-30. The current shell and visual system are superseded by the 2026-10-24 [collection-workbench redesign](collection-workbench-ui.md), DESIGN.md and ADR 0042. Historical behavior and validation below remain a record; the current workspace uses a full-width section index and contents-first overview. See ADR 0018 for original window and application decisions.
 
 The main window uses a narrow navigation rail, page header with creation, a known-size totals strip, dedicated search and switchable collection cards/sortable list. Each collection opens its dedicated native workspace without replacing inventory. Menus provide secondary actions. Global Installations, Activity, and Settings expose discovery, operation/recovery status, database backup, and diagnostics. The current collection-desk system and complete UI validation are documented in [collection-desk-ui.md](collection-desk-ui.md).
 

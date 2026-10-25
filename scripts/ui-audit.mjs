@@ -218,6 +218,28 @@ try {
       .fill("");
     await page.getByRole("button", { name: "New Cask", exact: true }).click();
     await shot(theme + "-create");
+    await page
+      .getByRole("button", { name: "Choose Cask appearance", exact: true })
+      .click();
+    await shot(theme + "-create-icons");
+    await page
+      .getByRole("textbox", { name: "Search icons", exact: true })
+      .fill("photo");
+    await page
+      .getByRole("button", { name: "Photography icon", exact: true })
+      .click();
+    await page.getByRole("button", { name: "Rose color", exact: true }).click();
+    await shot(theme + "-create-icon-preview");
+    await page.getByRole("button", { name: "Emoji", exact: true }).click();
+    await page.getByRole("button", { name: "Art emoji", exact: true }).click();
+    await shot(theme + "-create-emoji-preview");
+    await page
+      .getByRole("textbox", { name: "Search emojis", exact: true })
+      .focus();
+    await page.keyboard.press("Escape");
+    if ((await page.getByRole("dialog").count()) !== 1)
+      throw Error("Picker Escape closed creation dialog");
+
     await page.keyboard.press("Escape");
     await page.getByRole("dialog").waitFor({ state: "hidden" });
     if (
@@ -248,6 +270,45 @@ try {
       .getByRole("button", { name: "Installations", exact: true })
       .click();
     await shot(theme + "-installations");
+    const associateOrigin = page.getByRole("button", {
+      name: "Associate Adobe Lightroom",
+      exact: true,
+    });
+    await associateOrigin.click();
+    await page
+      .getByRole("radio", { name: "Game Modding", exact: true })
+      .waitFor();
+    if (
+      !(await page
+        .getByRole("radio", { name: /Photography Course/ })
+        .isDisabled())
+    )
+      throw Error("Duplicate association available");
+    await shot(theme + "-associate-destination");
+    await page
+      .getByRole("searchbox", { name: "Search Casks", exact: true })
+      .fill("Game Modding");
+    await page
+      .getByRole("radio", { name: "Game Modding", exact: true })
+      .check();
+    await page.getByRole("button", { name: "Associate", exact: true }).click();
+    await page
+      .getByRole("dialog", { name: "Associate application" })
+      .waitFor({ state: "hidden" });
+    await page
+      .getByText("Associated with Game Modding", { exact: true })
+      .waitFor();
+    await shot(theme + "-associated-installation");
+    await associateOrigin.click();
+    await page.getByRole("radio", { name: /Game Modding/ }).waitFor();
+    if (!(await page.getByRole("radio", { name: /Game Modding/ }).isDisabled()))
+      throw Error("New link not reflected");
+    await page.keyboard.press("Escape");
+    if (
+      !(await associateOrigin.evaluate((el) => el === document.activeElement))
+    )
+      throw Error("Association origin focus lost");
+
     await start(theme, { detail: true });
     await shot(theme + "-overview");
     await page
@@ -275,6 +336,24 @@ try {
       .getByRole("button", { name: "Files & Folders", exact: true })
       .click();
     await shot(theme + "-files");
+    const resourceSearch = page.getByRole("textbox", {
+      name: "Search files and folders",
+    });
+    await resourceSearch.fill("Course notes");
+    await page
+      .getByRole("button", {
+        name: "Details for Course notes.pdf",
+        exact: true,
+      })
+      .waitFor({ state: "visible" });
+    await shot(theme + "-files-search");
+    await resourceSearch.fill("no matching resource");
+    await page
+      .getByRole("heading", { name: "No matching files or folders" })
+      .waitFor();
+    await shot(theme + "-files-search-empty");
+    await page.getByRole("button", { name: "Clear resource search" }).click();
+
     await openResource("Details for Course notes.pdf");
     await shot(theme + "-resource-details");
     for (const key of ["Tab", "Shift+Tab"])
@@ -384,6 +463,38 @@ try {
     }
     await page.getByRole("button", { name: "Settings", exact: true }).click();
     await shot(theme + "-cask-settings");
+    await page
+      .getByRole("button", { name: "Change appearance", exact: true })
+      .click();
+    await page.getByRole("button", { name: "Emoji", exact: true }).click();
+    await page.getByRole("button", { name: "Art emoji", exact: true }).click();
+    await page.getByRole("button", { name: "Teal color", exact: true }).click();
+    await shot(theme + "-appearance-settings-preview");
+    await page
+      .getByRole("button", { name: "Save appearance", exact: true })
+      .click();
+    await page.getByText("Appearance saved.", { exact: true }).waitFor();
+    if (
+      (await page
+        .locator(".workspace-title .cask-badge")
+        .getAttribute("data-cask-symbol")) !== "emoji:🎨"
+    )
+      throw Error("Workspace identity did not update");
+    await shot(theme + "-appearance-settings-saved");
+    await page
+      .getByRole("button", { name: "Change appearance", exact: true })
+      .click();
+    await page.getByRole("button", { name: "Clear", exact: true }).click();
+    await page
+      .getByRole("button", { name: "Cancel appearance", exact: true })
+      .click();
+    if (
+      (await page
+        .locator(".workspace-title .cask-badge")
+        .getAttribute("data-cask-symbol")) !== "emoji:🎨"
+    )
+      throw Error("Cancelled appearance was applied");
+
     await page.locator('summary[aria-label="Categories"]').click();
     await page
       .getByLabel("New category", { exact: true })
@@ -422,7 +533,7 @@ try {
     if (
       await page
         .getByRole("button", { name: "Approve Cleanup", exact: true })
-        .isEnabled()
+        .count()
     )
       throw Error("Review-only cleanup became enabled");
   }
@@ -449,6 +560,16 @@ try {
     throw Error("Cleanup execution did not require confirmation");
   await start("light", { empty: true });
   await shot("light-empty");
+  await page
+    .getByRole("button", { name: "Installations", exact: true })
+    .click();
+  await page
+    .getByRole("button", { name: "Associate Adobe Lightroom", exact: true })
+    .click();
+  await page.getByRole("heading", { name: "No active Casks" }).waitFor();
+  await shot("light-association-no-casks");
+  await page.keyboard.press("Escape");
+
   await start("dark", { failed: true });
   await shot("dark-library-error");
   await start("light", { long: true, scale: 1.25 });
@@ -460,6 +581,19 @@ try {
   for (const width of [768, 390]) {
     await start("light", { viewport: { width, height: 844 } });
     await shot(`light-library-${width}`);
+    await page
+      .getByRole("button", { name: "Installations", exact: true })
+      .click();
+    await shot(`light-installations-${width}`);
+    await page
+      .getByRole("button", { name: "Associate Adobe Lightroom", exact: true })
+      .click();
+    await page
+      .getByRole("radio", { name: "Game Modding", exact: true })
+      .waitFor();
+    await shot(`light-association-${width}`);
+    await page.keyboard.press("Escape");
+
     await page.getByRole("button", { name: "Settings", exact: true }).click();
     await shot(`light-settings-${width}`);
     await start("dark", {

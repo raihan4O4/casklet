@@ -1133,7 +1133,7 @@ test("cleanup review explains actions and blocks concurrent duplicate submission
   const expand = screen.getByRole("button", { name: "Expand cleanup items" });
   expect(expand.getAttribute("aria-expanded")).toBe("false");
   expect(screen.queryByText(/Remove from this Cask; keep the data/)).toBeNull();
-  expect(screen.getByText("1 Data kept")).toBeTruthy();
+  expect(screen.getByText("1 item kept")).toBeTruthy();
   expect(
     screen
       .getByRole("button", { name: "Review Cleanup" })
@@ -1144,25 +1144,16 @@ test("cleanup review explains actions and blocks concurrent duplicate submission
   await fireEvent.click(
     screen.getByRole("button", { name: "Collapse cleanup items" }),
   );
-  expect(
-    screen
-      .getByRole("button", { name: "Approve Cleanup" })
-      .hasAttribute("disabled"),
-  ).toBe(true);
+  expect(screen.queryByRole("button", { name: "Approve Cleanup" })).toBeNull();
   expect(screen.getByText("Review only")).toBeTruthy();
-  await fireEvent.click(screen.getByRole("button", { name: "Review Cleanup" }));
+  await fireEvent.click(
+    await screen.findByRole("button", { name: "Review Cleanup" }),
+  );
   expect(
     screen.getByRole("status", { name: "Cleanup status: Reviewed" }),
   ).toBeTruthy();
-  expect(
-    (screen.getByRole("button", { name: "Reviewed" }) as HTMLButtonElement)
-      .disabled,
-  ).toBe(true);
-  expect(
-    screen
-      .getByRole("button", { name: "Approve Cleanup" })
-      .getAttribute("aria-describedby"),
-  ).toBe("cleanup-next");
+  expect(screen.queryByRole("button", { name: "Review Cleanup" })).toBeNull();
+  expect(screen.queryByRole("button", { name: "Approve Cleanup" })).toBeNull();
   expect(
     screen.getByText(
       "You can review the effects below. This build cannot approve or run cleanup.",
@@ -1183,20 +1174,8 @@ test("cleanup review explains actions and blocks concurrent duplicate submission
       .getAllByText("D:/keep.txt")
       .some((node) => node.closest("details") === advanced),
   ).toBe(true);
-  expect(
-    (
-      screen.getByRole("button", {
-        name: "Approve Cleanup",
-      }) as HTMLButtonElement
-    ).disabled,
-  ).toBe(true);
-  expect(
-    (
-      screen.getByRole("button", {
-        name: "Execute Cleanup",
-      }) as HTMLButtonElement
-    ).disabled,
-  ).toBe(true);
+  expect(screen.queryByRole("button", { name: "Approve Cleanup" })).toBeNull();
+  expect(screen.queryByRole("button", { name: "Execute Cleanup" })).toBeNull();
 });
 
 test("settings creates a metadata-only backup through the shared command", async () => {
@@ -1545,13 +1524,18 @@ test.each([
     await fireEvent.click(
       await screen.findByRole("button", { name: "Create cleanup plan" }),
     );
-    const approve = await screen.findByRole("button", {
-      name: "Approve Cleanup",
-    });
-    expect((approve as HTMLButtonElement).disabled).toBe(true);
+    expect(
+      screen.queryByRole("button", { name: "Approve Cleanup" }),
+    ).toBeNull();
+    expect(
+      screen.queryByRole("button", { name: "Execute Cleanup" }),
+    ).toBeNull();
     await fireEvent.click(
       screen.getByRole("button", { name: "Review Cleanup" }),
     );
+    const approve = await screen.findByRole("button", {
+      name: "Approve Cleanup",
+    });
     expect((approve as HTMLButtonElement).disabled).toBe(false);
     await fireEvent.click(approve);
     const execute = await screen.findByRole("button", {
@@ -1807,7 +1791,9 @@ test("deletion method is visible and changing it invalidates the reviewed previe
       permanent: true,
     },
   });
-  await fireEvent.click(screen.getByRole("button", { name: "Review Cleanup" }));
+  await fireEvent.click(
+    await screen.findByRole("button", { name: "Review Cleanup" }),
+  );
   await fireEvent.click(
     screen.getByRole("radio", { name: "Move to Recycle Bin" }),
   );
@@ -1963,9 +1949,7 @@ test("an expired saved plan cannot be reviewed, approved, or executed", async ()
       ?.querySelector("summary")?.textContent,
   ).toBe("Recent cleanups");
   for (const name of ["Review Cleanup", "Approve Cleanup", "Execute Cleanup"])
-    expect(
-      (screen.getByRole("button", { name }) as HTMLButtonElement).disabled,
-    ).toBe(true);
+    expect(screen.queryByRole("button", { name })).toBeNull();
   expect(
     screen.getByText("Plan expired. Create a new cleanup plan."),
   ).toBeTruthy();
@@ -2782,11 +2766,13 @@ test("saved file cleanup approval targets the displayed plan despite a pending a
   await fireEvent.click(screen.getByRole("button", { name: "Cleanup" }));
   await fireEvent.click(await screen.findByText("Recent cleanups"));
   await fireEvent.click(screen.getByRole("button", { name: /Draft.*1 items/ }));
+  expect(screen.queryByRole("button", { name: "Approve Cleanup" })).toBeNull();
+  await fireEvent.click(
+    await screen.findByRole("button", { name: "Review Cleanup" }),
+  );
   const approve = await screen.findByRole("button", {
     name: "Approve Cleanup",
   });
-  expect((approve as HTMLButtonElement).disabled).toBe(true);
-  await fireEvent.click(screen.getByRole("button", { name: "Review Cleanup" }));
   expect((approve as HTMLButtonElement).disabled).toBe(false);
   await fireEvent.click(approve);
   await screen.findByRole("status", { name: "Cleanup status: Approved" });
@@ -3858,4 +3844,71 @@ test("category shelves start closed, keep manual expansion during refresh and re
       ...document.querySelectorAll<HTMLDetailsElement>(".resource-category"),
     ].every((group) => !group.open),
   ).toBe(true);
+});
+
+test("inventory search reveals matches by saved name, category and path without issuing core queries", async () => {
+  const resource = {
+    kind: "FILE",
+    ownership: "REFERENCED",
+    management: "REFERENCED",
+    availability: "PRESENT",
+    sizeBytes: 10,
+    unknownEntries: 0,
+  };
+  ownershipWorkspace([
+    {
+      ...resource,
+      id: "photo",
+      name: "photo.png",
+      path: "C:/Course/photo.png",
+      categoryKey: "images",
+    },
+    {
+      ...resource,
+      id: "notes",
+      name: "notes.txt",
+      path: "D:/Private/notes.txt",
+      categoryKey: "documents",
+    },
+  ]);
+  await screen.findByRole("heading", { name: "Ownership" });
+  await fireEvent.click(
+    screen.getByRole("button", { name: "Files & Folders" }),
+  );
+  const search = await screen.findByRole("textbox", {
+    name: "Search files and folders",
+  });
+  await waitFor(() =>
+    expect(screen.queryByText(/^Loading workspace/)).toBeNull(),
+  );
+  await waitFor(() =>
+    expect(
+      calls.invoke.mock.calls.some(
+        ([command]) => command === "explorer_pending",
+      ),
+    ).toBe(true),
+  );
+  const callCount = calls.invoke.mock.calls.length;
+  for (const query of ["PHOTO", "Images", "C:/Course"]) {
+    await fireEvent.input(search, { target: { value: query } });
+    expect(
+      screen.getByRole("button", { name: "Details for photo.png" }),
+    ).toBeTruthy();
+    expect(
+      screen.queryByRole("button", {
+        name: "Details for notes.txt",
+        hidden: true,
+      }),
+    ).toBeNull();
+    expect(screen.getByText("1 of 2 items")).toBeTruthy();
+  }
+  await fireEvent.input(search, { target: { value: "unmatched" } });
+  expect(screen.getByText("No matching files or folders")).toBeTruthy();
+  await fireEvent.click(
+    screen.getByRole("button", { name: "Clear resource search" }),
+  );
+  expect(document.querySelectorAll(".resource-category")).toHaveLength(2);
+  expect(
+    calls.invoke.mock.calls.slice(callCount).map(([command]) => command),
+  ).toEqual([]);
 });

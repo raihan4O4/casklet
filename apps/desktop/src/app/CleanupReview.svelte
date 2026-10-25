@@ -85,6 +85,33 @@
       )}
     </span>
   </div>
+  <ol class="cleanup-stages" aria-label="Cleanup stages">
+    <li
+      class:complete={reviewedPlanHash === plan.planHash}
+      aria-current={reviewedPlanHash !== plan.planHash || !removalEnabled
+        ? "step"
+        : undefined}
+    >
+      Review
+    </li>
+    <li
+      class:complete={plan.state === "APPROVED" || plan.state === "COMPLETE"}
+      aria-current={removalEnabled &&
+      reviewedPlanHash === plan.planHash &&
+      plan.state === "DRAFT"
+        ? "step"
+        : undefined}
+    >
+      Approve
+    </li>
+    <li
+      aria-current={removalEnabled && plan.state === "APPROVED"
+        ? "step"
+        : undefined}
+    >
+      Execute
+    </li>
+  </ol>
   <button
     type="button"
     class="cleanup-review-toggle"
@@ -102,7 +129,12 @@
       >
       <span class="cleanup-counts">
         {#each counts as count (count.label)}<span
-            >{count.count} {count.label}</span
+            >{count.count}
+            {count.label === "Data kept"
+              ? count.count === 1
+                ? "item kept"
+                : "items kept"
+              : count.label}</span
           >{/each}
       </span>
       {#if !["DRAFT", "APPROVED"].includes(plan.state)}
@@ -126,6 +158,8 @@
         <ul class="cleanup-items">
           {#each plan.items as item (item.id)}<li>
               <strong>{item.name}</strong><span>{cleanupItemEffect(item)}</span>
+              <small class="cleanup-source" title={item.path}>{item.path}</small
+              >
             </li>{/each}
         </ul>
       </div>
@@ -165,63 +199,69 @@
         permanent deletion cannot be undone</label
       >{/if}
   {/if}
-  <div class="cleanup-actions">
-    <button
-      class:primary-button={plan.state === "DRAFT" &&
-        reviewedPlanHash !== plan.planHash}
-      type="button"
-      disabled={expired || removalBusy || reviewedPlanHash === plan.planHash}
-      onclick={() => {
-        expanded = true;
-        onReview();
-      }}
-      ><Icon name="check" size={16} />{reviewedPlanHash === plan.planHash
-        ? "Reviewed"
-        : "Review Cleanup"}</button
-    >
-    <button
-      class:primary-button={plan.state === "DRAFT" &&
-        reviewedPlanHash === plan.planHash &&
-        removalEnabled}
-      type="button"
-      title={cleanupActionHint(
-        plan,
-        removalEnabled,
-        reviewedPlanHash,
-        executionConfirmed,
-        permanentConfirmation,
-        nowMs,
-      )}
-      aria-describedby="cleanup-next"
-      disabled={expired ||
-        !removalEnabled ||
-        removalBusy ||
-        plan.state !== "DRAFT" ||
-        reviewedPlanHash !== plan.planHash}
-      onclick={onApprove}>Approve Cleanup</button
-    >
-    <button
-      class="danger-button"
-      type="button"
-      title={cleanupActionHint(
-        plan,
-        removalEnabled,
-        reviewedPlanHash,
-        executionConfirmed,
-        permanentConfirmation,
-        nowMs,
-      )}
-      aria-describedby="cleanup-next"
-      disabled={expired ||
-        !removalEnabled ||
-        removalBusy ||
-        plan.state !== "APPROVED" ||
-        !executionConfirmed ||
-        reviewedPlanHash !== plan.planHash ||
-        (plan.permanent && !permanentConfirmation)}
-      onclick={onExecute}>Execute Cleanup</button
-    >
-  </div>
+  {#if !expired}<div class="cleanup-actions">
+      {#if reviewedPlanHash !== plan.planHash}
+        <button
+          class:primary-button={plan.state === "DRAFT" &&
+            reviewedPlanHash !== plan.planHash}
+          type="button"
+          disabled={expired ||
+            removalBusy ||
+            reviewedPlanHash === plan.planHash}
+          onclick={() => {
+            expanded = true;
+            onReview();
+          }}
+          ><Icon name="check" size={16} />{reviewedPlanHash === plan.planHash
+            ? "Reviewed"
+            : "Review Cleanup"}</button
+        >
+      {/if}
+      {#if removalEnabled && plan.state === "DRAFT" && reviewedPlanHash === plan.planHash}
+        <button
+          class="primary-button"
+          type="button"
+          title={cleanupActionHint(
+            plan,
+            removalEnabled,
+            reviewedPlanHash,
+            executionConfirmed,
+            permanentConfirmation,
+            nowMs,
+          )}
+          aria-describedby="cleanup-next"
+          disabled={expired ||
+            !removalEnabled ||
+            removalBusy ||
+            plan.state !== "DRAFT" ||
+            reviewedPlanHash !== plan.planHash}
+          onclick={onApprove}>Approve Cleanup</button
+        >
+      {/if}
+      {#if removalEnabled && plan.state === "APPROVED" && reviewedPlanHash === plan.planHash}
+        <button
+          class="danger-button"
+          type="button"
+          title={cleanupActionHint(
+            plan,
+            removalEnabled,
+            reviewedPlanHash,
+            executionConfirmed,
+            permanentConfirmation,
+            nowMs,
+          )}
+          aria-describedby="cleanup-next"
+          disabled={expired ||
+            !removalEnabled ||
+            removalBusy ||
+            plan.state !== "APPROVED" ||
+            !executionConfirmed ||
+            reviewedPlanHash !== plan.planHash ||
+            (plan.permanent && !permanentConfirmation)}
+          onclick={onExecute}>Execute Cleanup</button
+        >
+      {/if}
+    </div>{/if}
 {/if}
 {#if plan.state === "PARTIAL"}<p>
     Some outcomes need inspection. Open Advanced details for recovery locations,

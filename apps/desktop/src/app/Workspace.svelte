@@ -1,6 +1,10 @@
 <script lang="ts">
   import { SvelteSet } from "svelte/reactivity";
   import ThemeSettings from "./ThemeSettings.svelte";
+  import CaskBadge from "./CaskBadge.svelte";
+  import CaskAppearanceSettings from "./CaskAppearanceSettings.svelte";
+  import { assignCaskColors } from "./caskColors";
+  import NavigationRail from "./NavigationRail.svelte";
   import { invoke } from "@tauri-apps/api/core";
   import { listen } from "@tauri-apps/api/event";
   import { getCurrentWindow } from "@tauri-apps/api/window";
@@ -44,13 +48,7 @@
   import PopupMenu from "./PopupMenu.svelte";
   import { notify } from "./notifications";
   import Icon from "./Icon.svelte";
-  import {
-    caskColor,
-    activityDay,
-    bytes,
-    label,
-    signatureLabel,
-  } from "./format";
+  import { activityDay, bytes, label, signatureLabel } from "./format";
   let {
     caskId = null,
     mode = "detail",
@@ -191,6 +189,7 @@
   let policyConfirmed = $state(false);
   let pendingCategory = $state("auto");
   let progress = $state("");
+  let cleanupFeedback = $state("");
   let categoryName = $state("");
   let categoryCreating = $state(false);
   let categoryNotice = $state("");
@@ -445,6 +444,30 @@
     ),
   );
   const categoryGroups = $derived(resourceGroups(fileResources, categories));
+  let resourceQuery = $state("");
+  const inventoryGroups = $derived.by(() => {
+    const query = resourceQuery.trim().toLocaleLowerCase();
+    if (!query) return categoryGroups;
+    return categoryGroups
+      .map((group) => ({
+        ...group,
+        items: group.items.filter((item) =>
+          `${item.name} ${item.path} ${group.name}`
+            .toLocaleLowerCase()
+            .includes(query),
+        ),
+      }))
+      .filter((group) => group.items.length);
+  });
+  const matchingResources = $derived(
+    inventoryGroups.reduce((count, group) => count + group.items.length, 0),
+  );
+  function revealSearchMatches(node: HTMLDetailsElement) {
+    $effect(() => {
+      if (resourceQuery.trim()) node.open = true;
+    });
+  }
+
   const applications = $derived(
     applicationRows(portableItems, associatedApps, wingetItems).map((row) => {
       const sourceKey =
@@ -1257,7 +1280,7 @@
       preserveConfirmed = false;
       reviewedPlanHash = "";
       executionConfirmed = false;
-      progress =
+      cleanupFeedback =
         removalPlan?.id === previous
           ? "Current cleanup plan loaded."
           : "Cleanup plan ready.";
@@ -1349,6 +1372,7 @@
     document.getElementById("cleanup-heading")?.focus();
   }
   function invalidateCleanupReview() {
+    cleanupFeedback = "";
     categoryCleanup = null;
     applicationRemovalId = "";
     removalPlan = null;
@@ -1652,6 +1676,7 @@
       selected = await invoke<CaskView>("get_cask", {
         request: { version: CONTRACT_VERSION, id },
       });
+      if (selected) assignCaskColors([selected]);
       detailTab = "overview";
       resetInstallerReview();
       pendingPaths = [];
@@ -2012,6 +2037,22 @@
     let unlistenStarted: (() => void) | undefined;
     let unlistenWinget: (() => void) | undefined;
     let unlistenInstaller: (() => void) | undefined;
+    let unlistenAssociation: (() => void) | undefined;
+    void listen<{ caskId: string }>(
+      "installed-application-associated",
+      (event) => {
+        if (selected?.id === event.payload.caskId) {
+          void refreshAssociated().catch((cause) => {
+            error = message(cause);
+          });
+          void refreshAssociationSummary(event.payload.caskId);
+        }
+      },
+    ).then((fn) => {
+      if (disposed) fn();
+      else unlistenAssociation = fn;
+    });
+
     const poll = window.setInterval(() => {
       void receiveExplorer();
       void syncFiles();
@@ -2120,6 +2161,7 @@
       unlistenStarted?.();
       unlistenWinget?.();
       unlistenInstaller?.();
+      unlistenAssociation?.();
     };
   });
   async function initialize() {
@@ -2200,6 +2242,9 @@
 
 <svelte:window onkeydown={cancelManagementEditor} />
 
+{#if mode === "detail"}<a class="skip-link" href="#workspace-content"
+    >Skip to Cask content</a
+  >{/if}
 <div
   class:detail-window={mode === "detail"}
   class:drag-active={dragActive}
@@ -2228,7 +2273,9 @@
           title="Close Cask workspace"
           onclick={() => void closeWorkspace()}><Icon name="back" /></button
         >
-        <span class="workspace-location">Cask workspace</span>
+        <span class="workspace-location"
+          >{detailTab === "cleanup" ? "Cleanup review" : "Cask workspace"}</span
+        >
         <div class="workspace-menu">
           <PopupMenu id="workspace-actions" label="Cask actions">
             <button
@@ -2252,13 +2299,12 @@
         </div>
       </div>
       <div class="workspace-title">
-        <span
-          class="status-dot"
-          style:background={selected?.state === "ACTIVE"
-            ? caskColor(selected.id)
-            : "#999"}
+        <CaskBadge
+          caskId={selected?.id ?? caskId ?? ""}
+          size={36}
+          muted={!!selected && selected.state !== "ACTIVE"}
           title={label(selected?.state ?? "LOADING")}
-        ></span>
+        />
         <h1 id="cask-detail-heading" tabindex="-1" title={selected?.name}>
           {selected?.name ?? "Opening Cask…"}
         </h1>
@@ -2268,20 +2314,37 @@
           "Files, applications and resources for this activity."}
       </p>
     </header>
-    <nav class="detail-tabs" aria-label="Cask sections">
-      {#each [{ key: "overview", title: "Overview" }, { key: "files", title: "Files & Folders" }, { key: "apps", title: "Applications" }, { key: "settings", title: "Settings" }] as tab (tab.key)}
-        <button
-          type="button"
-          aria-current={detailTab === tab.key ? "page" : undefined}
-          class:active={detailTab === tab.key}
-          onclick={() => {
-            detailTab = tab.key as typeof detailTab;
-          }}>{tab.title}</button
-        >
-      {/each}
-    </nav>
+    <NavigationRail
+      compact
+      label="Cask sections"
+      current={detailTab}
+      items={[
+        { key: "overview", title: "Overview", icon: "casks" },
+        { key: "files", title: "Files & Folders", icon: "folder" },
+        { key: "apps", title: "Applications", icon: "installations" },
+        { key: "settings", title: "Settings", icon: "settings" },
+      ]}
+      onselect={(key) => {
+        detailTab = key as typeof detailTab;
+      }}
+    />
   {/if}
-  <div class="workspace-content" bind:this={contentElement}>
+  <div
+    id="workspace-content"
+    class="workspace-content"
+    role={mode === "detail" ? "main" : undefined}
+    tabindex="-1"
+    bind:this={contentElement}
+  >
+    {#if mode === "detail" && selected && detailTab === "overview"}
+      <div class="workspace-section-label">
+        <span>Inside this Cask</span><span
+          >{selected.state === "ARCHIVED"
+            ? "Archived Cask"
+            : "Cask workspace"}</span
+        >
+      </div>
+    {/if}
     {#if waitingExplorer}
       <section class="review" aria-label="Waiting Explorer item">
         <p>
@@ -2335,6 +2398,35 @@
       >{/if}
     {#if loading}<p class="loading" role="status">Loading workspace…</p>{/if}
     {#if selected && detailTab === "overview"}
+      <div class="compact-stats" aria-label="Cask contents">
+        <div>
+          <span
+            >Total Items<strong>{fileResources.length + appCount}</strong></span
+          >
+        </div>
+        <button
+          type="button"
+          aria-label="Browse files and folders"
+          onclick={() => {
+            detailTab = "files";
+          }}
+        >
+          <Icon name="folder" size={20} /><span
+            >Files & Folders<strong>{fileResources.length}</strong></span
+          ><Icon name="forward" size={15} />
+        </button>
+        <button
+          type="button"
+          aria-label="Browse applications"
+          onclick={() => {
+            detailTab = "apps";
+          }}
+        >
+          <Icon name="package" size={20} /><span
+            >Applications<strong>{appCount}</strong></span
+          ><Icon name="forward" size={15} />
+        </button>
+      </div>
       <section class="storage-panel" aria-label="Storage summary">
         <div class="section-heading">
           <div>
@@ -2432,35 +2524,6 @@
             </p>{/if}
         </details>
       </section>
-      <div class="compact-stats" aria-label="Cask contents">
-        <div>
-          <span
-            >Total Items<strong>{fileResources.length + appCount}</strong></span
-          >
-        </div>
-        <button
-          type="button"
-          aria-label="Browse files and folders"
-          onclick={() => {
-            detailTab = "files";
-          }}
-        >
-          <Icon name="folder" size={20} /><span
-            >Files & Folders<strong>{fileResources.length}</strong></span
-          ><Icon name="forward" size={15} />
-        </button>
-        <button
-          type="button"
-          aria-label="Browse applications"
-          onclick={() => {
-            detailTab = "apps";
-          }}
-        >
-          <Icon name="package" size={20} /><span
-            >Applications<strong>{appCount}</strong></span
-          ><Icon name="forward" size={15} />
-        </button>
-      </div>
       <section class="information-panel" aria-label="Cask information">
         <dl class="cask-dates">
           <div>
@@ -3357,8 +3420,42 @@
               <h3>No files or folders yet</h3>
               <p>Use Add Items below, or drop an item into this window.</p>
             </div>{/if}
-          {#each categoryGroups as group (group.key)}
-            <details class="resource-category">
+          {#if fileResources.length}
+            <div class="resource-search-toolbar">
+              <label class="search-field"
+                ><Icon name="search" size={16} />
+                <input
+                  aria-label="Search files and folders"
+                  placeholder="Search names, categories or paths"
+                  bind:value={resourceQuery}
+                />
+                {#if resourceQuery}<button
+                    type="button"
+                    class="icon-button"
+                    aria-label="Clear resource search"
+                    onclick={() => (resourceQuery = "")}
+                    ><Icon name="close" size={14} /></button
+                  >{/if}
+              </label>
+              <span class="list-context" role="status"
+                >{resourceQuery.trim()
+                  ? `${matchingResources} of ${fileResources.length} items`
+                  : `${fileResources.length} items`}</span
+              >
+            </div>
+          {/if}
+          {#if resourceQuery.trim() && !matchingResources}<div
+              class="empty-state compact"
+            >
+              <Icon name="search" size={24} />
+              <h3>No matching files or folders</h3>
+              <p>Try another name, category or path.</p>
+              <button type="button" onclick={() => (resourceQuery = "")}
+                >Clear search</button
+              >
+            </div>{/if}
+          {#each inventoryGroups as group (group.key)}
+            <details class="resource-category" use:revealSearchMatches>
               <summary
                 ><span class="category-marker"
                   ><Icon name={categoryIcon(group.key)} size={18} /></span
@@ -3441,7 +3538,13 @@
               >
                 <div class="inspector-heading">
                   <div>
-                    <p class="eyebrow">Management details</p>
+                    <p class="eyebrow">
+                      {categoryEditor
+                        ? "Change category"
+                        : ownershipEditor
+                          ? "Change ownership"
+                          : "Item details"}
+                    </p>
                     <h2>{selectedResource.name}</h2>
                   </div>
                   <button
@@ -3505,7 +3608,13 @@
                 <div class="management-setting">
                   <div class="management-setting-row">
                     <span class="setting-symbol"
-                      ><Icon name="casks" size={18} /></span
+                      ><Icon
+                        name={categoryIcon(
+                          selectedResource.categoryKey,
+                          selectedResource.kind,
+                        )}
+                        size={18}
+                      /></span
                     >
                     <div>
                       <h4>Category</h4>
@@ -3545,9 +3654,6 @@
                           void recategorize(selectedResource, categoryChoice);
                       }}
                     >
-                      <p class="editor-target">
-                        Editing <strong>{selectedResource.name}</strong>
-                      </p>
                       <label for="category-choice">Category</label>
                       <div class="select-control">
                         <select
@@ -3618,9 +3724,6 @@
                         void changeOwnership();
                       }}
                     >
-                      <p class="editor-target">
-                        Editing <strong>{selectedResource.name}</strong>
-                      </p>
                       <fieldset class="ownership-options" disabled={busy}>
                         <legend>Ownership</legend>
                         <label class:chosen={ownershipTarget}
@@ -3799,6 +3902,9 @@
     {/if}
     {#if selected && detailTab === "cleanup"}
       <section aria-label="Cleanup Cask">
+        {#if cleanupFeedback}<p class="cleanup-feedback" role="status">
+            {cleanupFeedback}
+          </p>{/if}
         <div class="section-heading">
           <h2 id="cleanup-heading" tabindex="-1">Cleanup Cask</h2>
           <button
@@ -3985,6 +4091,7 @@
       </section>
     {/if}
     {#if selected && detailTab === "settings"}
+      <CaskAppearanceSettings caskId={selected.id} name={selected.name} />
       <section class="settings-card" aria-label="Cask settings">
         <details class="settings-disclosure">
           <summary aria-label="Cask settings"

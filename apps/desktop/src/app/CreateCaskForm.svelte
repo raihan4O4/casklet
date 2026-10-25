@@ -3,6 +3,9 @@
   import type { CaskView } from "../contracts/generated/casklet";
   import { CONTRACT_VERSION } from "../contracts/generated/casklet";
   import Icon from "./Icon.svelte";
+  import CaskAppearancePicker from "./CaskAppearancePicker.svelte";
+  import { DEFAULT_APPEARANCE, saveCaskAppearance } from "./caskAppearance";
+  import { assignCaskColors } from "./caskColors";
   let {
     onCreated,
     onCancel,
@@ -20,6 +23,7 @@
   } = $props();
   let name = $state("");
   let error = $state("");
+  let appearance = $state({ ...DEFAULT_APPEARANCE });
   async function create() {
     if (busy || !name.trim()) return;
     busy = true;
@@ -28,6 +32,12 @@
       const cask = await invoke<CaskView>("create_cask", {
         request: { version: CONTRACT_VERSION, name },
       });
+      assignCaskColors([cask]);
+      if (
+        appearance.symbol !== DEFAULT_APPEARANCE.symbol ||
+        appearance.color !== null
+      )
+        saveCaskAppearance(cask.id, appearance);
       await onCreated(cask);
     } catch (cause) {
       error =
@@ -41,6 +51,7 @@
 </script>
 
 <form
+  class="create-cask-form"
   onsubmit={(event) => {
     event.preventDefault();
     void create();
@@ -66,6 +77,11 @@
     disabled={busy}
     placeholder="e.g. Photography Course"
   />
+  <div class="create-appearance">
+    <span class="appearance-field-label"
+      >Appearance <span class="optional-label">Optional</span></span
+    ><CaskAppearancePicker bind:value={appearance} disabled={busy} />
+  </div>
   {#if error}<p class="error" role="alert">{error}</p>{/if}
   <div class="dialog-actions">
     <button type="button" disabled={busy} onclick={onCancel}>Cancel</button>

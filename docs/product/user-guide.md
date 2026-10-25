@@ -60,7 +60,7 @@ Verified new MSI and EXE applications appear as **Casklet-owned**. **Remove** op
 
 ## Appearance
 
-Under Accent color, choose a preset, open Custom color, or enter a six-digit HEX color. The live preview and all open Casklet windows update immediately; the color is saved on this computer. Text, icons and control outlines adjust for readability in both Light and Dark. Reset to default restores Casklet's original teal palette. Invalid HEX input leaves your last valid color unchanged. If saving fails, a notification explains that the color applies only to this session.
+Under Accent color, choose a preset, open Custom color, or enter a six-digit HEX color. The live preview and all open Casklet windows update immediately; the color is saved on this computer. Text, icons and control outlines adjust for readability in both Light and Dark. Reset to default restores Casklet's default cobalt palette. Invalid HEX input leaves your last valid color unchanged. If saving fails, a notification explains that the color applies only to this session.
 
 Open Settings and choose Light or Dark under Appearance. The choice is saved on this computer and updates every open Casklet window. Light uses the supplied black logo; Dark uses the supplied white logo and layered dark-grey surfaces. Appearance does not change Cask data, storage, ownership or cleanup behavior. It is a local UI preference and is not part of database backups or Cask exports.
 
@@ -95,3 +95,27 @@ Drop a mixed selection or choose multiple entries in Add Files/Add Folders. Revi
 Explorer's Casklet menu accepts up to 32 selected files/folders for Add as Owned or Add as Reference. Its choose-destination flow reviews the whole selection. A mixed EXE/file selection is resource intake, not an automatic installer queue; a single installer retains its explicit installation workflow.
 
 Closing the main window leaves open Cask windows usable. Launch Casklet again to reopen the main window; an already open Cask is reused. Close individual Cask windows normally. The process exits after the last window and any active background work finish.
+
+## Desktop navigation
+
+The main command header opens Casks, Installations, Activity and Settings. Each Cask opens in its own window with Overview, Files & Folders, Applications and Settings. Use Alt+1 through Alt+4 to select the corresponding section, or use the visible navigation buttons. These shortcuts pause while a modal is open. A keyboard skip link moves directly to the content.
+
+Cleanup stays in the Cask action footer. Review, Approve and Execute are separate stages; only the action for the current stage is shown. Approval never runs cleanup. Execution requires the displayed confirmations and fresh core revalidation. A review-only installation lets you inspect effects and shows no approval or execution action.
+
+The collection-workbench interface uses full-width navigation, leaving more room for Cask contents. Overview puts files and applications first, followed by saved storage and dates. The library retains card/list views and search/sort controls. In Files & Folders, search by item name, category or saved path. Matching groups open automatically. Search uses saved metadata and does not scan folders. Category totals during search describe the full category, including items outside the search. Clear search to return to the complete inventory. Resource editors show the filename once; cleanup item effects include saved source paths.
+
+## Library identity and direct application association
+
+The dashboard emphasizes Cask count and known size. Includes references means the size is logical associated content, not physical disk usage or reclaimable space. Search and card/list controls remain below the dashboard.
+
+Each Cask automatically gets a color from a balanced palette. Existing Casks get a default when opened or listed. Colors stay consistent after restarting and across open windows; larger libraries reuse colors. These are local appearance preferences, like theme/accent, and are not part of database backups or exported manifests. Cask names still identify the activity; color never signals ownership or cleanup eligibility.
+
+Under Installations, select Associate beside an application, choose an active Cask and confirm Associate. This creates a reference, leaving installation and ownership unchanged. Already associated Casks are disabled. Retry if a destination could not be checked; create a Cask if none are eligible. The row confirms the target after success, and an open target workspace updates its applications. Search within the chooser clears the previous selection so confirmation always targets a visible choice.
+
+## Choose a Cask icon or emoji
+
+In New Cask, optionally open Appearance before creating the Cask. Choose Icons or Emoji, search by name, select a symbol and optionally choose a color. The row previews your selection immediately. Automatic keeps Casklet's assigned color. You can skip this step and create a Cask with its usual default.
+
+To change an existing Cask, open its Settings and select Change appearance. Choose a new symbol/color, then Save appearance. Cancel appearance discards the draft. Clear returns to the collection icon and automatic color when you save. The library, Cask header and Cask choosers update together.
+
+Selections survive restarting Casklet and are saved locally with your appearance preferences. They are not included in database backups or portable Cask manifests. Existing Casks retain their assigned colors and default collection icon until customized. Emoji rendering follows the system font. Colors and symbols never grant ownership or cleanup permission.

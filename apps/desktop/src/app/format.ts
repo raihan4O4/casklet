@@ -1,3 +1,5 @@
+import { colorForCask } from "./caskColors";
+
 export function bytes(value: number | null | undefined): string {
   if (value == null) return "Not measured";
   if (value === 0) return "0 B";
@@ -24,20 +26,9 @@ export function label(value: string): string {
     .replace(/^./, (letter) => letter.toUpperCase());
 }
 
-/** Stable identity accents: never interpreted as ownership or health. */
+/** Persisted local appearance; never interpreted as ownership or health. */
 export function caskColor(id: string): string {
-  const colors = [
-    "#5b8b6b",
-    "#5d7d9e",
-    "#85709c",
-    "#ae8154",
-    "#ae6e70",
-    "#5c8d91",
-  ];
-  let hash = 0;
-  for (const character of id)
-    hash = (hash * 31 + character.charCodeAt(0)) >>> 0;
-  return colors[hash % colors.length];
+  return colorForCask(id);
 }
 
 export function activityDay(timestamp: number): string {

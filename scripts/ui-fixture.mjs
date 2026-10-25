@@ -27,6 +27,21 @@ export function installFixture(options = {}) {
     updatedAtMs: now - [2, 7, 14, 21, 30][i] * 86400000,
     revision: 0,
   }));
+  if (
+    Number.isInteger(options.libraryCount) &&
+    options.libraryCount >= 0 &&
+    options.libraryCount <= 1000
+  ) {
+    const templates = casks;
+    casks = Array.from({ length: options.libraryCount }, (_, index) => ({
+      ...templates[index % templates.length],
+      id: `qa-cask-${index}`,
+      name:
+        index < templates.length
+          ? templates[index].name
+          : `Collection ${index + 1}`,
+    }));
+  }
   if (options.empty) casks = [];
   if (options.long) {
     casks[0].name =
@@ -101,6 +116,11 @@ export function installFixture(options = {}) {
     errorCode: null,
     updatedAtMs: now - [3600000, 7200000, 86400000][i],
   }));
+  const appLinks = new Map(
+    casks
+      .filter((_, index) => index === 0 || options.associationAllLinked)
+      .map((cask) => [cask.id, [...apps]]),
+  );
   const recovery = { version: 1, operations: [], pendingManifestCasks: [] };
   const categories = ["documents", "images", "applications", "other"].map(
     (key) => ({
@@ -146,11 +166,11 @@ export function installFixture(options = {}) {
           throw { message: "The local library is temporarily unavailable." };
         const summaries = casks.map((cask, i) => ({
           cask,
-          itemCount: [6, 42, 21, 18, 9][i],
-          fileCount: [4, 40, 18, 16, 6][i],
-          applicationCount: [2, 2, 3, 2, 3][i],
-          managedBytes: [12.4, 22.4, 11.8, 7.7, 18.2][i] * gib,
-          referencedBytes: [6.2, 1.9, 0.9, 0.4, 0.5][i] * gib,
+          itemCount: [6, 42, 21, 18, 9][i % 5],
+          fileCount: [4, 40, 18, 16, 6][i % 5],
+          applicationCount: [2, 2, 3, 2, 3][i % 5],
+          managedBytes: [12.4, 22.4, 11.8, 7.7, 18.2][i % 5] * gib,
+          referencedBytes: [6.2, 1.9, 0.9, 0.4, 0.5][i % 5] * gib,
           unknownEntries: 0,
         }));
         return {
@@ -162,7 +182,11 @@ export function installFixture(options = {}) {
           unknownEntries: 0,
         };
       }
-      if (command === "list_casks") return casks;
+      if (command === "list_casks") {
+        if (args.request?.version !== 1)
+          throw Error("Missing versioned ListCasks request");
+        return casks;
+      }
       if (command === "get_cask")
         return casks.find((cask) => cask.id === args.request.id) ?? casks[0];
       if (command === "create_cask") {
@@ -223,11 +247,27 @@ export function installFixture(options = {}) {
             { relativePath: "notes.txt", kind: "FILE", sizeBytes: 2048 },
           ],
         };
-      if (
-        command === "list_associated_applications" ||
-        command === "search_installed_applications"
-      )
-        return apps;
+      if (command === "search_installed_applications")
+        return apps.map((app) => ({ ...app, associatedCaskId: null }));
+      if (command === "list_associated_applications")
+        return appLinks.get(args.request.caskId) ?? [];
+      if (command === "associate_installed_application") {
+        if (options.associationFail)
+          throw { message: "Application cleanup is active" };
+        const app = apps.find(
+          (item) => item.installationId === args.request.installationId,
+        );
+        const linked = appLinks.get(args.request.caskId) ?? [];
+        const reference = {
+          ...app,
+          associatedCaskId: args.request.caskId,
+          removalPolicy: "DETACH_ONLY",
+        };
+        if (!linked.some((item) => item.installationId === app.installationId))
+          linked.push(reference);
+        appLinks.set(args.request.caskId, linked);
+        return reference;
+      }
       if (command === "storage_summary")
         return {
           version: 1,

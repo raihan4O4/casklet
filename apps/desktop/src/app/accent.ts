@@ -48,7 +48,15 @@ export function accentPalette(color: string, mode: "light" | "dark") {
         "#373c44",
         surface,
       ]
-    : ["#ffffff", "#f2f5f5", "#f4f7f7", "#edf3f3", "#e4eeee", surface];
+    : [
+        "#ffffff",
+        "#f4f5f3",
+        "#ffffff",
+        "#f0f2ef",
+        "#e7ebe6",
+        "#e1e8e3",
+        surface,
+      ];
   let ink = color;
   for (let step = 0; step <= 100; step++) {
     ink = mix(color, endpoint, step / 100);

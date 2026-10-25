@@ -1,163 +1,116 @@
-# Casklet: collection desk
+# Casklet: collection workbench
 
-## Brief and scope
+## Brief and stack
 
-Reimagine the complete existing Windows activity/resource manager as a clear collection of activities and focused workspaces. The audience is people managing project files, installed tools and their eventual cleanup. A Cask groups resources by purpose without claiming that references belong to it. The interface must explain that distinction and keep every existing core command and safety gate.
+Reimagine the complete local Windows lifecycle manager as a place to work with collections, not a dashboard to supervise. People organize activities, bring files and applications together, and eventually review what can safely leave. The explicitly authorized replacement supersedes improve-ui's identity-preservation and read-only recommendations. Its traceable-evidence discipline informs the audit. Awwwards supplies craft standards; jury supplies independent evidence review. Website SEO, marketing content, cloud publishing and theatrical loaders do not apply to this desktop application.
 
-Use the existing Svelte 5 / TypeScript / Vite / Tauri 2 stack: it already serves every production workflow through typed Rust IPC. Retain supplied Light/Dark logos, local variable Inter and Lucide. No production sample content, new application dependencies, filesystem access from JavaScript or changes to ownership, journals, provider permissions or native window lifecycles.
+Keep Svelte 5, TypeScript, Vite and Tauri 2: the existing stack already connects every feature to the shared Rust core. Use local Inter, Lucide and supplied logos. No new production dependencies or invented content. Preserve the starting dirty tree, including the earlier resource-atlas functional work, .agents, skills-lock.json and brag-output.
 
-The working tree initially contained untracked `.agents/` and `skills-lock.json`; preserve these user-provided files.
+## Analysis and capability map
 
-## Audit
+| Surface              | Responsibilities retained                                                                                                                             | New presentation                                                                              |
+| -------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------- |
+| Main library         | Metadata-only loading, polling/invalidation, cards/list, search, stable sorting, native Cask opening, creation                                        | Compact persistent rail; open statistics; separate library tools; collection-spine marks      |
+| Global installations | Windows inventory search and refresh, publisher/version/scope/registration, lazy native icons                                                         | Shared inventory typography, neutral row surfaces and clear search toolbar                    |
+| Activity             | Durable operations, installer outcomes, attention/recovery, display-history clearing, diagnostics                                                     | Same rail and page hierarchy; chronological entries with operational status                   |
+| Global Settings      | Theme, custom accent, backup, diagnostics, build capabilities                                                                                         | Grouped settings panels; previews; consistent fields and action levels                        |
+| Cask workspace       | Independent windows, native readiness, close/reopen lifecycle, drop target                                                                            | Shared vertical rail; separate identity header, content and persistent action footer          |
+| Overview             | Known logical sizes, owned/reference distinctions, category accounting, refresh sizes, dates, direct contents navigation                              | At-a-glance context; measured storage panel; direct inventory shortcuts                       |
+| Files & Folders      | Categories, nested/unknown sizes, folder inspection, resource overlay, category edits, explicit ownership changes                                     | Grouped inventory with consistent category surfaces and focused modal editors                 |
+| Intake               | Multi-selection/drop/Explorer review, references, explicit dedicated-data consent, automatic categories, partial-result retry                         | Consequence-led choices, consistent fields and visible commit/cancel actions                  |
+| Applications         | Registered association, MSI/EXE installation/elevation/recovery, portable ZIP and WinGet, search/relationship filters, launch/detach/reviewed removal | Shared inventory and workflow panels; retained real icons and readable relationship labels    |
+| Cask Settings        | Revision-checked name/description/archive, categories, exports                                                                                        | Focused disclosure sections and persistent Reset/Save controls                                |
+| Cleanup              | Scope/method, exact-plan review, hash-bound approval, confirmation, execution, saved history/recovery, whole-Cask finalization                        | Clear task context; explicit capability and consequence messaging; consistent review surfaces |
+| Secondary UI         | Creation/removal/Explorer dialogs, menus, notifications, native controls                                                                              | Shared palette, radii, focus, borders, type and elevation                                     |
 
-Existing screens: main Casks library, installation inventory, Activity with recovery tools, global Settings, independent Cask Overview, Files & Folders and inline resource inspectors, Applications with installer/existing/portable/WinGet methods, Cask Settings/categories/exports, Cleanup (file and application queues), creation/removal/Explorer destination dialogs, popup menus and floating notifications.
+Presentation currently orchestrates typed IPC in MainWindow and Workspace. Domain policy stays in Rust. The redesign changes shell composition and shared tokens; it does not move policy into UI or alter database/schema/contracts. Automated browser fixtures remain test-only. Slow measurements stay explicit and independent of opening/navigation.
 
-The preceding design was functional but relied on a dense table, tiny undifferentiated controls and sparse initial intake. Overview totals were passive, long workspace titles were single-line truncated, and navigation/readouts competed at similar weight. Preserve the underlying information architecture and redesign composition rather than inventing new product modules.
+Main regression risks: narrow workspace content after adding a rail, active navigation visibility, modal focus, retained intake/installer state, accent contrast on new surfaces, selection identity and unchanged destructive guards. Test these through existing frontend tests and production-rendered workflows.
 
 ## Concepts considered
 
-Scores: originality / product fit / implementation feasibility / portability (lower portability is better).
+Scores: originality / product fit / feasibility / portability (lower portability is better).
 
-| Territory | Concept and anchor                                                                                                                                                        | Signature, emotion, screenshot                                                                                                            | Scores        |
-| --------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- | ------------- |
-| Identity  | Collection desk: named activities are collections, with their own workspace and real resource relationships. Anchored in Cask identity and independent native workspaces. | Tinted collection marks settle on hover; each card opens a real workspace. Calm and capable. Collection cards beside a focused inventory. | 4 / 5 / 5 / 2 |
-| Process   | Lifecycle path: acquisition, use and deliberate retirement form the visual hierarchy. Anchored in durable intake and removal journals.                                    | An explicit plan/review/approval handoff. Reassuring, but risks overemphasizing deletion during ordinary use.                             | 4 / 4 / 4 / 2 |
-| Formal    | Resource register: a compact ledger with exact counts, paths and relationship labels. Anchored in SQLite associations and cautious accounting.                            | Inline disclosures reveal facts. Precise, but too close to the previous table-centric experience.                                         | 3 / 4 / 5 / 3 |
+| Territory | Idea and anchor                                                                             | Signature, emotion and screenshot                                                                                               | Scores        |
+| --------- | ------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------- | ------------- |
+| Material  | Collection workbench: resources stay distributed, but the Cask provides one working surface | A full-width contents-first workspace with inspectable relationships; capable and calm; contents and storage under one identity | 4 / 5 / 5 / 2 |
+| Lifecycle | Departure board: each item advances from intake to reviewed retirement                      | Explicit status transitions; deliberate; review and preserved outcomes in the same task                                         | 4 / 4 / 4 / 2 |
+| Formal    | Evidence register: organize the entire UI around source and relationship columns            | Dense metadata inventory; precise; comparable evidence rows                                                                     | 3 / 4 / 5 / 3 |
 
-Choose collection desk. It gives everyday organization priority, with lifecycle safety expressed at the point of action. The resource register remains available through List view.
+Choose collection workbench because everyday access to real contents should lead. Safety belongs beside consequential actions, rather than dominating normal navigation.
 
 ## Concept card
 
-Idea: Everything for an activity, in one collection with a deliberate next action.
+Idea: Everything for an activity, on one working surface.
+Metaphor: A collection workbench with a clear index and focused inspection.
+Signature: A Cask opens a native full-width workspace; contents lead and inspection never displaces the collection underneath.
+Emotion: Oriented, calm and capable in three seconds.
+Motion verb: Settle; brief inset, press and lift feedback. Still at rest is intentional.
+Screenshot: Mineral library with a horizontal command header, opening into a contents-first native workspace.
 
-Metaphor: A collection desk and its focused workspaces.
+## Architecture and design system
 
-Signature: A collection mark responds to focus/hover; a card opens the fully initialized native Cask workspace. Overview counts lead directly to the relevant contents.
+Main navigation is a full-width command header: Casks, Installations, Activity and Settings. Local storage remains a utility action. Independent Cask windows have identity, a horizontal section index, a scrolling task surface and persistent task actions. Overview leads with actual files/applications before measurement. Cleanup remains deliberate footer navigation and retains exact-plan Review / Approve / Execute transitions. The same shared component owns active state and Alt+1 through Alt+4, with modal suppression. Its historical NavigationRail filename remains to preserve existing consumers and tests; it now renders semantic horizontal navigation.
 
-Emotion: Composed, readable and trustworthy within three seconds.
+Light roles: mineral ground #f4f5f3, panel #ffffff, quiet surface #f0f2ef, ink #202936, secondary #566273, line #d9dfd9. Cobalt #315bb5 is the default action, retaining users' existing color vocabulary. Dark uses charcoal #202226, panels #282b30, secondary #2d3035 and pale cobalt #b6cbff. Semantic danger/warning/success remain distinct. Arbitrary custom accents continue to derive readable ink across every current surface.
 
-Motion verb: Settle. Short 1–4 px responses and surface changes. No movement while idle.
+Local variable Inter: library display 34/38, Cask identity 30/36, section 16/23, item identity 13 to 17, controls/body 13/20, secondary 12/19, compact metadata 11/17. Tabular numbers for sizes; names and source paths retain full accessible text. Spacing uses 4/8/12/16/20/24/32. Main inset 36, workspace inset 24, narrowing to 16. Panels 8px, controls 7px, modals 10px. Borders do the grouping; shadows belong to floating controls. Collection marks use a neutral tile and a small identity-color marker, never a safety signal.
 
-Screenshot: Purposeful collection cards, matching the clear segmented navigation and measured storage of a Cask workspace.
-
-## Visual system
-
-- Light roles: ground `#ffffff`, navigation `#f2f5f5`, ink `#182c30`, muted `#586e73`, line `#dfe7e7`, action/accent `#235d65`. Petrol expresses organization and active controls; semantic error/warning/success colors remain separate. Identity colors derive from stable Cask IDs and do not mean health or ownership.
-- Dark retains native charcoal ground `#202226`, layered surfaces, readable pale text and deliberate accent `#b1d8df`. Theme changes commit the whole palette together to avoid unreadable intermediate fades.
-- Type: bundled variable Inter, offline, continuing the established Windows product identity. Library heading 30/36 px; workspace heading 26/34 px, wrapping up to three lines; storage 30 px with tabular figures; section heading 17/24 px; operational body/controls 13/20 px; metadata 12/18 px; short secondary labels 11 px. No network font requests.
-- Rhythm: 4/8/12/16/24/32 px tokens. Main rail 188 px, content inset 30 px; workspace inset 24 px (20/16 px on smaller screens). Two-column collection grid with 14 px gutters, plus compact sortable list view.
-- Shapes: 8 px control and 12 px panel radii. One-pixel borders; floating elements and hovered collections alone receive shallow shadows. No gradients, glass, photography or decorative charts.
-- Motion: `cubic-bezier(.2,.8,.2,1)`, 120 ms feedback, 180 ms content entry/disclosure. CSS and the existing Svelte transitions avoid a new animation dependency. Native scrolling and window readiness remain unchanged. Reduced motion stops animations/transitions and preserves all content.
-- States: visible focus, disabled controls, explicit selection, progress/status announcements, actionable empty/search/error views. Cleanup review, approval and execution remain separately gated by exact hashes and core capabilities.
+Primary actions use solid accent. Secondary actions use borders; utility actions stay quiet. Active navigation uses a tinted field and baseline marker. Category inventories use white headers and a secondary open state. Application intake is a vertically ranked choice list instead of a grid of competing cards. Settings use shared bordered groups. Dialogs, menus, inspectors, notifications and cleanup inherit the same role tokens. Native selects/radios, visible keyboard focus, modal trapping and Escape/origin focus remain. Primary hit targets are at least 38px high. Feedback takes 120ms, entries 180ms, cubic-bezier(.2,.8,.2,1); reduced motion disables entry effects. Native scrolling stays native.
 
 ## Composition
 
 ```text
-Library  [brand / nav] [title / description                 New Cask]
-         [          ] [Casks / known logical storage / item totals]
-         [          ] [Search                   count   cards/list]
-         [          ] [Sort by                 Name Items Size Date]
-         [          ] [collection + description] [collection + description]
-         [local data] [items / bytes / updated ] [items / bytes / updated ]
+Library [brand / Casks / Installations / Activity / Settings / storage]
+        [identity + Create                real library measurements]
+        [library / search / view / sort]
+        [collection identity + description | item count + known size]
+        [scrolling collections; dense list available]
 
-Cask     [back / workspace context                           actions]
-         [wrapping name / activity description                    ]
-         [Overview | Files & Folders | Applications | Settings     ]
-         [measured storage / proportions / explicit limitations   ]
-         [total count                                             ]
-         [browse files + count] [browse applications + count       ]
-         [created / updated                                       ]
-         [Add Items                                        Cleanup]
+Cask    [close / activity identity / contextual menu]
+        [Overview | Files & Folders | Applications | Settings]
+        [actual contents / focused workflow / inspected results]
+        [measurement and dates below contents on Overview]
+        [Add Items or Save                              Cleanup]
 
-Intake   [task / close]
-         [folder symbol / concise instruction]
-         [Add File       explanation                      forward]
-         [Add Folder     explanation                      forward]
-         [then: source, explicit management/reference choice,
-          category, required dedicated-data consent, commit]
+Task    [context and consequence]
+        [source / scope / options]
+        [consent / validation / review / durable progress]
+        [cancel or recovery                         current action]
 
-Apps     [heading + count                         Add Application]
-         [search                              relationship filters]
-         [method choice or focused workflow]
-         [app / publisher / relationship / deliberate row actions]
-
-Cleanup  [heading / return]
-         [visible capability notice]
-         [scope / deletion-method choice]
-         [generate / compact review / separate guarded actions]
-         [confirmation / diagnostics / history]
-
-Settings [appearance description       accessible preview choices]
-         [local data / backup / diagnostic explanation and actions]
-Activity [date groups / action / affected Cask / status / disclosure]
+Modal   [resource identity / close]
+        [facts and focused category/ownership editor]
+        [error or success / Cancel                          Save]
 ```
 
-## Genericness test and assumptions
+## Coverage and regression boundaries
 
-The collection cards represent actual Casks, rather than generic feature tiles. Their known bytes, references, deterministic identity and independent workspace behavior are product-specific. Keep a list option for scanning larger libraries. No fake capacities or generated artwork. The theme previews are small control diagrams, never purported application screenshots. Idle motion is intentionally absent in a local productivity utility.
+Preserve batch reference/explicit ownership intake, automatic/manual category selection, duplicates and partial retry; resource overlay, nested folder inspection and explicit refresh; installer MSI/EXE/elevation/recovery, association, portable ZIP, WinGet, launch and reviewed removal; metadata/archive, categories, all exports, backup, diagnostics, recovery and saved cleanup history. Large/unknown/nested measurements retain their honest labels. The overview is navigation, never inferred deletion authority.
 
-Existing fixed native 1024 × 720 and 560 × 760 windows remain supported. Responsive CSS additionally composes narrow 768/390 px browser previews and larger logical text without changing native window policy or promising a mobile release. Website SEO, public hosting, loaders, GL, OG assets and award calibration are inapplicable. The invoked skills supply craft and evidence standards, not new product scope.
+No new schema, IPC shape, Rust domain policy, native window lifecycle or capability changes. Review-only remains the default. Browser fixtures are QA-only and cannot prove provider or filesystem correctness. Focus, retained intake state, active navigation, narrow viewports, custom accent contrast, metadata-only loading and exact-plan destructive guards are primary regression risks.
 
-## QA contract
+## Genericness check
 
-Build production, run existing GUI tests and new navigation/layout regression checks, Svelte diagnostics, ESLint, formatting, then inspect production-bundle captures with isolated typed IPC fixtures. Run two complete visual/accessibility passes and a fresh independent screenshot critic each time. Extend captures to both collection layouts, every application method, ownership/reference intake, cleanup review states, narrow viewports and reduced motion. Browser fixtures never touch user data and cannot certify real installer/UAC, filesystem cleanup, native startup, screen readers or public release readiness. Record actual results and limits in `docs/engineering/ui-revamp.md` and `.jury/collection-desk/`.
+The design depends on Casklet's distinctive relationships: a Cask unifies distributed resources, referenced bytes count toward logical size, association never implies ownership, and cleanup requires evidence. Remove invented health metrics, fake capacity gauges and decorative illustrations. The signature is an actual inspected collection in a separate native window. No idle animation or scroll framework is needed for this utility.
 
-## Resource management and Settings refinement
+## Validation
 
-User-requested follow-up: the Files & Folders disclosure and its dropdowns/buttons, plus both Cask and global Settings. Retain the existing Svelte/Tauri stack, palette, real core commands and safety boundaries.
+See docs/engineering/collection-workbench-ui.md for actual test results, independent critique and remaining release gates. This document defines the implemented presentation; it does not authorize public release.
 
-Three scoped concepts were considered: a resource sheet (facts and policy rows; originality/fit/feasibility/portability 4/5/5/2), a separate inspector drawer (4/3/3/3; too costly in a 560 px native window), and an always-editable form (3/3/4/4; weak separation between reading and committing policy). Choose the resource sheet: it makes current facts visible and opens one focused editor at a time without changing the current route.
+## Review-driven final corrections
 
-Concept: a resource has a readable location/status record, deliberate category and ownership controls, and a separate cleanup preview. Its signature is the inline row opening into an explicit editor, with keyboard focus moving in and returning on cancel. The emotion is clarity and control; the motion verb remains settle. A representative frame shows the category row expanded with a full-width native select and aligned Cancel/Save actions.
+Independent evidence reviews led to shorter library chrome and cards, a combined toolbar, local file search, assigned-category glyphs, and one resource identity per editor. Cleanup item effects now stack filename, consequence and full saved path. Item-kept counts use natural singular/plural wording. The weakest accessory, repeated editor framing, was removed. Dead library-heading/editor-target styles were removed after their compositions changed. Actual checks and independent scores are recorded in docs/engineering/collection-workbench-ui.md; no score is treated as release approval.
 
-Composition:
+## October 25 focused refinements
 
-```text
-[resource name / size / disclosure]
-  [Management details                         close]
-  [Location / wrapped full path                    ]
-  [Size             Availability        Management ]
-  [Category / current value                  Change]
-    [label / native select with clear arrow        ]
-    [effect explanation              Cancel / Save]
-  [Ownership / current policy                Change]
-    [Owned by Cask / Reference, explicit effects    ]
-    [dedicated-data consent          Cancel / Save]
-  [bounded folder contents, when applicable        ]
-  [cleanup explanation                    Preview ]
+The dashboard uses a restrained shared panel with larger Cask count/known size and a 46px New Cask action. Item count and Includes references remain secondary at readable 12px. Search begins at the container edge without the redundant library label. Application lists use 16px horizontal insets. Hover changes navigation surface without a bottom shadow; the separate active marker stays. Collection tiles now show saved automatically allocated colors across their full surface, with neutral readable glyphs. The 12-color palette is local UI preference data, not ownership or operational metadata. Global installations offer a native Cask chooser that calls existing reference-association commands. See ADR 0043 and docs/engineering/main-window-improvements.md.
 
-Settings
-  [Identity / description / reversible archive     ]
-  [save explanation                        Save   ]
-  [Category list / name                   Create   ]
-  [Export / readable report and portable inventory ]
-  [machine paths behind an explicit disclosure     ]
-Global
-  [Appearance / saved choices                      ]
-  [Local data / backup row / diagnostics row        ]
-  [real build cleanup capability                   ]
-```
+## Cask icon and emoji customization
 
-The six shared palette roles, Inter/Lucide, 8/12 px radius rules, 12–16 px operational text and short reduced-motion-aware settle timing are retained. New forms have consistent full-width fields, distinct explanatory copy, explicit commit/cancel actions, radio policy choices and native select behavior. No custom dropdown library, additional modal, decorative illustration, idle movement or production placeholder is introduced. Native select keyboard/platform behavior is preferable to an inaccessible simulated menu. The cleanup action is visually separate from ordinary metadata edits. Category creation guards pending requests and retains the name on failure.
+ADR 0044 extends the automatic-color system with an optional compact picker during creation and explicit appearance editing in Cask Settings. Its Icons/Emoji switch, searchable 24-entry sets, 12 existing swatches, Automatic, Clear and live badge preview use shared surface/focus tokens. Creation stays collapsed until requested. Settings drafts require Save appearance; Cancel changes no preference. A shared CaskBadge keeps symbols and colors consistent across desktop collection/destination identities. The local preference pair is keyed by stable ID, preserves automatic defaults and survives restart. See docs/engineering/cask-appearance-picker.md for validation and profile-local limits.
 
-QA extends production captures to category/ownership editors, Escape focus restoration, folder descendants and category/export Settings. Existing safety regressions remain required; screenshots and independent reviews live under `.jury/management-settings/`.
+## Library height allocation
 
-Final scoped refinements: editor and metadata commit controls live in the persistent native workspace footer, using real form associations. Reading details steps aside during an edit; the active resource name remains visible. Escape returns focus. Ownership opens with the current policy selected. Category creation is immediate with inline feedback; metadata Reset/Save applies only to its own dirty fields. The final accessory reduction removes decorative category pill surfaces in favor of passive category text.
+The Casks page uses intrinsic header and toolbar rows followed by a `minmax(0, 1fr)` collection section. The collection reserves an intrinsic sorting row and a bounded internal scroll viewport. Title and New Cask share a header row, with the description below and secondary measurement notes inline when space allows. Compact nested padding preserves the prominent existing typography while returning space to actual collections. At narrow widths the summary stacks naturally; card styling is unchanged. No fixed listing height or positioning offset. Geometry and resize acceptance are recorded in docs/engineering/main-window-improvements.md.
 
-## October 24: Category shelves and batch intake
-
-Brief: retain the local-first Svelte 5/Tauri design and the existing configurable accent. Organize actual resource metadata, keep opening lightweight, make selection-wide consent explicit, and keep independent windows alive. No new motion engine, theme or dependency is needed for this scoped change.
-
-Concept alternatives (originality / fit / feasibility / portability, 1-5, lower portability is better):
-
-- Category shelves: activity resources arranged by their assigned role; signature is opening a category to its real items. Calm organization; screenshot is the grouped inventory and matching compact storage breakdown. Anchor: Cask-resource category assignments. 4/5/5/2.
-- Storage ledger: accounting-style totals first; signature is expanding byte contributions. Precise but overemphasizes measurement over activity management. Anchor: saved logical resource sizes. 3/4/5/3.
-- Selection tray: focus the selection and progress; signature is a mixed selection flowing into categories. Useful for intake, weaker as the organizing system. Anchor: shared ownership consent for one selection. 4/4/4/3.
-
-Chosen concept card: Category shelves. Idea: keep an activity's resources organized by purpose. Metaphor: labeled shelves, each with a count and saved size. Signature: the same used categories organize storage and file navigation. Emotion: calm and predictable. Motion verb: open and settle, using existing disclosure feedback. Screenshot: Files & folders with two or three distinct populated category groups.
-
-System: reuse current Inter, configured accent and semantic foregrounds; ground #ffffff/#202226, ink #17333b/#e6edf0, line #dbe5e8, default accent #235d65. Existing 20px workspace gutters, 8/12/16px rhythm, restrained borders and 8px controls remain. Numeric sizes use tabular figures. Desktop and narrow layouts share aligned labels/counts on the left and sizes on the right; long names wrap. Overview stays summary-first with a collapsed category breakdown; inventory uses initially collapsed native details; Settings uses initially collapsed native details. Existing hover/focus/press states and reduced-motion rules remain. No idle animation: this is a file-management workspace.
-
-Composition: Overview [total + existing segmented bar] / [Refresh sizes] / [collapsed Storage by category]; Files [title + count] / [category + count | saved size | chevron] / [item rows]; Intake [selection count + inspectable path list] / [ownership choice + explicit consent] / [automatic category] / [action + results]. Genericness check: categories and ownership are existing persisted Cask semantics, not a decorative taxonomy or generic dashboard. Unknown and nested sizes remain explicit rather than fabricated totals.
-
-The category readability refinement uses bounded panels with a secondary-surface header, 14px category identity, 13px filenames/amounts and 12px secondary facts. The same assigned-category Lucide mapping marks headers, items and Overview rows; no per-category palette or extension-based classification is introduced. Manual expansion survives updates within the mounted file view, while fresh entry resets all groups closed. Focus restoration after recategorization may deliberately reveal the destination group.
+New Cask now lives directly to the right of the search field in a shared responsive toolbar group, matching its 40px height. The summary header contains only title/description and measurements. This placement supersedes the preceding header-action arrangement while retaining bounded collection scrolling.
