@@ -8,7 +8,7 @@ export type Theme = "light" | "dark";
 export const THEME_KEY = "casklet.appearance";
 export const ACCENT_KEY = "casklet.accent";
 export const accent = writable<string | null>(null);
-const accentProperties = Object.keys(accentPalette("#235d65", "light"));
+const accentProperties = Object.keys(accentPalette("#315bb5", "light"));
 function applyAccent(value: string | null) {
   const root = document.documentElement;
   root.classList.add("theme-switching");

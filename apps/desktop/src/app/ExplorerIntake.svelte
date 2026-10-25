@@ -5,6 +5,7 @@
   import type { CaskView } from "../contracts/generated/casklet";
   import { CONTRACT_VERSION } from "../contracts/generated/casklet";
   import CreateCaskForm from "./CreateCaskForm.svelte";
+  import CaskBadge from "./CaskBadge.svelte";
   type Request = {
     id: number;
     path: string;
@@ -215,7 +216,9 @@
                 value={cask.id}
                 bind:group={destination}
               />
-              <strong>{cask.name}</strong>
+              <CaskBadge caskId={cask.id} size={30} /><strong
+                >{cask.name}</strong
+              >
             </label>
           {:else}<p>
               {casks.length

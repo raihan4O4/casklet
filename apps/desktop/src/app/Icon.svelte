@@ -30,7 +30,30 @@
   import Info from "@lucide/svelte/icons/info";
   import List from "@lucide/svelte/icons/list";
   import ArrowRight from "@lucide/svelte/icons/arrow-right";
+  import CaskBriefcase from "@lucide/svelte/icons/briefcase-business";
+  import CaskBook from "@lucide/svelte/icons/book-open";
+  import CaskGraduation from "@lucide/svelte/icons/graduation-cap";
+  import CaskCode from "@lucide/svelte/icons/code-xml";
+  import CaskTerminal from "@lucide/svelte/icons/square-terminal";
+  import CaskCamera from "@lucide/svelte/icons/camera";
+  import CaskGamepad from "@lucide/svelte/icons/gamepad-2";
+  import CaskFlask from "@lucide/svelte/icons/flask-conical";
+  import CaskHeart from "@lucide/svelte/icons/heart";
+  import CaskPlane from "@lucide/svelte/icons/plane";
+  import CaskLeaf from "@lucide/svelte/icons/leaf";
   const icons = {
+    briefcase: CaskBriefcase,
+    book: CaskBook,
+    graduation: CaskGraduation,
+    code: CaskCode,
+    terminal: CaskTerminal,
+    camera: CaskCamera,
+    gamepad: CaskGamepad,
+    flask: CaskFlask,
+    heart: CaskHeart,
+    plane: CaskPlane,
+    leaf: CaskLeaf,
+
     casks: Boxes,
     installations: Grid2X2,
     activity: Activity,

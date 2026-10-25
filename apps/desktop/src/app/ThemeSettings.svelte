@@ -18,7 +18,7 @@
   let hex = $state("");
   let invalid = $state(false);
   $effect(() => {
-    hex = $accent ?? ($theme === "dark" ? "#b1d8df" : "#235d65");
+    hex = $accent ?? ($theme === "dark" ? "#b6cbff" : "#315bb5");
     invalid = false;
   });
   function updateHex() {
@@ -100,13 +100,13 @@
           <label
             class="color-picker"
             style:--swatch={$accent ??
-              ($theme === "dark" ? "#b1d8df" : "#235d65")}
+              ($theme === "dark" ? "#b6cbff" : "#315bb5")}
           >
             <span aria-hidden="true"></span><span>Custom color</span>
             <input
               type="color"
               aria-label="Custom accent color"
-              value={$accent ?? ($theme === "dark" ? "#b1d8df" : "#235d65")}
+              value={$accent ?? ($theme === "dark" ? "#b6cbff" : "#315bb5")}
               oninput={(event) =>
                 void setAccentPreference(event.currentTarget.value)}
             />

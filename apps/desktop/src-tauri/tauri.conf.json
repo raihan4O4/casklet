@@ -40,6 +40,7 @@
       "../../../NOTICE": "NOTICE",
       "../../../LICENSES/Inter-OFL.txt": "licenses/Inter-OFL.txt",
       "../../../LICENSES/Lucide-ISC.txt": "licenses/Lucide-ISC.txt",
+      "../../../LICENSES/Unicode-LICENSE.txt": "licenses/Unicode-LICENSE.txt",
       "../../../LICENSES/README.md": "THIRD-PARTY-NOTICES.md"
     },
     "windows": {

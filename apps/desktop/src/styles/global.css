@@ -227,87 +227,6 @@ a {
   min-height: 0;
   grid-template-rows: minmax(0, 1fr);
 }
-.sidebar {
-  min-height: 0;
-  display: flex;
-  flex-direction: column;
-  padding: 29px 14px 20px;
-  border-right: 1px solid var(--border-subtle, #eee);
-  background: var(--surface-navigation, #fafafa);
-}
-.brand {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  padding: 0 10px;
-  margin-bottom: 38px;
-  font-size: 22px;
-  font-weight: 700;
-  letter-spacing: -0.045em;
-}
-.brand img {
-  width: 36px;
-  height: 36px;
-  object-fit: contain;
-  mix-blend-mode: normal;
-}
-.sidebar nav {
-  display: grid;
-  gap: 7px;
-}
-.sidebar nav button {
-  justify-content: flex-start;
-  gap: 13px;
-  min-height: 44px;
-  padding: 11px 12px;
-  background: transparent;
-  border: 0;
-  border-radius: 7px;
-  font-size: 13px;
-  font-weight: 450;
-  color: var(--text-secondary, #555);
-}
-.sidebar nav button.active {
-  color: var(--text-heading, #151515);
-  background: var(--surface-selected, #ededed);
-  font-weight: 600;
-}
-.sidebar nav button:hover {
-  background: var(--surface-hover, #f0f0f0);
-}
-.nav-attention {
-  margin-left: auto;
-  border-radius: 4px;
-  background: var(--warning-surface, #fff3da);
-  color: var(--warning-text, #90641d);
-  font-size: 10px;
-  padding: 2px 4px;
-}
-.sidebar-storage {
-  display: flex;
-  flex-direction: column;
-  gap: 8px;
-  margin-top: auto;
-  padding: 12px 6px 0;
-}
-.sidebar-storage > .muted {
-  font-size: 12px;
-}
-.sidebar-storage > strong {
-  font-size: 18px;
-  font-weight: 600;
-  letter-spacing: -0.03em;
-}
-.sidebar-storage > p {
-  font-size: 10px;
-  color: var(--text-muted, #8d8d8d);
-}
-.sidebar-storage button {
-  justify-content: flex-start;
-  margin-top: 8px;
-  font-size: 10px;
-  gap: 6px;
-}
 .main-content {
   min-height: 0;
   display: flex;
@@ -734,39 +653,6 @@ dialog p {
   line-height: 1.6;
   color: var(--text-muted, #808080);
   min-height: 19px;
-}
-.detail-tabs {
-  display: flex;
-  justify-content: space-between;
-  gap: 10px;
-  flex: none;
-  margin: 0 26px;
-  border-bottom: 1px solid var(--border-subtle, #ededed);
-}
-.detail-tabs button {
-  position: relative;
-  border: 0;
-  background: transparent !important;
-  padding: 12px 0;
-  min-height: 42px;
-  border-radius: 0;
-  font-size: 11px;
-  color: var(--text-muted, #777);
-  font-weight: 400;
-}
-.detail-tabs button.active {
-  font-weight: 600;
-  color: var(--text-heading, #111);
-}
-.detail-tabs button.active::after {
-  content: "";
-  position: absolute;
-  left: 0;
-  right: 0;
-  bottom: -1px;
-  height: 2px;
-  background: var(--surface-selected, #222);
-  border-radius: 2px;
 }
 .workspace-content {
   flex: 1;
@@ -2252,10 +2138,6 @@ select option {
 }
 .theme-control span:hover {
   background: var(--surface-hover, #f0f0f0);
-}
-
-.detail-tabs button.active::after {
-  background: var(--text-primary, #222);
 }
 
 /* Commit an entire palette together: fading opposing text/background colors

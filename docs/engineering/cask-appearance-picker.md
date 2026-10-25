@@ -1,0 +1,33 @@
+# Cask appearance picker
+
+Implemented 2026-10-25. Decision: ../adr/0044-cask-icon-and-emoji-picker.md. Extends the shared collection-workbench system and automatic colors from ADR 0043.
+
+## Experience and implementation
+
+New Cask retains name-only creation by default. Its optional collapsed Appearance row opens Icons/Emoji choices, search, 12 named color swatches plus Automatic, a selectable grid and a live preview. There are 24 curated icons and 3,963 fully-qualified Unicode 18.0 emoji across nine categories. Emoji search matches names, categories and pasted glyphs. Results use 96-item pages with a bounded scrolling grid, keeping the picker responsive. The original curated emoji remain first for quick access. Clear restores the default symbol and automatic color. The picker is shared with Cask Settings, where an independent appearance editor uses explicit Cancel/Save. Draft edits do not change existing badges until Save, and Cancel restores focus without modifying preferences.
+
+Creation saves the choice against the stable ID returned by the existing create_cask command before running the caller's open/route callback. Failed backend creation keeps the draft; it cannot write preferences for a guessed ID. No presentation preference is inserted into the core command. Shared CreateCaskForm means first-Cask Explorer intake gains the same optional workflow.
+
+CaskBadge renders the same validated symbol/color in the main card/list library, Cask header, association chooser, Explorer destination chooser, live preview and Settings. Existing automatic colors are preserved. A missing override uses the original collection symbol; Automatic resolves the existing saved base color. Local override records pair symbol and color in one preference value. Malformed/unsupported values fall back safely. Save failure reports session-only presentation. Tauri events update open windows and storage events cover browser-profile updates.
+
+The picker uses existing local Lucide modules and Unicode emojis, with no new package, network asset, image generator, schema, contract or Rust policy changes. The supplied reference informs the compact controls rather than replacing the current palette or interface language. Icons use readable neutral theme ink; selected controls use existing accent/focus roles. Symbols are decorative beside real Cask names. Search Enter is prevented from submitting the outer creation form; Escape collapses the focused picker and returns to its trigger. Dialog focus continues to use the existing native modal behavior. Sticky commit actions keep Create/Save reachable while scrolling expanded choices.
+
+## Verification
+
+- All 121 frontend tests across 11 suites pass, including unchanged lifecycle/destructive regressions. Added tests cover stable-ID saving on creation, unchanged typed core requests, icons/emojis/colors and preview, search/empty/Clear, draft save/cancel/focus, legacy defaults, persisted reload, validation and blocked storage. Emoji DOM assertions compare attribute strings because the jsdom selector implementation mishandles non-BMP attribute selectors.
+- Svelte checks report zero errors/warnings; ESLint and production Vite builds pass. Changed-file formatting and whitespace checks pass.
+- First full production audit: 117 captured states, zero axe violations, console errors, request failures or horizontal overflow. Added states cover both themes' creation icon/emoji preview, Settings save/cancel and matching workspace identity. Final captures are under `.jury/cask-appearance/verified`.
+- Eight scoped 390px/560px creation/Settings cases in both themes produce 16 captures. All have visible commit-button bounds, zero axe violations, console errors or horizontal overflow. Evidence: `.jury/cask-appearance/narrow/result.json`. Initial visual review led to persistent Create/Save controls for the expanded picker.
+- Isolated native Windows smoke passes real creation with icon and emoji, matching library/workspace badges, Settings save/cancel, real cross-window event updates, both themes, symbol/color persistence across process restart and ordinary final-window exit. Evidence: `.jury/cask-appearance/native/result.json` and captures. Production assets are served to the existing debug host; this is not an installed-package test. The profile is isolated under ignored target/cask-appearance-native-\* and performs no resource, installer, ownership or cleanup operations.
+
+## Limits
+
+Appearance is saved per local desktop profile, like the existing theme/accent preferences, and is not part of portable exports or SQLite backups. Emoji shapes follow the Windows/system emoji font. Native Explorer shell-menu branding remains unchanged. No installer rebuild, hosted CI, full screen-reader/physical-picker acceptance or public-release clearance is claimed. Existing project release/security gates remain open. Unrelated dirty worktree changes are preserved.
+
+## Full emoji catalog and vibrant palette (2026-10-25)
+
+The full catalog is bundled locally from Unicode 18.0 emoji-test.txt. Regenerate with `scripts/generate-emoji-catalog.py`; provenance and Unicode License V3 are included under LICENSES and installer resources. No runtime network or new dependency is required. All fully-qualified sequences, including skin tones, flags and joined families/professions, validate and persist. Rendering follows the installed system emoji font; newly standardized glyphs may require an OS/font update.
+
+The active 12-color palette now uses vivid lime, blue, lavender, amber, rose, teal, coral, orange, violet, cyan, magenta and green. Previously saved palette values remain valid without rewriting user choices. Automatic assignment uses the new palette for new Casks. Colors remain tint accents behind readable theme ink.
+
+Validation for the full-catalog update: 123 tests across 11 frontend suites pass, with 11 focused appearance tests rerun after final changes. Svelte checks report zero errors/warnings; ESLint and the production build pass. Eight additional production-browser cases exercise pagination, Flags category, exact India glyph search/selection and vibrant preview in creation/Settings at 390px/560px in both themes. All have visible commit controls and zero axe findings, console errors or horizontal overflow; evidence is `.jury/cask-emoji-suite/result.json`. The earlier eight icon/emoji narrow cases also pass. Catalog regeneration reproduces 3,963 entries. The build reports a nonblocking 500 KB chunk-size advisory (current main bundle about 504 KB, 114 KB gzip). No hosted CI or rebuilt installer/native package validation was run for this update.
