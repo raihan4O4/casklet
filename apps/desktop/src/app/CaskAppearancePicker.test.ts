@@ -8,7 +8,6 @@ import {
 } from "@testing-library/svelte";
 import CreateCaskForm from "./CreateCaskForm.svelte";
 import CaskAppearanceSettings from "./CaskAppearanceSettings.svelte";
-import CaskBadge from "./CaskBadge.svelte";
 import {
   caskAppearances,
   appearanceForCask,
@@ -85,9 +84,12 @@ test("emoji search and Clear update the preview without creating a Cask", async 
     ),
   ).toBeTruthy();
 });
-test("settings update shared badges only on Save and discard cancelled edits", async () => {
-  render(CaskBadge, { caskId: "existing" });
-  render(CaskAppearanceSettings, { caskId: "existing", name: "Existing Cask" });
+test("settings edits a parent-owned draft without local commit actions", async () => {
+  const { rerender } = render(CaskAppearanceSettings, {
+    caskId: "existing",
+    name: "Existing Cask",
+    value: { ...DEFAULT_APPEARANCE },
+  });
   await fireEvent.click(
     screen.getByRole("button", { name: "Change appearance" }),
   );
@@ -95,34 +97,23 @@ test("settings update shared badges only on Save and discard cancelled edits", a
   await fireEvent.click(screen.getByRole("button", { name: "Games emoji" }));
   await fireEvent.click(screen.getByRole("button", { name: "Teal color" }));
   expect(appearanceForCask("existing")).toEqual(DEFAULT_APPEARANCE);
-  await fireEvent.click(
-    screen.getByRole("button", { name: "Save appearance" }),
-  );
-  expect(appearanceForCask("existing")).toEqual({
-    symbol: "emoji:🎮",
-    color: CASK_PALETTE[5],
+  expect(screen.queryByRole("button", { name: "Save appearance" })).toBeNull();
+  expect(
+    screen.queryByRole("button", { name: "Cancel appearance" }),
+  ).toBeNull();
+  await rerender({
+    caskId: "existing",
+    name: "Existing Cask",
+    value: { ...DEFAULT_APPEARANCE },
+    editing: false,
   });
   expect(
-    Array.from(document.querySelectorAll("[data-cask-symbol]")).filter(
-      (item) => item.getAttribute("data-cask-symbol") === "emoji:🎮",
-    ).length,
-  ).toBe(2);
-  await fireEvent.click(
     screen.getByRole("button", { name: "Change appearance" }),
-  );
-  await fireEvent.click(screen.getByRole("button", { name: "Clear" }));
-  await fireEvent.click(
-    screen.getByRole("button", { name: "Cancel appearance" }),
-  );
-  expect(appearanceForCask("existing").symbol).toBe("emoji:🎮");
-  await waitFor(() =>
-    expect(document.activeElement).toBe(
-      screen.getByRole("button", { name: "Change appearance" }),
-    ),
-  );
+  ).toBeTruthy();
+  expect(appearanceForCask("existing")).toEqual(DEFAULT_APPEARANCE);
 });
 
-test("full emoji catalog supports category browsing, bounded pages and exact glyph search", async () => {
+test("yellow emoji catalog supports category browsing, bounded pages and exact glyph search", async () => {
   render(CreateCaskForm, {
     onCreated: vi.fn(async () => {}),
     onCancel: vi.fn(),
@@ -139,7 +130,7 @@ test("full emoji catalog supports category browsing, bounded pages and exact gly
   expect(grid.querySelectorAll("button").length).toBe(96);
   await fireEvent.change(
     screen.getByRole("combobox", { name: "Emoji category" }),
-    { target: { value: "Flags" } },
+    { target: { value: "People & Body" } },
   );
   expect(
     (
@@ -150,13 +141,30 @@ test("full emoji catalog supports category browsing, bounded pages and exact gly
   ).toBe(true);
   await fireEvent.input(
     screen.getByRole("textbox", { name: "Search emojis" }),
-    { target: { value: "🇮🇳" } },
+    { target: { value: "👍" } },
   );
   expect(grid.querySelectorAll("button").length).toBe(1);
   await fireEvent.click(
-    screen.getByRole("button", { name: "flag: India emoji" }),
+    screen.getByRole("button", { name: "thumbs up emoji" }),
   );
   expect(document.querySelector(".appearance-trigger")?.textContent).toContain(
-    "🇮🇳",
+    "👍",
   );
+});
+
+test("white emoji backgrounds can be previewed without persisting the draft", async () => {
+  render(CaskAppearanceSettings, { caskId: "white", name: "White Cask" });
+  await fireEvent.click(
+    screen.getByRole("button", { name: "Change appearance" }),
+  );
+  await fireEvent.click(screen.getByRole("button", { name: "Emoji" }));
+  await fireEvent.click(screen.getByRole("button", { name: "Art emoji" }));
+  await fireEvent.click(screen.getByRole("button", { name: "White color" }));
+  expect(
+    document.querySelector(".appearance-trigger .white-background"),
+  ).toBeTruthy();
+  expect(
+    document.querySelector(".settings-heading .white-background"),
+  ).toBeTruthy();
+  expect(appearanceForCask("white")).toEqual(DEFAULT_APPEARANCE);
 });

@@ -6,20 +6,23 @@
 <script lang="ts">
   import { onDestroy, type Snippet } from "svelte";
   import { get } from "svelte/store";
+  import { floatingMotion } from "./motion";
   import { fly } from "svelte/transition";
   import Icon from "./Icon.svelte";
   let {
     id,
     label,
     children,
-  }: { id: string; label: string; children: Snippet } = $props();
+  }: {
+    id: string;
+    label: string;
+    children: Snippet;
+  } = $props();
   let root: HTMLDivElement;
   let trigger: HTMLButtonElement;
   let menu = $state<HTMLDivElement>(null!);
   const isOpen = $derived($activeMenu === id);
-  const reduced =
-    typeof matchMedia !== "undefined" &&
-    matchMedia("(prefers-reduced-motion: reduce)").matches;
+
   onDestroy(() => {
     if (get(activeMenu) === id) activeMenu.set(null);
   });
@@ -101,8 +104,8 @@
         if (event.target instanceof Element && event.target.closest("button"))
           close(true);
       }}
-      in:fly={{ y: reduced ? 0 : -4, duration: reduced ? 0 : 130 }}
-      out:fly={{ y: reduced ? 0 : -2, duration: reduced ? 0 : 90 }}
+      in:fly={floatingMotion("enter")}
+      out:fly={floatingMotion("exit")}
     >
       {@render children()}
     </div>

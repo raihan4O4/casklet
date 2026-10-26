@@ -42,6 +42,13 @@ export function installFixture(options = {}) {
           : `Collection ${index + 1}`,
     }));
   }
+  if (options.reference)
+    casks = casks.map((cask, i) => ({
+      ...cask,
+      name: ["git", "Files", "git", "letter", "Other"][i],
+      description: "",
+      updatedAtMs: now - i,
+    }));
   if (options.empty) casks = [];
   if (options.long) {
     casks[0].name =
@@ -100,6 +107,10 @@ export function installFixture(options = {}) {
     provenance: "USER_ASSOCIATION",
     removalPolicy: "DETACH_ONLY",
   }));
+  if (options.emptyContents) {
+    resources.length = 0;
+    apps.length = 0;
+  }
   const operations = [
     "REGISTER_RESOURCE",
     "INSTALL_APPLICATION",
@@ -173,13 +184,22 @@ export function installFixture(options = {}) {
           referencedBytes: [6.2, 1.9, 0.9, 0.4, 0.5][i % 5] * gib,
           unknownEntries: 0,
         }));
+        if (options.reference)
+          summaries.forEach((item, i) =>
+            Object.assign(item, {
+              itemCount: i === 2 ? 5 : 0,
+              managedBytes: i === 2 ? 5.8 * gib : 0,
+              referencedBytes: 0,
+              unknownEntries: i === 2 ? 1 : 0,
+            }),
+          );
         return {
           version: 1,
           casks: summaries,
-          totalItems: casks.length ? 96 : 0,
+          totalItems: options.reference ? 5 : casks.length ? 96 : 0,
           managedBytes: casks.length ? 72.5 * gib : 0,
           referencedBytes: casks.length ? 9.9 * gib : 0,
-          unknownEntries: 0,
+          unknownEntries: options.incomplete ? 1 : 0,
         };
       }
       if (command === "list_casks") {
@@ -271,10 +291,10 @@ export function installFixture(options = {}) {
       if (command === "storage_summary")
         return {
           version: 1,
-          managedLogicalBytes: 12.4 * gib,
-          referencedLogicalBytes: 1.4 * gib,
+          managedLogicalBytes: options.emptyContents ? 0 : 12.4 * gib,
+          referencedLogicalBytes: options.emptyContents ? 0 : 1.4 * gib,
           ownedApplicationBytes: 0,
-          referenceApplicationBytes: 4.8 * gib,
+          referenceApplicationBytes: options.emptyContents ? 0 : 4.8 * gib,
           estimatedApplications: 0,
           applicationSizes: apps.map((app) => ({
             sourceKey: app.sourceKey,

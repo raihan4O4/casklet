@@ -1,12 +1,11 @@
 <script lang="ts">
+  import { surfaceFade } from "./motion";
   import { invoke } from "@tauri-apps/api/core";
   import { listen } from "@tauri-apps/api/event";
   import { onMount, tick } from "svelte";
-  import { save } from "@tauri-apps/plugin-dialog";
   import type {
     ApiError,
     CaskLibraryView,
-    CaskSummaryView,
     CaskView,
     DetectedApplicationView,
     RecoveryStatus,
@@ -15,12 +14,13 @@
   import NavigationRail from "./NavigationRail.svelte";
   import CreateCaskForm from "./CreateCaskForm.svelte";
   import AssociateApplication from "./AssociateApplication.svelte";
-  import { assignCaskColors } from "./caskColors";
+  import { assignCaskColors, caskColors, colorForCask } from "./caskColors";
+  import { caskAppearances } from "./caskAppearance";
   import Icon from "./Icon.svelte";
+  import CasksIllustration from "./CasksIllustration.svelte";
   import CaskBadge from "./CaskBadge.svelte";
   import ApplicationIcon from "./ApplicationIcon.svelte";
   import Workspace from "./Workspace.svelte";
-  // Cask row actions intentionally hidden for Alpha; typed handlers retained.
   import { notify } from "./notifications";
   let { onReady = () => {} }: { onReady?: () => void } = $props();
   $effect(() => {
@@ -151,24 +151,6 @@
       error = message(cause);
     }
   }
-  // Retained while the Cask row menu is intentionally hidden for Alpha.
-  // eslint-disable-next-line @typescript-eslint/no-unused-vars
-  async function exportReport(item: CaskSummaryView) {
-    try {
-      const outputPath = await save({ defaultPath: `${item.cask.name}.md` });
-      if (outputPath) {
-        await invoke("export_cask", {
-          caskId: item.cask.id,
-          outputPath,
-          format: "markdown",
-          machine: false,
-        });
-        notice = "Cask report exported.";
-      }
-    } catch (cause) {
-      error = message(cause);
-    }
-  }
   function changeSort(next: typeof sort) {
     if (sort === next) ascending = !ascending;
     else {
@@ -184,7 +166,6 @@
   }
   function closeCreate() {
     if (creationBusy) return;
-    createDialog.close();
     creating = false;
   }
   async function created(cask: CaskView) {
@@ -258,6 +239,25 @@
   });
 </script>
 
+<svelte:window
+  onkeydown={(event) => {
+    if (
+      (event.ctrlKey || event.metaKey) &&
+      event.key.toLowerCase() === "k" &&
+      ["casks", "installations"].includes(page) &&
+      !document.querySelector("dialog[open]")
+    ) {
+      event.preventDefault();
+      document
+        .querySelector<HTMLInputElement>(
+          page === "casks"
+            ? '[aria-label="Search casks"]'
+            : '[aria-label="Search installed applications"]',
+        )
+        ?.focus();
+    }
+  }}
+/>
 <a class="skip-link" href="#main-content">Skip to main content</a>
 <div class="main-window">
   <NavigationRail
@@ -295,6 +295,8 @@
     id="main-content"
     class="main-content"
     class:library-page={page === "casks"}
+    class:main-settings-page={page === "settings"}
+    class:installations-page={page === "installations"}
   >
     <div class="page-intro" class:library-intro={page === "casks"}>
       <header class="page-header">
@@ -320,9 +322,13 @@
         </div>
       </header>
       {#if page === "casks"}
+        <CasksIllustration />
         <dl class="library-summary" aria-label="Library summary">
           <div>
-            <dt>Casks</dt>
+            <dt>
+              <span class="summary-icon"><Icon name="layers" size={34} /></span
+              >Casks
+            </dt>
             <dd>
               {library?.casks.length ?? "—"}<small class="measurement-note"
                 >{library?.totalItems ?? "—"}
@@ -333,7 +339,10 @@
           <div
             title="Sum of known Cask sizes, including references. Content associated with multiple Casks is counted in each. This is not physical disk usage or reclaimable space."
           >
-            <dt>Known Cask size</dt>
+            <dt>
+              <span class="summary-icon"><Icon name="chart" size={34} /></span
+              >Known Cask size
+            </dt>
             <dd>
               {bytes(usedStorageBytes)}<small class="measurement-note"
                 >Includes references{library?.unknownEntries
@@ -360,13 +369,13 @@
                 onclick={() => {
                   search = "";
                 }}><Icon name="close" size={14} /></button
-              >{/if}</label
+              >{/if}<kbd>Ctrl K</kbd></label
           >
           <button
             class="primary-button new-cask-button"
             type="button"
             onclick={() => void showCreate()}
-            ><Icon name="plus" size={17} />New Cask</button
+            ><Icon name="plus" size={17} /><span>New Cask</span></button
           >
         </div>
         <span class="list-context" aria-live="polite"
@@ -382,7 +391,7 @@
             aria-pressed={collectionView === "grid"}
             onclick={() => {
               collectionView = "grid";
-            }}><Icon name="installations" size={16} /></button
+            }}><Icon name="grid" size={16} /></button
           >
           <button
             type="button"
@@ -400,6 +409,7 @@
         aria-label="Casks"
       >
         <div class="table-heading">
+          <span class="sort-count">{visibleCasks.length} casks</span>
           {#each [{ key: "name", title: "Name" }, { key: "items", title: "Items" }, { key: "storage", title: "Storage" }, { key: "updated", title: "Updated" }] as column (column.key)}
             <button
               type="button"
@@ -460,9 +470,34 @@
                   <button
                     type="button"
                     class="cask-row"
+                    style:--cask-color={item.cask.state !== "ACTIVE"
+                      ? "#999999"
+                      : ($caskAppearances[item.cask.id]?.color ??
+                        $caskColors[item.cask.id] ??
+                        colorForCask(item.cask.id))}
                     aria-label={`Open ${item.cask.name}`}
+                    aria-current={activeCask === item.cask.id
+                      ? "true"
+                      : undefined}
                     onclick={() => void openCask(item.cask.id)}
-                    ><div class="cask-name-cell">
+                    ><svg
+                      class="cask-card-wave"
+                      viewBox="0 0 180 90"
+                      preserveAspectRatio="none"
+                      aria-hidden="true"
+                    >
+                      <path
+                        d="M0 78C35 75 49 4 87 4C116 4 126 47 150 34C162 27 172 18 180 22V90H0Z"
+                        fill="currentColor"
+                        opacity=".045"
+                      />
+                      <path
+                        d="M0 90C56 86 76 88 105 57C131 30 153 13 180 20V90Z"
+                        fill="currentColor"
+                        opacity=".075"
+                      />
+                    </svg>
+                    <div class="cask-name-cell">
                       <CaskBadge
                         caskId={item.cask.id}
                         muted={item.cask.state !== "ACTIVE"}
@@ -476,21 +511,26 @@
                         </p>
                       </div>
                     </div>
+                    <span class="cask-card-divider" aria-hidden="true"></span>
                     <span class="collection-items"
-                      ><Icon name="folder" size={14} />{item.itemCount}<span
+                      ><Icon name="file" size={14} />{item.itemCount}<span
                         class="card-only"
                         >{item.itemCount === 1 ? "item" : "items"}</span
                       ></span
                     ><span
                       class="collection-size"
                       title="Last known logical size including references; refresh sizes inside the Cask to update"
+                      ><span class="list-only"
+                        ><Icon name="database" size={18} /></span
                       >{bytes(
                         item.managedBytes + item.referencedBytes,
                       )}{item.unknownEntries ? " +" : ""}</span
                     ><time
                       class="collection-updated"
                       title={new Date(item.cask.updatedAtMs).toLocaleString()}
-                      >{relativeTime(item.cask.updatedAtMs)}</time
+                      ><Icon name="calendar" size={22} /><span
+                        >Updated {relativeTime(item.cask.updatedAtMs)}</span
+                      ></time
                     ></button
                   >
                 </li>{/each}
@@ -501,6 +541,7 @@
     {:else if page === "installations"}
       <div class="inventory-toolbar">
         <form
+          id="installation-search"
           class="search-field"
           onsubmit={(event) => {
             event.preventDefault();
@@ -511,10 +552,13 @@
             aria-label="Search installed applications"
             placeholder="Search applications…"
             bind:value={installedQuery}
-          /><button class="text-button" disabled={installationsBusy}
-            >Search</button
-          >
+          /><kbd>Ctrl K</kbd>
         </form>
+        <button
+          form="installation-search"
+          type="submit"
+          disabled={installationsBusy}>Search</button
+        >
         <button
           type="button"
           disabled={installationsBusy}
@@ -567,7 +611,7 @@
                     onclick={(event) => {
                       associationOrigin = event.currentTarget;
                       associationTarget = item;
-                    }}><Icon name="link" size={15} />Associate</button
+                    }}><Icon name="associate" size={15} />Associate</button
                   >
                 </div>
               </li>{/each}
@@ -577,7 +621,10 @@
   </main>
 </div>
 {#if creating}<dialog
+    in:surfaceFade
+    out:surfaceFade
     bind:this={createDialog}
+    onoutroend={() => createDialog.close()}
     oncancel={(event) => {
       event.preventDefault();
       closeCreate();

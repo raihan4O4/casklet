@@ -1,8 +1,15 @@
 <script lang="ts">
+  import { surfaceFade } from "./motion";
   import { SvelteSet } from "svelte/reactivity";
   import ThemeSettings from "./ThemeSettings.svelte";
   import CaskBadge from "./CaskBadge.svelte";
   import CaskAppearanceSettings from "./CaskAppearanceSettings.svelte";
+  import {
+    caskAppearances,
+    DEFAULT_APPEARANCE,
+    saveCaskAppearance,
+    type CaskAppearance,
+  } from "./caskAppearance";
   import { assignCaskColors } from "./caskColors";
   import NavigationRail from "./NavigationRail.svelte";
   import { invoke } from "@tauri-apps/api/core";
@@ -154,13 +161,48 @@
   let editArchived = $state(false);
   let metadataBusy = $state(false);
   let selected: CaskView | null = $state(null);
-  const settingsChanged = $derived.by(
+  const metadataChanged = $derived.by(
     () =>
       !!selected &&
       (editName !== selected.name ||
         editDescription !== (selected.description ?? "") ||
         editArchived !== (selected.state === "ARCHIVED")),
   );
+  let editAppearance: CaskAppearance = $state({ ...DEFAULT_APPEARANCE });
+  let appearanceBaseline: CaskAppearance = $state({ ...DEFAULT_APPEARANCE });
+  let appearanceCaskId = $state("");
+  let appearanceEditing = $state(false);
+  const appearanceChanged = $derived(
+    editAppearance.symbol !== appearanceBaseline.symbol ||
+      editAppearance.color !== appearanceBaseline.color,
+  );
+  const settingsChanged = $derived(metadataChanged || appearanceChanged);
+  $effect(() => {
+    const id = selected?.id ?? "";
+    const saved = $caskAppearances[id] ?? DEFAULT_APPEARANCE;
+    if (id !== appearanceCaskId) {
+      appearanceCaskId = id;
+      editAppearance = { ...saved };
+      appearanceBaseline = { ...saved };
+      appearanceEditing = false;
+    } else if (
+      saved.symbol !== appearanceBaseline.symbol ||
+      saved.color !== appearanceBaseline.color
+    ) {
+      if (!appearanceChanged) editAppearance = { ...saved };
+      appearanceBaseline = { ...saved };
+    }
+  });
+  function resetSettings() {
+    if (!selected || metadataBusy) return;
+    editName = selected.name;
+    editDescription = selected.description ?? "";
+    editArchived = selected.state === "ARCHIVED";
+    editAppearance = {
+      ...($caskAppearances[selected.id] ?? DEFAULT_APPEARANCE),
+    };
+    appearanceEditing = false;
+  }
   let contentElement: HTMLDivElement;
   $effect(() => {
     if (detailTab)
@@ -201,7 +243,28 @@
     if (group) group.open = true;
     element?.focus();
   }
+  const categoryDescriptions: Record<string, string> = {
+    applications: "Installed and associated applications",
+    images: "Photos, screenshots and graphics",
+    other: "Documents and miscellaneous files",
+    videos: "Video files and recordings",
+    documents: "Documents and text files",
+    audio: "Music, sound and recordings",
+    archives: "Compressed files and archives",
+  };
   function cancelManagementEditor(event: KeyboardEvent) {
+    if (
+      (event.ctrlKey || event.metaKey) &&
+      event.key.toLowerCase() === "k" &&
+      !document.querySelector('[role="dialog"]')
+    ) {
+      const search = document.getElementById("resource-search");
+      if (search) {
+        event.preventDefault();
+        search.focus();
+        return;
+      }
+    }
     if (event.key !== "Escape" || !(event.target instanceof HTMLElement))
       return;
     if (
@@ -1676,7 +1739,12 @@
       selected = await invoke<CaskView>("get_cask", {
         request: { version: CONTRACT_VERSION, id },
       });
-      if (selected) assignCaskColors([selected]);
+      if (selected) {
+        assignCaskColors([selected]);
+        editName = selected.name;
+        editDescription = selected.description ?? "";
+        editArchived = selected.state === "ARCHIVED";
+      }
       detailTab = "overview";
       resetInstallerReview();
       pendingPaths = [];
@@ -1688,9 +1756,6 @@
       await tick();
       document.getElementById("cask-detail-heading")?.focus();
       await refreshResources();
-      editName = selected.name;
-      editDescription = selected.description ?? "";
-      editArchived = selected.state === "ARCHIVED";
     } catch (cause) {
       error = message(cause);
     }
@@ -2204,19 +2269,31 @@
   async function saveMetadata() {
     if (!selected || metadataBusy || !editName.trim() || !settingsChanged)
       return;
+    const id = selected.id;
+    const appearanceToSave = appearanceChanged ? { ...editAppearance } : null;
     metadataBusy = true;
     try {
-      selected = await invoke<CaskView>("update_cask", {
-        request: {
-          version: CONTRACT_VERSION,
-          id: selected.id,
-          name: editName,
-          description: editDescription,
-          archived: editArchived,
-          expectedRevision: selected.revision,
-        },
-      });
-      progress = "Cask settings saved.";
+      if (metadataChanged) {
+        selected = await invoke<CaskView>("update_cask", {
+          request: {
+            version: CONTRACT_VERSION,
+            id: selected.id,
+            name: editName,
+            description: editDescription,
+            archived: editArchived,
+            expectedRevision: selected.revision,
+          },
+        });
+        editName = selected.name;
+        editDescription = selected.description ?? "";
+        editArchived = selected.state === "ARCHIVED";
+      }
+      const persisted =
+        !appearanceToSave || saveCaskAppearance(id, appearanceToSave);
+      appearanceEditing = false;
+      progress = persisted
+        ? "Cask settings saved."
+        : "Cask settings saved. Appearance updated for this session only.";
       error = "";
     } catch (cause) {
       error = message(cause);
@@ -2301,25 +2378,27 @@
       <div class="workspace-title">
         <CaskBadge
           caskId={selected?.id ?? caskId ?? ""}
-          size={36}
+          size={54}
           muted={!!selected && selected.state !== "ACTIVE"}
           title={label(selected?.state ?? "LOADING")}
         />
-        <h1 id="cask-detail-heading" tabindex="-1" title={selected?.name}>
-          {selected?.name ?? "Opening Cask…"}
-        </h1>
+        <div class="workspace-identity-copy">
+          <h1 id="cask-detail-heading" tabindex="-1" title={selected?.name}>
+            {selected?.name ?? "Opening Cask…"}
+          </h1>
+          <p class="cask-description">
+            {selected?.description ||
+              "Files, applications and resources for this activity."}
+          </p>
+        </div>
       </div>
-      <p class="cask-description">
-        {selected?.description ||
-          "Files, applications and resources for this activity."}
-      </p>
     </header>
     <NavigationRail
       compact
       label="Cask sections"
       current={detailTab}
       items={[
-        { key: "overview", title: "Overview", icon: "casks" },
+        { key: "overview", title: "Overview", icon: "overview" },
         { key: "files", title: "Files & Folders", icon: "folder" },
         { key: "apps", title: "Applications", icon: "installations" },
         { key: "settings", title: "Settings", icon: "settings" },
@@ -2332,19 +2411,11 @@
   <div
     id="workspace-content"
     class="workspace-content"
+    class:overview-page={mode === "detail" && detailTab === "overview"}
     role={mode === "detail" ? "main" : undefined}
     tabindex="-1"
     bind:this={contentElement}
   >
-    {#if mode === "detail" && selected && detailTab === "overview"}
-      <div class="workspace-section-label">
-        <span>Inside this Cask</span><span
-          >{selected.state === "ARCHIVED"
-            ? "Archived Cask"
-            : "Cask workspace"}</span
-        >
-      </div>
-    {/if}
     {#if waitingExplorer}
       <section class="review" aria-label="Waiting Explorer item">
         <p>
@@ -2398,58 +2469,82 @@
       >{/if}
     {#if loading}<p class="loading" role="status">Loading workspace…</p>{/if}
     {#if selected && detailTab === "overview"}
-      <div class="compact-stats" aria-label="Cask contents">
-        <div>
+      <section class="overview-contents" aria-label="Inside this Cask">
+        <div class="workspace-section-label">
+          <h2>Inside this Cask</h2>
           <span
-            >Total Items<strong>{fileResources.length + appCount}</strong></span
+            >{selected.state === "ARCHIVED"
+              ? "Archived Cask"
+              : "Cask workspace"}</span
           >
         </div>
-        <button
-          type="button"
-          aria-label="Browse files and folders"
-          onclick={() => {
-            detailTab = "files";
-          }}
-        >
-          <Icon name="folder" size={20} /><span
-            >Files & Folders<strong>{fileResources.length}</strong></span
-          ><Icon name="forward" size={15} />
-        </button>
-        <button
-          type="button"
-          aria-label="Browse applications"
-          onclick={() => {
-            detailTab = "apps";
-          }}
-        >
-          <Icon name="package" size={20} /><span
-            >Applications<strong>{appCount}</strong></span
-          ><Icon name="forward" size={15} />
-        </button>
-      </div>
+        <div class="compact-stats" aria-label="Cask contents">
+          <div>
+            <span class="overview-symbol"><Icon name="layers" size={23} /></span
+            >
+            <span
+              >Total Items<strong>{fileResources.length + appCount}</strong
+              ></span
+            >
+          </div>
+          <button
+            type="button"
+            aria-label="Browse files and folders"
+            onclick={() => {
+              detailTab = "files";
+            }}
+          >
+            <span class="overview-symbol"><Icon name="folder" size={23} /></span
+            ><span>Files & Folders<strong>{fileResources.length}</strong></span
+            ><span class="overview-open"><Icon name="right" size={18} /></span>
+          </button>
+          <button
+            type="button"
+            aria-label="Browse applications"
+            onclick={() => {
+              detailTab = "apps";
+            }}
+          >
+            <span class="overview-symbol"><Icon name="grid" size={23} /></span
+            ><span>Applications<strong>{appCount}</strong></span><span
+              class="overview-open"><Icon name="right" size={18} /></span
+            >
+          </button>
+        </div>
+      </section>
       <section class="storage-panel" aria-label="Storage summary">
         <div class="section-heading">
+          <span class="overview-symbol storage-symbol"
+            ><Icon name="storage" size={24} /></span
+          >
           <div>
             <h2>Storage</h2>
             <p class="storage-caption">Last known size, including references</p>
           </div>
           <strong class="storage-total">{bytes(totalKnownBytes)}</strong>
         </div>
-        <div
-          class="storage-bar"
-          role="group"
-          aria-label="Known logical storage breakdown"
-        >
+        <div class="storage-meter">
+          <div
+            class="storage-bar"
+            role="group"
+            aria-label="Known logical storage breakdown"
+          >
+            <span
+              class="storage-files"
+              style:width={`${totalKnownBytes ? (managedFileBytes / totalKnownBytes) * 100 : 0}%`}
+            ></span><span
+              class="storage-apps"
+              style:width={`${totalKnownBytes ? ((portableBytes + (summary?.ownedApplicationBytes ?? 0)) / totalKnownBytes) * 100 : 0}%`}
+            ></span><span
+              class="storage-refs"
+              style:width={`${totalKnownBytes ? (((summary?.referencedLogicalBytes ?? 0) + (summary?.referenceApplicationBytes ?? 0)) / totalKnownBytes) * 100 : 0}%`}
+            ></span>
+          </div>
           <span
-            class="storage-files"
-            style:width={`${totalKnownBytes ? (managedFileBytes / totalKnownBytes) * 100 : 0}%`}
-          ></span><span
-            class="storage-apps"
-            style:width={`${totalKnownBytes ? ((portableBytes + (summary?.ownedApplicationBytes ?? 0)) / totalKnownBytes) * 100 : 0}%`}
-          ></span><span
-            class="storage-refs"
-            style:width={`${totalKnownBytes ? (((summary?.referencedLogicalBytes ?? 0) + (summary?.referenceApplicationBytes ?? 0)) / totalKnownBytes) * 100 : 0}%`}
-          ></span>
+            class="storage-share"
+            title="Share of known logical size represented by the breakdown; not disk capacity or reclaimable space"
+            >{totalKnownBytes ? "100%" : "0%"}</span
+          >
         </div>
         <div class="storage-legend">
           <div>
@@ -2474,14 +2569,14 @@
           </div>
         </div>
         <button
-          class="text-button"
+          class="text-button storage-refresh"
           type="button"
           disabled={measuringSizes}
           onclick={() => void refreshSizes()}
         >
-          <Icon name="refresh" size={14} />{measuringSizes
-            ? "Measuring sizes…"
-            : "Refresh sizes"}
+          <Icon name="refresh" size={14} /><span
+            >{measuringSizes ? "Measuring sizes…" : "Refresh sizes"}</span
+          >
         </button>
         <details
           class="storage-measurement category-storage"
@@ -3406,15 +3501,27 @@
             >{/if}
         </section>
       {/if}
-      {#if !adding && !pendingPath}<section aria-label="Resource inventory">
-          <div class="section-heading">
-            <h2>Files & folders</h2>
-            <span class="count">{fileResources.length}</span>
+      {#if !adding && !pendingPath}<section
+          class="files-inventory"
+          aria-label="Resource inventory"
+        >
+          <div class="files-inventory-heading">
+            <span class="files-inventory-icon"
+              ><Icon name="folder" size={26} /></span
+            >
+            <div>
+              <h2>Files &amp; folders</h2>
+              <p>
+                Saved status and sizes. Select an item to open its details;
+                refresh sizes in Overview to check for changes.
+              </p>
+            </div>
+            <span class="files-inventory-count" role="status"
+              >{resourceQuery.trim()
+                ? `${matchingResources} of ${fileResources.length} items`
+                : `${fileResources.length} items`}</span
+            >
           </div>
-          <p class="intro">
-            Saved status and sizes. Select an item to open its details; refresh
-            sizes in Overview to check for changes.
-          </p>
           {#if fileResources.length === 0}<div class="empty-state compact">
               <Icon name="folder" size={28} />
               <h3>No files or folders yet</h3>
@@ -3425,8 +3532,9 @@
               <label class="search-field"
                 ><Icon name="search" size={16} />
                 <input
+                  id="resource-search"
                   aria-label="Search files and folders"
-                  placeholder="Search names, categories or paths"
+                  placeholder="Search names, categories or paths…"
                   bind:value={resourceQuery}
                 />
                 {#if resourceQuery}<button
@@ -3436,12 +3544,10 @@
                     onclick={() => (resourceQuery = "")}
                     ><Icon name="close" size={14} /></button
                   >{/if}
+                <span class="files-search-shortcut" aria-hidden="true"
+                  ><kbd>Ctrl K</kbd></span
+                >
               </label>
-              <span class="list-context" role="status"
-                >{resourceQuery.trim()
-                  ? `${matchingResources} of ${fileResources.length} items`
-                  : `${fileResources.length} items`}</span
-              >
             </div>
           {/if}
           {#if resourceQuery.trim() && !matchingResources}<div
@@ -3458,11 +3564,18 @@
             <details class="resource-category" use:revealSearchMatches>
               <summary
                 ><span class="category-marker"
-                  ><Icon name={categoryIcon(group.key)} size={18} /></span
-                ><span class="resource-category-name"
-                  >{group.name}<span class="count">{group.items.length}</span
-                  ></span
-                ><span class="resource-category-size">{groupSize(group)}</span
+                  ><Icon name={categoryIcon(group.key)} size={26} /></span
+                ><span class="resource-category-copy"
+                  ><span class="resource-category-name"
+                    >{group.name}<span class="count">{group.items.length}</span
+                    ></span
+                  >
+                  <span class="resource-category-description"
+                    >{categoryDescriptions[group.key] ??
+                      "Files and folders in this category"}</span
+                  >
+                </span><span class="resource-category-size"
+                  >{groupSize(group)}</span
                 ><span class="category-chevron"
                   ><Icon name="down" size={16} /></span
                 ></summary
@@ -3525,6 +3638,8 @@
               </ul>
             </details>{/each}
           {#if selectedResource}<dialog
+              in:surfaceFade
+              out:surfaceFade
               class="resource-overlay"
               aria-label={`Management details for ${selectedResource.name}`}
               use:mountResourceOverlay
@@ -4091,7 +4206,13 @@
       </section>
     {/if}
     {#if selected && detailTab === "settings"}
-      <CaskAppearanceSettings caskId={selected.id} name={selected.name} />
+      <CaskAppearanceSettings
+        caskId={selected.id}
+        name={selected.name}
+        bind:value={editAppearance}
+        bind:editing={appearanceEditing}
+        disabled={metadataBusy}
+      />
       <section class="settings-card" aria-label="Cask settings">
         <details class="settings-disclosure">
           <summary aria-label="Cask settings"
@@ -4103,7 +4224,7 @@
                 <p>The name and purpose of this activity.</p>
               </div>
               <span class="settings-disclosure-chevron"
-                ><Icon name="down" size={17} /></span
+                ><Icon name="right" size={17} /></span
               >
             </div></summary
           >
@@ -4164,7 +4285,7 @@
                 <p>Give resources a role in this Cask.</p>
               </div>
               <span class="settings-disclosure-chevron"
-                ><Icon name="down" size={17} /></span
+                ><Icon name="right" size={17} /></span
               >
             </div></summary
           >
@@ -4220,7 +4341,7 @@
                 <p>Save an inventory of this activity.</p>
               </div>
               <span class="settings-disclosure-chevron"
-                ><Icon name="down" size={17} /></span
+                ><Icon name="right" size={17} /></span
               >
             </div></summary
           >
@@ -4330,11 +4451,7 @@
           type="button"
           class="secondary-button"
           disabled={metadataBusy || !settingsChanged}
-          onclick={() => {
-            editName = selected!.name;
-            editDescription = selected!.description ?? "";
-            editArchived = selected!.state === "ARCHIVED";
-          }}>Reset changes</button
+          onclick={resetSettings}>Reset changes</button
         >
         <button
           form="cask-settings-form"
@@ -4345,6 +4462,7 @@
         >
       {:else}
         <button
+          class="workspace-add-button"
           class:primary-button={!(adding && detailTab === "files") &&
             ["overview", "files"].includes(detailTab)}
           class:secondary-button={(adding && detailTab === "files") ||
@@ -4378,6 +4496,8 @@
 
 {#if removeConfirmation && selected}
   <dialog
+    in:surfaceFade
+    out:surfaceFade
     bind:this={removeDialog}
     class="create-dialog remove-dialog"
     aria-labelledby="remove-cask-title"

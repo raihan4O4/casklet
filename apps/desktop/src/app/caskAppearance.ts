@@ -1,6 +1,7 @@
 import { get, writable } from "svelte/store";
 import { emit, listen } from "@tauri-apps/api/event";
 import emojiData from "./emoji-data.json";
+import emojiPickerData from "./emoji-picker-data.json";
 import { VALID_CASK_COLORS } from "./caskColors";
 import { notify } from "./notifications";
 
@@ -57,12 +58,16 @@ const LEGACY_EMOJIS = [
   { value: "🧭", name: "Explore" },
   { value: "🎯", name: "Goals" },
 ] as const;
-export const CASK_EMOJIS = emojiData.map(([value, label, group]) => ({
+const catalogEmojis = emojiData.map(([value, label, group]) => ({
   value,
   name: LEGACY_EMOJIS.find((item) => item.value === value)?.name ?? label,
   keywords: `${label} ${group}`,
   group,
 }));
+const pickerValues = new Set(emojiPickerData);
+export const CASK_EMOJIS = catalogEmojis.filter((item) =>
+  pickerValues.has(item.value),
+);
 CASK_EMOJIS.sort((a, b) => {
   const rank = (value: string) => {
     const index = LEGACY_EMOJIS.findIndex((item) => item.value === value);
@@ -71,7 +76,7 @@ CASK_EMOJIS.sort((a, b) => {
   return rank(a.value) - rank(b.value);
 });
 export const EMOJI_GROUPS = [...new Set(CASK_EMOJIS.map((item) => item.group))];
-const emojiValues = new Set(CASK_EMOJIS.map((item) => `emoji:${item.value}`));
+const emojiValues = new Set(catalogEmojis.map((item) => `emoji:${item.value}`));
 export type CaskSymbol =
   | `icon:${(typeof CASK_ICONS)[number]["value"]}`
   | `emoji:${(typeof CASK_EMOJIS)[number]["value"]}`;

@@ -69,11 +69,6 @@
         <h3>Accent color</h3>
         <p>Your color, throughout Casklet. Changes are saved instantly.</p>
       </div>
-      <button
-        class="text-button"
-        disabled={$accent === null}
-        onclick={() => void setAccentPreference(null)}>Reset to default</button
-      >
     </div>
     <div class="accent-editor">
       <div class="accent-choices">

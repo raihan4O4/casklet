@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { surfaceFade } from "./motion";
   import { onMount, tick } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
   import { emit } from "@tauri-apps/api/event";
@@ -158,6 +159,8 @@
   }}
 />
 <dialog
+  in:surfaceFade
+  out:surfaceFade
   bind:this={dialog}
   aria-labelledby="explorer-title"
   oncancel={(event) => {

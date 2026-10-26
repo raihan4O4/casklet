@@ -2,7 +2,7 @@
 
 ## Layout
 
-Applications now uses a pinned toolbar with one prominent Add Application action, live search by app name/publisher/provider, and All/Managed/Associated filters. The add-method picker and selected workflow open above the library, scroll into view, receive keyboard focus, and return focus to Add Application when closed. Smooth navigation respects reduced motion. All four methods fit a two-column picker at the actual 560 × 760 Cask window size; narrower layouts stack the cards.
+Applications now uses a pinned toolbar with one prominent Add Application action, live search by app name/publisher/provider, and All/Managed/Associated filters. The add-method picker and selected workflow open above the library, scroll into view, receive keyboard focus, and return focus to Add Application when closed. Smooth navigation respects reduced motion. The add-method picker follows the reference with three stacked rows: Install Application, Associate existing app, and Install portable ZIP. Each row has a centered accent-colored icon tile, title/description, and accent-colored chevron. WinGet remains available under More install options. Shared theme tokens control surfaces, accents, hover feedback, and borders; narrow layouts retain the same hierarchy.
 
 The library uses compact alphabetically sorted rows, concise versions/publishers, provider labels, ownership badges and explicit Open/Cleanup/Remove link/Manage actions where the existing provider supports them. Empty and no-match states explain the next action. Long names are truncated without changing their identities.
 
@@ -21,3 +21,15 @@ Interaction tests cover a ten-app library, top-level action placement, search/ow
 Frontend lint, Svelte checks (zero errors/warnings), all 28 GUI tests and the production build passed. Logs are retained under `target/application-library-*-final.log`. Rust domain/application behavior was not changed in this UI refinement.
 
 Design reference: [Carbon data-table toolbar guidance](https://www.carbondesignsystem.com/building-blocks/core/components/data-table/guidelines).
+
+## October 26 chooser verification
+
+The reference-based chooser passes 12 production-browser combinations (Light/Dark, 390/560px widths, black/purple/white accent preferences), including centered glyphs, resolved accent colors, no horizontal overflow, accessibility checks, and navigation through all four workflows. Isolated native WebView checks cover both themes and opening/closing the installer workflow. All 128 frontend tests, lint, Svelte checks, and production build pass. Evidence: `.jury/application-methods`.
+
+## October 26 reference cards
+
+Applications now uses a bordered rounded container, neutral grid-icon tile, heading/count and primary Add action, full-width search with a segmented ownership filter, and individual application cards. Real application icons are retained with the existing fallback when unavailable; version/publisher/provider, saved size and ownership badge are grouped together. Existing Open/Remove link/Manage/Remove handlers and capability guards remain unchanged. Application cards keep their actions aligned to the right at all supported window widths; narrow layouts wrap metadata safely. Singular totals read 1 app.
+
+The companion Settings cards use matched neutral icon tiles, typography, rounded panels, inset chevrons and an edit icon on Change appearance. Shared Reset changes/Save changes behavior remains. Production screenshots and accessibility/interaction checks cover both sections in Light/Dark at 390/560/1024px; all 128 frontend tests, Svelte checks, lint and build pass. Evidence: `.jury/settings-applications`.
+
+October 26 follow-up keeps Remove link on the right, combines file search Ctrl K into one badge, replaces category hover fill with a softly transitioned shadow, reduces Settings card padding/gaps to 12px vertical/8px between cards, and removes persistent selected Cask fill/elevation. Keyboard focus and actual pointer hover remain. Production theme/width screenshots, search/disclosure/reset checks, explicit selection/hover comparisons, lint, Svelte checks and build pass.

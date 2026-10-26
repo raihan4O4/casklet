@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { slidingSelection } from "./slidingSelection";
   import { tick, type Snippet } from "svelte";
   import Icon from "./Icon.svelte";
   import ApplicationIcon from "./ApplicationIcon.svelte";
@@ -36,7 +37,7 @@
       key: "existing",
       title: "Associate existing app",
       description: "Add an app already on this PC",
-      icon: "link",
+      icon: "associate",
     },
     {
       key: "portable",
@@ -103,6 +104,9 @@
 <section class="application-section" aria-label="Cask applications">
   <div class="applications-toolbar">
     <div class="applications-heading">
+      <span class="applications-section-icon"
+        ><Icon name="grid" size={26} /></span
+      >
       <div>
         <h2>Applications <span class="count">{rows.length}</span></h2>
         <p>Installed and linked apps.</p>
@@ -123,7 +127,7 @@
         <label class="search-field"
           ><Icon name="search" size={16} /><input
             aria-label="Search Cask applications"
-            placeholder="Search apps or publishers"
+            placeholder="Search apps or publishers…"
             bind:value={query}
           />
           {#if query}<button
@@ -137,6 +141,10 @@
         </label>
         <div
           class="application-filters"
+          use:slidingSelection={{
+            key: filter,
+            selector: 'button[aria-pressed="true"]',
+          }}
           role="group"
           aria-label="Filter applications"
         >
@@ -170,16 +178,37 @@
       id="application-add-picker"
       class="application-add-picker"
     >
+      {#snippet method(option: (typeof workflows)[number])}
+        <button
+          type="button"
+          disabled={busy}
+          onclick={() => void choose(option.key)}
+        >
+          <span class="application-method-icon"
+            ><Icon name={option.icon} size={26} /></span
+          >
+          <span class="application-method-copy"
+            ><strong>{option.title}</strong><span>{option.description}</span
+            ></span
+          >
+          <span class="application-method-chevron"
+            ><Icon name="right" size={19} /></span
+          >
+        </button>
+      {/snippet}
       <h3>How would you like to add an app?</h3>
+      <p class="application-method-caption">
+        Choose a method to add an application to this Cask.
+      </p>
       <div class="workflow-options">
-        {#each workflows as option (option.key)}<button
-            type="button"
-            disabled={busy}
-            onclick={() => void choose(option.key)}
-            ><Icon name={option.icon} size={22} /><strong>{option.title}</strong
-            ><span>{option.description}</span></button
-          >{/each}
+        {#each workflows.filter((option) => option.key !== "winget") as option (option.key)}
+          {@render method(option)}
+        {/each}
       </div>
+      <details class="application-more-methods">
+        <summary>More install options</summary>
+        <div class="workflow-options">{@render method(workflows[3])}</div>
+      </details>
     </div>{/if}
   {#if workflow}<div
       bind:this={workflowPanel}
@@ -212,7 +241,7 @@
       <h3>Your applications</h3>
       <span role="status"
         >{visible.length === rows.length
-          ? `${rows.length} apps`
+          ? `${rows.length} ${rows.length === 1 ? "app" : "apps"}`
           : `${visible.length} of ${rows.length} apps`}</span
       >
     </div>
@@ -243,21 +272,23 @@
                   .filter(Boolean)
                   .join(" · ")}</span
               >
-              <small class="application-size"
-                >{row.sizeBytes == null
-                  ? "Size not measured"
-                  : `${row.sizeEstimated ? "Estimated " : ""}${bytes(row.sizeBytes)}`}</small
-              >
+              <div class="application-row-meta">
+                <small class="application-size"
+                  >{row.sizeBytes == null
+                    ? "Size not measured"
+                    : `${row.sizeEstimated ? "Estimated " : ""}${bytes(row.sizeBytes)}`}</small
+                >
+                <span
+                  class="application-badge"
+                  class:owned={row.management === "managed"}
+                  >{row.management === "managed"
+                    ? "Casklet-owned"
+                    : row.management === "associated"
+                      ? "Reference"
+                      : "Not verified"}</span
+                >
+              </div>
             </div>
-            <span
-              class="application-badge"
-              class:owned={row.management === "managed"}
-              >{row.management === "managed"
-                ? "Casklet-owned"
-                : row.management === "associated"
-                  ? "Reference"
-                  : "Not verified"}</span
-            >
             <div class="application-row-actions">
               {#if row.kind === "portable"}<button
                   type="button"
@@ -276,7 +307,12 @@
                   (row.kind === "portable" && !row.item.canPlanRemoval) ||
                   (row.kind === "winget" && !row.item.canPlanUninstall)}
                 onclick={() => onAction(row)}
-                >{row.kind === "windows" &&
+                ><Icon
+                  name={row.management === "associated"
+                    ? "associate"
+                    : "settings"}
+                  size={16}
+                />{row.kind === "windows" &&
                 !["MANAGED_MSI", "CASKLET_OWNED"].includes(
                   row.item.removalPolicy,
                 )

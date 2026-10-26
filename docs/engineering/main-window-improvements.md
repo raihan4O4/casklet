@@ -44,3 +44,11 @@ Production evidence at 1024x720 shows a 337px populated listing viewport versus 
 The production build, 121 frontend tests, Svelte check (zero errors/warnings), ESLint, changed-file formatting and whitespace checks pass. The test-only fixture adds an optional library count for repeatable large/empty collections; it remains excluded from production. No native lifecycle, data, provider, ownership or cleanup changes, and no installed-package or hosted-CI claim.
 
 The subsequent placement request moves New Cask directly beside Search Casks, inside one responsive toolbar group with aligned 40px controls. The header now contains identity/description and summary only. View controls remain on the toolbar right, and narrow layouts shrink the search field while retaining the adjacent action. The geometry audit also asserts search/button adjacency, vertical alignment and equal height.
+
+The October 26 Associate-button refinement uses the bundled diagonal Lucide Link icon from the supplied reference and a 650-weight label, scoped to global Installations association controls. Other link glyphs and association behavior remain unchanged. Production build and rendered browser inspection pass.
+
+## October 26 Settings and installation search
+
+Installations shares the Casks search geometry (38px height, 10px radius, inset Ctrl K badge, icon and type sizing). Ctrl+K focuses its search outside dialogs; explicit Search and Refresh remain available beside the field. The main Settings surface now uses a library-style intro panel, consistent rounded cards, neutral icon tiles, a contained theme selection row and balanced accent/local-data spacing. Responsive layout preserves all controls. Accent Reset to default is removed as requested; presets/custom HEX still save immediately and persist across reloads.
+
+Production Light/Dark checks at 390/1024px compare search geometry directly, verify shortcut/search and saved accent persistence, confirm reset is absent and check accessibility/overflow. Screenshots: `.jury/main-settings-search`. All 128 frontend tests, Svelte checks, lint and production build pass. The accent UI test now expects the requested absence of reset; underlying preference synchronization/reset support is unchanged.

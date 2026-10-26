@@ -15,6 +15,12 @@ import ToastArea from "./ToastArea.svelte";
 import { clearNotices, notify } from "./notifications";
 import { revealWindow } from "./windowReady";
 import { caskColor } from "./format";
+import {
+  appearanceForCask,
+  caskAppearances,
+  DEFAULT_APPEARANCE,
+  saveCaskAppearance,
+} from "./caskAppearance";
 import { applicationRows } from "./applications";
 import { open } from "@tauri-apps/plugin-dialog";
 
@@ -80,6 +86,7 @@ vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn(), save: vi.fn() }));
 afterEach(() => {
   cleanup();
   localStorage.clear();
+  caskAppearances.set({});
   calls.nativeTheme.mockClear();
   calls.events.clear();
   clearNotices();
@@ -1612,7 +1619,7 @@ test("window readiness waits for layout before requesting native visibility", as
   expect(calls.invoke).toHaveBeenCalledWith("window_ready");
 });
 
-test("sort direction toggles and Cask menus dismiss and replace one another", async () => {
+test("sort direction toggles and Cask cards stay free of action menus", async () => {
   calls.invoke.mockImplementation(async (command: string) => {
     if (command === "window_ready") return;
     if (command === "cask_library")
@@ -1653,6 +1660,8 @@ test("sort direction toggles and Cask menus dismiss and replace one another", as
   expect(items.getAttribute("data-direction")).toBe("descending");
   expect(screen.queryByRole("button", { name: /Actions for/ })).toBeNull();
   expect(screen.queryByRole("menu")).toBeNull();
+  await fireEvent.click(screen.getByRole("button", { name: "List view" }));
+  expect(screen.queryByRole("button", { name: /Actions for/ })).toBeNull();
 });
 
 test("Cask accents are stable and varied by identity", () => {
@@ -3911,4 +3920,130 @@ test("inventory search reveals matches by saved name, category and path without 
   expect(
     calls.invoke.mock.calls.slice(callCount).map(([command]) => command),
   ).toEqual([]);
+});
+
+test("Settings footer resets and saves appearance-only drafts without updating metadata", async () => {
+  const cask = ownershipWorkspace();
+  await screen.findByRole("heading", { name: "Ownership" });
+  await fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+  await waitFor(() =>
+    expect(
+      (
+        screen.getByRole("button", {
+          name: "Save changes",
+        }) as HTMLButtonElement
+      ).disabled,
+    ).toBe(true),
+  );
+  async function chooseWhiteEmoji() {
+    await fireEvent.click(
+      screen.getByRole("button", { name: "Change appearance" }),
+    );
+    await fireEvent.click(screen.getByRole("button", { name: "Emoji" }));
+    await fireEvent.click(screen.getByRole("button", { name: "Art emoji" }));
+    await fireEvent.click(screen.getByRole("button", { name: "White color" }));
+  }
+  await chooseWhiteEmoji();
+  expect(
+    (screen.getByRole("button", { name: "Save changes" }) as HTMLButtonElement)
+      .disabled,
+  ).toBe(false);
+  expect(screen.queryByRole("button", { name: "Save appearance" })).toBeNull();
+  expect(
+    screen.queryByRole("button", { name: "Cancel appearance" }),
+  ).toBeNull();
+  expect(appearanceForCask(cask.id)).toEqual(DEFAULT_APPEARANCE);
+  await fireEvent.click(screen.getByRole("button", { name: "Reset changes" }));
+  expect(appearanceForCask(cask.id)).toEqual(DEFAULT_APPEARANCE);
+  expect(
+    (screen.getByRole("button", { name: "Save changes" }) as HTMLButtonElement)
+      .disabled,
+  ).toBe(true);
+  await chooseWhiteEmoji();
+  await fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+  await waitFor(() =>
+    expect(appearanceForCask(cask.id)).toEqual({
+      symbol: "emoji:🎨",
+      color: "#ffffff",
+    }),
+  );
+  expect(
+    calls.invoke.mock.calls.some(([command]) => command === "update_cask"),
+  ).toBe(false);
+  expect(
+    document.querySelector(".workspace-title .white-background"),
+  ).toBeTruthy();
+  expect(
+    (screen.getByRole("button", { name: "Save changes" }) as HTMLButtonElement)
+      .disabled,
+  ).toBe(true);
+});
+
+test("combined Settings save retains the appearance draft when metadata fails", async () => {
+  let fail = true;
+  const cask = ownershipWorkspace([], (command, args) => {
+    if (command === "update_cask") {
+      if (fail) throw new Error("Metadata save rejected");
+      return { ...cask, name: args.request!.name, revision: 1 };
+    }
+  });
+  await screen.findByRole("heading", { name: "Ownership" });
+  await fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+  await fireEvent.click(
+    screen.getByRole("button", { name: "Change appearance" }),
+  );
+  await fireEvent.click(screen.getByRole("button", { name: "White color" }));
+  await fireEvent.click(screen.getByText("Cask settings").closest("summary")!);
+  await fireEvent.input(screen.getByLabelText("Cask name"), {
+    target: { value: "Renamed" },
+  });
+  await fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+  await screen.findByText("Metadata save rejected");
+  expect(appearanceForCask(cask.id)).toEqual(DEFAULT_APPEARANCE);
+  expect(
+    document.querySelector(".appearance-trigger .white-background"),
+  ).toBeTruthy();
+  fail = false;
+  await fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+  await waitFor(() => expect(appearanceForCask(cask.id).color).toBe("#ffffff"));
+  expect(
+    (screen.getByRole("button", { name: "Save changes" }) as HTMLButtonElement)
+      .disabled,
+  ).toBe(true);
+});
+
+test("Reset changes restores the latest remotely saved appearance", async () => {
+  const cask = ownershipWorkspace();
+  await screen.findByRole("heading", { name: "Ownership" });
+  await fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+  saveCaskAppearance(cask.id, { symbol: "icon:terminal", color: null });
+  await waitFor(() =>
+    expect(
+      (
+        screen.getByRole("button", {
+          name: "Save changes",
+        }) as HTMLButtonElement
+      ).disabled,
+    ).toBe(true),
+  );
+  await fireEvent.click(
+    screen.getByRole("button", { name: "Change appearance" }),
+  );
+  await fireEvent.click(screen.getByRole("button", { name: "White color" }));
+  saveCaskAppearance(cask.id, { symbol: "icon:book", color: null });
+  await waitFor(() =>
+    expect(
+      document.querySelector(".appearance-trigger .white-background"),
+    ).toBeTruthy(),
+  );
+  await fireEvent.click(screen.getByRole("button", { name: "Reset changes" }));
+  expect(
+    document.querySelector(
+      '.cask-appearance-settings [data-cask-symbol="icon:book"]',
+    ),
+  ).toBeTruthy();
+  expect(
+    (screen.getByRole("button", { name: "Save changes" }) as HTMLButtonElement)
+      .disabled,
+  ).toBe(true);
 });

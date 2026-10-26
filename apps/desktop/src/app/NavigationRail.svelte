@@ -1,5 +1,6 @@
 <script lang="ts">
   import type { Snippet } from "svelte";
+  import { slidingSelection } from "./slidingSelection";
   import Icon from "./Icon.svelte";
   import BrandLogo from "./BrandLogo.svelte";
 
@@ -7,6 +8,7 @@
     key: string;
     title: string;
     icon:
+      | "overview"
       | "casks"
       | "installations"
       | "activity"
@@ -53,7 +55,13 @@
   {#if !compact}<div class="rail-brand" title="Casklet">
       <BrandLogo /><span>Casklet</span>
     </div>{/if}
-  <nav aria-label={label}>
+  <nav
+    aria-label={label}
+    use:slidingSelection={{
+      key: current,
+      selector: 'button[aria-current="page"]',
+    }}
+  >
     {#each items as item (item.key)}
       <button
         type="button"
