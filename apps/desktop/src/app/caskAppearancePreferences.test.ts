@@ -75,9 +75,31 @@ test("failed storage retains the session choice and reports persistence failure"
 
 test("full emoji sequences and legacy colors remain valid and durable", async () => {
   const { CASK_EMOJIS, EMOJI_GROUPS } = await import("./caskAppearance");
-  expect(CASK_EMOJIS.length).toBe(3963);
-  expect(new Set(CASK_EMOJIS.map((item) => item.value)).size).toBe(3963);
+  expect(CASK_EMOJIS.length).toBe(1544);
+  expect(new Set(CASK_EMOJIS.map((item) => item.value)).size).toBe(1544);
   expect(EMOJI_GROUPS.length).toBe(9);
+  expect(CASK_EMOJIS.every((item) => !item.name.includes("skin tone"))).toBe(
+    true,
+  );
+  expect(CASK_EMOJIS.some((item) => item.group === "Component")).toBe(false);
+  expect(
+    CASK_EMOJIS.some((item) => item.value === String.fromCodePoint(0x1f44d)),
+  ).toBe(true);
+  expect(
+    CASK_EMOJIS.some((item) => item.value === String.fromCodePoint(0x1fae9)),
+  ).toBe(false);
+  expect(
+    CASK_EMOJIS.every((item) =>
+      Array.from(item.value).every((c) => {
+        const cp = c.codePointAt(0)!;
+        return !(
+          (cp >= 0x1f3fb && cp <= 0x1f3ff) ||
+          (cp >= 0x1f1e6 && cp <= 0x1f1ff) ||
+          (cp >= 0xe0020 && cp <= 0xe007f)
+        );
+      }),
+    ),
+  ).toBe(true);
   for (const value of ["🇮🇳", "👩🏽‍💻", "👨‍👩‍👧‍👦"]) {
     expect(
       saveCaskAppearance(value, { symbol: `emoji:${value}`, color: "#5c8d91" }),
@@ -89,4 +111,17 @@ test("full emoji sequences and legacy colors remain valid and durable", async ()
     symbol: "emoji:👩🏽‍💻",
     color: "#5c8d91",
   });
+});
+
+test("white emoji backgrounds save while retired magenta preferences remain valid", async () => {
+  const white = { symbol: "emoji:🎨", color: "#ffffff" } as const;
+  const retired = { symbol: "icon:camera", color: "#e040fb" } as const;
+  expect(CASK_PALETTE).toContain("#ffffff");
+  expect(CASK_PALETTE).not.toContain("#e040fb");
+  expect(saveCaskAppearance("white", white)).toBe(true);
+  expect(saveCaskAppearance("retired", retired)).toBe(true);
+  vi.resetModules();
+  const restarted = await import("./caskAppearance");
+  expect(restarted.appearanceForCask("white")).toEqual(white);
+  expect(restarted.appearanceForCask("retired")).toEqual(retired);
 });

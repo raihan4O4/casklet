@@ -38,6 +38,7 @@
 
 <span
   class="collection-mark cask-badge"
+  class:white-background={color === "#ffffff"}
   data-cask-symbol={choice.symbol}
   style:--cask-color={color}
   style:width={`${size}px`}

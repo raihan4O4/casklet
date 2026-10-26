@@ -217,7 +217,7 @@ test("dark typography, state colors, focus and control borders meet contrast tar
   ).toBeGreaterThanOrEqual(3);
 });
 
-test("accent picker previews, persists, validates HEX and restores the default", async () => {
+test("accent picker previews, persists and validates HEX without a reset action", async () => {
   render(ThemeSettings);
   await fireEvent.click(screen.getByRole("button", { name: "Iris" }));
   expect(get(accent)).toBe("#7357d8");
@@ -247,12 +247,8 @@ test("accent picker previews, persists, validates HEX and restores the default",
   );
   initializeTheme();
   expect(get(accent)).toBe("#000000");
-  await fireEvent.click(
-    screen.getByRole("button", { name: "Reset to default" }),
-  );
-  expect(get(accent)).toBeNull();
-  expect(localStorage.getItem(ACCENT_KEY)).toBeNull();
-  expect(document.documentElement.style.getPropertyValue("--accent")).toBe("");
+  expect(screen.queryByRole("button", { name: "Reset to default" })).toBeNull();
+  expect(localStorage.getItem(ACCENT_KEY)).toBe("#000000");
 });
 
 test("accent sync accepts valid native/storage changes, resets and disposes without echoes", async () => {

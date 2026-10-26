@@ -114,3 +114,28 @@ ADR 0044 extends the automatic-color system with an optional compact picker duri
 The Casks page uses intrinsic header and toolbar rows followed by a `minmax(0, 1fr)` collection section. The collection reserves an intrinsic sorting row and a bounded internal scroll viewport. Title and New Cask share a header row, with the description below and secondary measurement notes inline when space allows. Compact nested padding preserves the prominent existing typography while returning space to actual collections. At narrow widths the summary stacks naturally; card styling is unchanged. No fixed listing height or positioning offset. Geometry and resize acceptance are recorded in docs/engineering/main-window-improvements.md.
 
 New Cask now lives directly to the right of the search field in a shared responsive toolbar group, matching its 40px height. The summary header contains only title/description and measurements. This placement supersedes the preceding header-action arrangement while retaining bounded collection scrolling.
+
+
+## October 26 supplied dashboard reference and density correction
+
+The supplied image governs the Casks composition, illustration and icon treatment. Its raster dimensions do not set the application's logical-pixel density. The follow-up correction restores the original 1024×720 Windows window density: 64px navigation, 160px identity/measurement panel, 44px search/create/view controls, compact shared sorting and 130px cards. The collection retains 320px at this window size and only the listing scrolls. Grid and list share the same sorting row; list controls never stretch into data columns. Secondary screens and Cask windows retain their compositions. Theme and accent preferences remain independent. Details and actual browser/native evidence: docs/engineering/reference-dashboard-ui.md.
+
+
+## Quiet collection elevation
+
+The October 26 polish keeps the corrected logical-pixel density and supplied reference composition. Default cards have a faint neutral edge and two soft shadow layers; hover slightly raises the shadow, while the current Cask retains a deeper shadow and a subtle neutral surface gradient. Persistent selection has no accent outline. The explicit keyboard focus indicator remains distinct from selection. Card/list overflow menus are removed and their reserved space returned to content. Grid gaps are 14px with small scroll gutters to preserve shadow edges. Artwork reuses the supplied bitmap through an SVG luminance-to-alpha filter and feathered edge masks rather than compositing its opaque screenshot backing. Neutral controls/surfaces and existing configurable accents/identity colors keep their roles.
+
+
+## Shared section scale and artwork fade
+
+The final October 26 correction removes the dashboard-only navigation size rules entirely. Every main section uses NavigationRail's shared dimensions and typography; title size comes from shared h1 rules, and search/actions use the same 38px density as Installations. Library item names use inventory typography and 44px identity badges. The 160px summary and two-column card composition remain. No CSS zoom, host DPI or native window changes. The artwork's alpha feather extends across the lower 28% and wider side/top edges so its shadow is transparent before the crop boundary in both themes.
+
+
+## Reference Cask cards
+
+The supplied wave-card reference adds a 54px identity badge, 16px name and muted description above a fine divider, with count/date/storage aligned below. A faint two-layer wave at the upper right follows the saved identity color; white uses neutral ink and Dark reduces its strength. The existing card height, grid spacing, neutral selected elevation, no-menu behavior, shared section scale and header remain. List view has no decorative wave or divider.
+
+
+## Reference Cask overview
+
+The independent workspace identity places the 54px saved Cask badge beside a title/description column. Overview groups a full-width Total Items row above Files & Folders and Applications browse tiles, with neutral icon squares, fine separators and chevrons. Storage has its own icon, known-size total, composition bar/percentage, three legend rows, explicit Refresh sizes and category disclosure. Existing counts and storage calculations remain authoritative; the percentage is zero for no known bytes and otherwise represents the complete known-size breakdown, not disk use or reclaimable capacity. Add Items and Cleanup retain existing actions and guards. Dates remain available below the summary. All dimensions are logical desktop pixels, preserving the current main-window scale and theme/accent system.

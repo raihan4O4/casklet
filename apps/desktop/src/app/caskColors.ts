@@ -28,10 +28,14 @@ export const CASK_PALETTE = [
   "#ff9f1c",
   "#8b5cf6",
   "#06b6d4",
-  "#e040fb",
+  "#ffffff",
   "#22c55e",
 ] as const;
-export const VALID_CASK_COLORS = [...CASK_PALETTE, ...LEGACY_CASK_PALETTE];
+export const VALID_CASK_COLORS = [
+  ...CASK_PALETTE,
+  ...LEGACY_CASK_PALETTE,
+  "#e040fb",
+];
 type Colors = Record<string, string>;
 function savedColors(): Colors {
   try {

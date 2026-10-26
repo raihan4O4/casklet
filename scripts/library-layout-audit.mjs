@@ -161,7 +161,7 @@ try {
           ) {
             assert(
               start.scroll.height >= 320,
-              name + ": insufficient two-row viewport",
+              name + ": insufficient two-row viewport " + JSON.stringify(start),
             );
             assert(
               start.cards.every(
@@ -206,10 +206,18 @@ try {
                 },
               }),
             )
-          ).violations.map((item) => item.id);
+          ).violations.map((item) => ({
+            id: item.id,
+            nodes: item.nodes.map((n) => ({
+              target: n.target,
+              summary: n.failureSummary,
+            })),
+          }));
           assert(
             !violations.length && !errors.length,
-            name + ": accessibility/console failure",
+            name +
+              ": accessibility/console failure " +
+              JSON.stringify({ violations, errors }),
           );
           await page.screenshot({ path: path.join(out, name + ".png") });
           reports.push({

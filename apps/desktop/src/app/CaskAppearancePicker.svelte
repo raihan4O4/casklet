@@ -71,7 +71,8 @@
     (value.symbol.startsWith("icon:")
       ? CASK_ICONS.find((item) => `icon:${item.value}` === value.symbol)?.name
       : CASK_EMOJIS.find((item) => `emoji:${item.value}` === value.symbol)
-          ?.name) ?? "Collection",
+          ?.name) ??
+      (value.symbol.startsWith("emoji:") ? "Saved emoji" : "Collection"),
   );
   const colors = [
     "Lime",
@@ -84,7 +85,7 @@
     "Orange",
     "Violet",
     "Ocean",
-    "Berry",
+    "White",
     "Leaf",
   ];
 </script>
@@ -172,6 +173,7 @@
         {#each CASK_PALETTE as color, index (color)}<button
             type="button"
             class="appearance-color"
+            class:white-color={color === "#ffffff"}
             aria-label={`${colors[index]} color`}
             title={colors[index]}
             aria-pressed={value.color === color}

@@ -1,0 +1,238 @@
+/* Shared motion vocabulary. Theme palette swaps remain immediate for contrast. */
+:root {
+  --motion-fast: 120ms;
+  --motion-normal: 180ms;
+  --motion-enter: 200ms;
+  --motion-exit: 120ms;
+  --motion-ease: cubic-bezier(0.215, 0.61, 0.355, 1);
+  --duration-fast: var(--motion-fast);
+  --duration-normal: var(--motion-normal);
+  --settle: var(--motion-ease);
+}
+@media (prefers-reduced-motion: no-preference) {
+  :where(
+    button,
+    a,
+    input,
+    textarea,
+    select,
+    summary,
+    [role="tab"],
+    [role="option"]
+  ),
+  .search-field,
+  .cask-table li,
+  .collection-mark,
+  .application-list > li,
+  .resource-category,
+  .settings-card,
+  .theme-preview,
+  .accent-swatch,
+  .appearance-symbol-options button,
+  .appearance-color-options button,
+  .checkbox-label,
+  .ownership-options label,
+  .association-destinations label {
+    transition:
+      background-color var(--motion-fast) var(--motion-ease),
+      color var(--motion-fast) var(--motion-ease),
+      border-color var(--motion-fast) var(--motion-ease),
+      box-shadow var(--motion-normal) var(--motion-ease),
+      opacity var(--motion-fast) var(--motion-ease),
+      translate var(--motion-fast) var(--motion-ease),
+      transform var(--motion-normal) var(--motion-ease);
+  }
+  /* Override legacy, section-specific shorthand timings without changing states. */
+  .files-inventory .resource-category,
+  .theme-control .theme-preview,
+  .collection-mark,
+  .category-chevron,
+  .settings-disclosure-chevron,
+  .cleanup-expand-icon {
+    transition:
+      background-color var(--motion-fast) var(--motion-ease),
+      border-color var(--motion-fast) var(--motion-ease),
+      box-shadow var(--motion-normal) var(--motion-ease),
+      translate var(--motion-fast) var(--motion-ease),
+      transform var(--motion-normal) var(--motion-ease),
+      rotate var(--motion-normal) var(--motion-ease);
+  }
+  :where(button, a, input, textarea, select, summary):focus-visible {
+    transition-duration: var(--motion-fast);
+  }
+  /* Inputs remain stationary; only pressable buttons retain the existing 1px press. */
+  .menu button,
+  .navigation-rail button,
+  .view-switch button {
+    transition-duration: var(--motion-fast);
+  }
+  .workspace-content > section,
+  .cask-table,
+  .installation-inventory,
+  .application-add-picker,
+  .application-workflow-panel,
+  .appearance-settings-editor {
+    animation: motion-content-enter var(--motion-enter) var(--motion-ease) both;
+  }
+  .resource-overlay {
+    animation: none;
+  }
+  dialog::backdrop {
+    animation: motion-backdrop-enter var(--motion-enter) var(--motion-ease) both;
+  }
+  /* CSS handles intrinsic disclosure size; no JS measurements or frame loops. */
+  @supports (interpolate-size: allow-keywords) and (content-visibility: hidden) {
+    details {
+      interpolate-size: allow-keywords;
+    }
+    details::details-content {
+      block-size: 0;
+      overflow: clip;
+      opacity: 0;
+      transition:
+        block-size var(--motion-normal) var(--motion-ease),
+        opacity var(--motion-fast) var(--motion-ease),
+        content-visibility var(--motion-normal) allow-discrete;
+    }
+    details[open]::details-content {
+      block-size: auto;
+      opacity: 1;
+    }
+    details[open] > :not(summary) {
+      animation: none;
+    }
+  }
+}
+@keyframes motion-content-enter {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+@keyframes motion-backdrop-enter {
+  from {
+    background-color: transparent;
+  }
+  to {
+    background-color: var(--dialog-scrim);
+  }
+}
+/* Never interpolate opposing theme palettes through low-contrast intermediate greys. */
+html.theme-switching *,
+html.theme-switching *::before,
+html.theme-switching *::after {
+  transition: none !important;
+}
+@media (prefers-reduced-motion: reduce) {
+  :root {
+    --motion-fast: 0ms;
+    --motion-normal: 0ms;
+    --motion-enter: 0ms;
+    --motion-exit: 0ms;
+  }
+  *,
+  *::before,
+  *::after,
+  *::details-content {
+    animation: none !important;
+    transition: none !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  dialog[inert]::backdrop {
+    animation: motion-backdrop-exit var(--motion-exit) var(--motion-ease) both;
+  }
+}
+@keyframes motion-backdrop-exit {
+  from {
+    background-color: var(--dialog-scrim);
+  }
+  to {
+    background-color: transparent;
+  }
+}
+
+/* Shared, noninteractive selection surface. Labels and focus rings stay on buttons. */
+.sliding-selection {
+  position: relative;
+  isolation: isolate;
+}
+.selection-indicator {
+  position: absolute;
+  pointer-events: none;
+  transform-origin: 0 0;
+  opacity: 0;
+  z-index: 0;
+}
+.sliding-selection > button {
+  position: relative;
+  z-index: 1;
+}
+.app-navigation nav.sliding-selection > button.active {
+  background: transparent;
+}
+.app-navigation nav.sliding-selection > button.active::after {
+  content: none;
+}
+.app-navigation nav > .selection-indicator {
+  background: var(--accent-surface);
+  border-radius: var(--radius-control);
+}
+.app-navigation nav > .selection-indicator::after {
+  content: "";
+  position: absolute;
+  left: 14px;
+  right: 14px;
+  bottom: -13px;
+  height: 2px;
+  background: var(--accent);
+}
+.app-navigation.compact nav > .selection-indicator {
+  background: transparent;
+  border-radius: 0;
+}
+.app-navigation.compact nav > .selection-indicator::after {
+  left: 0;
+  right: 0;
+  bottom: -1px;
+}
+.application-section .application-filters.sliding-selection > button.chosen {
+  background: transparent;
+}
+.application-filters > .selection-indicator {
+  background: var(--surface-secondary);
+  border-radius: 7px;
+}
+@media (max-width: 760px) {
+  .app-navigation nav > .selection-indicator::after {
+    bottom: -1px;
+  }
+}
+/* Soft depth on the whole target, with no text-only hover or layout displacement. */
+.overview-contents .compact-stats > button:hover {
+  background: var(--surface-panel);
+  box-shadow:
+    inset 0 0 0 1px color-mix(in srgb, var(--text-heading) 6%, transparent),
+    0 3px 12px color-mix(in srgb, var(--text-heading) 7%, transparent);
+  position: relative;
+  z-index: 1;
+}
+.overview-contents .compact-stats > button:hover .overview-open {
+  background: var(--surface-secondary);
+}
+.settings-disclosure > summary:hover h2 {
+  color: var(--text-heading);
+}
+/* Elevate the outer settings card, including its padding and expanded body. */
+.settings-disclosure > summary:hover {
+  background: transparent;
+  box-shadow: none;
+}
+.workspace-content > section.settings-card:has(> .settings-disclosure):hover {
+  background: color-mix(in srgb, var(--text-heading) 1%, var(--surface-panel));
+  box-shadow: 0 3px 12px color-mix(in srgb, var(--text-heading) 7%, transparent);
+}

@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { surfaceFade } from "./motion";
   import { onMount } from "svelte";
   import { invoke } from "@tauri-apps/api/core";
   import { emit } from "@tauri-apps/api/event";
@@ -116,6 +117,8 @@
 </script>
 
 <dialog
+  in:surfaceFade
+  out:surfaceFade
   bind:this={dialog}
   class="associate-dialog"
   aria-labelledby="associate-title"

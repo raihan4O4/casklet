@@ -1,5 +1,5 @@
 <script lang="ts">
-  import Boxes from "@lucide/svelte/icons/boxes";
+  import Pencil from "@lucide/svelte/icons/pencil";
   import Grid2X2 from "@lucide/svelte/icons/grid-2x2";
   import Activity from "@lucide/svelte/icons/activity";
   import Settings2 from "@lucide/svelte/icons/settings-2";
@@ -22,6 +22,7 @@
   import RefreshCw from "@lucide/svelte/icons/refresh-cw";
   import Package from "@lucide/svelte/icons/package";
   import Link2 from "@lucide/svelte/icons/link-2";
+  import Link from "@lucide/svelte/icons/link";
   import Clock from "@lucide/svelte/icons/clock";
   import Download from "@lucide/svelte/icons/download";
   import Archive from "@lucide/svelte/icons/archive";
@@ -41,7 +42,21 @@
   import CaskHeart from "@lucide/svelte/icons/heart";
   import CaskPlane from "@lucide/svelte/icons/plane";
   import CaskLeaf from "@lucide/svelte/icons/leaf";
+  import Shapes from "@lucide/svelte/icons/shapes";
+  import LayoutGrid from "@lucide/svelte/icons/layout-grid";
+  import Layers from "@lucide/svelte/icons/layers";
+  import ChartPie from "@lucide/svelte/icons/chart-pie";
+  import Calendar from "@lucide/svelte/icons/calendar";
+  import Boxes from "@lucide/svelte/icons/boxes";
+  import ChevronRight from "@lucide/svelte/icons/chevron-right";
   const icons = {
+    edit: Pencil,
+    overview: Boxes,
+    right: ChevronRight,
+    grid: LayoutGrid,
+    layers: Layers,
+    chart: ChartPie,
+    calendar: Calendar,
     briefcase: CaskBriefcase,
     book: CaskBook,
     graduation: CaskGraduation,
@@ -54,7 +69,7 @@
     plane: CaskPlane,
     leaf: CaskLeaf,
 
-    casks: Boxes,
+    casks: Shapes,
     installations: Grid2X2,
     activity: Activity,
     settings: Settings2,
@@ -77,6 +92,7 @@
     refresh: RefreshCw,
     package: Package,
     link: Link2,
+    associate: Link,
     clock: Clock,
     download: Download,
     archive: Archive,
@@ -91,4 +107,19 @@
   const Component = $derived(icons[name]);
 </script>
 
-<Component {size} strokeWidth={1.75} aria-hidden="true" />
+{#if name === "casks"}
+  <svg
+    width={size}
+    height={size}
+    viewBox="0 0 24 24"
+    fill="none"
+    stroke="currentColor"
+    stroke-width="1.75"
+    aria-hidden="true"
+    ><circle cx="12" cy="7" r="5" /><circle cx="7" cy="15" r="5" /><circle
+      cx="17"
+      cy="15"
+      r="5"
+    /></svg
+  >
+{:else}<Component {size} strokeWidth={1.75} aria-hidden="true" />{/if}

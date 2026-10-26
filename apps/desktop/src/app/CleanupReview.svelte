@@ -1,6 +1,8 @@
 <script lang="ts">
   import type { RemovalPlanView } from "../contracts/generated/casklet";
   import { onMount } from "svelte";
+  import { motionDuration } from "./motion";
+  import { cubicOut } from "svelte/easing";
   import { slide } from "svelte/transition";
   import Icon from "./Icon.svelte";
   import {
@@ -49,8 +51,7 @@
     }
   });
   const counts = $derived(cleanupCounts(plan));
-  const disclosureDuration = () =>
-    window.matchMedia("(prefers-reduced-motion: reduce)").matches ? 0 : 160;
+
   const expired = $derived(planExpired(plan, nowMs));
   const positiveStatus = $derived(
     !expired &&
@@ -149,7 +150,10 @@
     {#if expanded}
       <div
         class="cleanup-review-content"
-        transition:slide={{ duration: disclosureDuration() }}
+        transition:slide={{
+          duration: motionDuration("normal"),
+          easing: cubicOut,
+        }}
       >
         {#if ["DRAFT", "APPROVED"].includes(plan.state)}
           <p class="cleanup-summary">{cleanupSummary(plan)}</p>
