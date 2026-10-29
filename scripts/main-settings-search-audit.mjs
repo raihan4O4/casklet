@@ -95,6 +95,11 @@ try {
       await page.screenshot({
         path: path.join(out, `${theme}-${width}-settings.png`),
       });
+      const accentGeometry=await page.locator('.accent-custom').evaluate(e=>{
+        const picker=e.querySelector('.color-picker').getBoundingClientRect(),hex=e.querySelector('.accent-hex input').getBoundingClientRect();
+        return {pickerHeight:picker.height,hexHeight:hex.height,centerError:Math.abs((picker.top+picker.height/2)-(hex.top+hex.height/2)),font:parseFloat(getComputedStyle(e.querySelector('.accent-hex input')).fontSize)};
+      });
+      if(accentGeometry.pickerHeight!==38 || accentGeometry.hexHeight!==38 || accentGeometry.centerError>1 || accentGeometry.font!==13)throw Error(JSON.stringify(accentGeometry));
       await page.addScriptTag({ content: axe });
       const violations = (
         await page.evaluate(() =>

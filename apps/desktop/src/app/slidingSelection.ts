@@ -60,7 +60,13 @@ export function slidingSelection(node: HTMLElement, initial: Selection) {
           },
           { transform: "none" },
         ],
-        { duration, easing: "cubic-bezier(.215,.61,.355,1)" },
+        {
+          duration,
+          easing:
+            getComputedStyle(document.documentElement)
+              .getPropertyValue("--motion-move-ease")
+              .trim() || "cubic-bezier(.455,.03,.515,.955)",
+        },
       );
     }
     if (animation) animation.onfinish = () => place(false);

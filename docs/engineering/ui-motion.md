@@ -41,3 +41,17 @@ Integration recipe:
 Validation: 129 frontend tests, lint, Svelte checks/build, production Light/Dark normal/reduced selection/hover audits, repeated changes during active movement, responsive indicator alignment, Alt-key navigation, live reduced-motion cancellation and native WebView smoke pass. Frame samples verify actual intermediate positions; screenshots confirm final styling. Evidence: `.jury/selection-hover` and `.jury/shared-motion`.
 
 October 26 Settings hover boundary fix moves the Categories/Cask settings/Export disclosure hover surface from the inset summary to the outer card. Hover includes padding and expanded content, with no nested summary shadow. The selection/hover audit verifies outer-card shadow, absent inner shadow, and padding hover in both themes and motion preferences. Build and browser checks pass.
+
+## Web-animation guidance refinement
+
+Applied the user-linked [Web Animation Design guidance](https://mcpmarket.com/tools/skills/web-animation-design) and local micro-interaction skill to the existing Svelte motion system. No additional library or redesign.
+
+| Before | After |
+| --- | --- |
+| One cubic-out curve for movement and hover | Shared ease-in-out movement token for sliding indicators; gentle ease for hover paint/shadow; cubic-out entrances retained |
+| Every content entrance fades for 200ms | Content fades shortened to 140ms; overlays keep their existing timings |
+| Sort results jump between positions | Cask sorting uses position-only FLIP at 180ms; size-changing grid/list transitions skip animation to keep text crisp |
+| Desktop hover shadows can remain on touch | Coarse/no-hover devices suppress hover elevation |
+| Keyboard focus shadow interpolates | Focus feedback is immediate |
+
+The reorder helper uses existing Svelte animation support, shared durations and reduced-motion fallback; selection interruption handling remains unchanged. Production checks sample sort positions in both themes/motion modes and confirm touch hover suppression and grid/list overflow. Existing selection/hover and list matrices pass. All 129 tests, lint, Svelte checks and production build pass. Evidence: `.jury/motion-refinement`, `.jury/selection-hover`, `.jury/list-motion`.

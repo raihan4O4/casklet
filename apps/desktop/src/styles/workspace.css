@@ -5336,3 +5336,115 @@ dialog {
     grid-template-columns: 1fr;
   }
 }
+/* Accent controls share the main window's compact control scale. */
+.main-settings-page .accent-presets {
+  gap: 8px;
+  padding: 2px 0;
+}
+.main-settings-page .accent-swatch {
+  flex: none;
+  width: 38px;
+  height: 38px;
+  min-height: 38px;
+  padding: 3px;
+  border: 2px solid var(--border-subtle);
+  background: var(--surface-panel);
+  outline: none;
+}
+.main-settings-page .accent-swatch[aria-pressed="true"] {
+  border-color: var(--accent);
+  outline: none;
+}
+.main-settings-page .accent-swatch:focus:not(:focus-visible) {
+  box-shadow: none;
+}
+.main-settings-page .accent-swatch:focus-visible {
+  outline: 2px solid var(--focus-border);
+  outline-offset: 3px;
+}
+.main-settings-page .accent-custom {
+  align-items: center;
+  gap: 12px;
+  margin: 16px 0 12px;
+}
+.main-settings-page .accent-custom label {
+  margin: 0;
+}
+.main-settings-page .color-picker {
+  height: 38px;
+  min-height: 38px;
+  padding: 6px 10px;
+  gap: 8px;
+  border-radius: 10px;
+  background: var(--surface-input);
+  font-size: 13px;
+  font-weight: 500;
+}
+.main-settings-page .color-picker > span:first-child {
+  width: 24px;
+  height: 24px;
+  flex: none;
+  border-radius: 6px;
+}
+.main-settings-page .accent-hex {
+  gap: 8px;
+  font-size: 12px;
+  font-weight: 500;
+}
+.main-settings-page .accent-hex input {
+  height: 38px;
+  min-height: 38px;
+  width: 116px;
+  padding: 8px 10px;
+  border-radius: 10px;
+  font-size: 13px;
+  line-height: 20px;
+  letter-spacing: 0.02em;
+  background: var(--surface-input);
+  color: var(--text-primary);
+}
+.main-settings-page .accent-choices > p {
+  margin: 0;
+  line-height: 1.5;
+}
+@media (max-width: 440px) {
+  .main-settings-page .accent-custom {
+    gap: 10px;
+  }
+  .main-settings-page .accent-hex input {
+    width: 106px;
+  }
+}
+/* Cask-window color roles: selection uses accent; information stays neutral. */
+.detail-window .application-section .application-filters button.chosen {
+  color: var(--accent);
+}
+.detail-window .application-filters > .selection-indicator {
+  background: var(--accent-surface);
+}
+/* List-level metadata colors must not override action foregrounds. */
+.detail-window button > svg,
+.detail-window .application-row-actions button > svg,
+.detail-window .resource-list button > svg {
+  color: inherit;
+}
+.detail-window .resource-category[open] > summary .category-chevron,
+.detail-window
+  .settings-disclosure[open]
+  > summary
+  .settings-disclosure-chevron {
+  color: var(--accent);
+  background: var(--accent-surface);
+}
+.detail-window
+  .overview-contents
+  .compact-stats
+  > button:is(:hover, :focus-visible)
+  .overview-open {
+  color: var(--accent);
+  background: var(--accent-surface);
+}
+/* Preserve restrained neutral icon tiles; only the active affordance is accented. */
+.detail-window .application-section .application-icon > svg {
+  color: var(--text-heading);
+}

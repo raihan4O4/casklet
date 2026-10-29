@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { surfaceFade } from "./motion";
+  import { surfaceFade, reorderMotion } from "./motion";
   import { invoke } from "@tauri-apps/api/core";
   import { listen } from "@tauri-apps/api/event";
   import { onMount, tick } from "svelte";
@@ -465,6 +465,7 @@
             </div>{:else}
             <ul>
               {#each visibleCasks as item (item.cask.id)}<li
+                  animate:reorderMotion
                   class:selected={activeCask === item.cask.id}
                 >
                   <button
