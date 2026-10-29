@@ -1,3 +1,4 @@
+import { flip } from "svelte/animate";
 import { cubicOut } from "svelte/easing";
 import { fade } from "svelte/transition";
 
@@ -39,4 +40,18 @@ export function floatingMotion(kind: "enter" | "exit") {
     duration: motionDuration(kind),
     easing: cubicOut,
   };
+}
+
+/** Keep identities continuous during sorting; never scale text during a view change. */
+export function reorderMotion(
+  node: Element,
+  rectangles: { from: DOMRect; to: DOMRect },
+) {
+  const sameSize =
+    Math.abs(rectangles.from.width - rectangles.to.width) < 1 &&
+    Math.abs(rectangles.from.height - rectangles.to.height) < 1;
+  return flip(node, rectangles, {
+    duration: sameSize ? motionDuration("normal") : 0,
+    easing: cubicOut,
+  });
 }
