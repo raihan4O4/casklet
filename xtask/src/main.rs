@@ -46,8 +46,18 @@ fn generate_contracts() -> Result<(), String> {
     if !target.is_dir() {
         return Err("generated-contract directory is missing".into());
     }
-    println!("No product DTOs exist yet; generation is intentionally a no-op.");
-    Ok(())
+    std::fs::write(target.join("casklet.ts"), casklet_contracts::TYPESCRIPT)
+        .map_err(|error| error.to_string())
+}
+
+fn check_contracts() -> Result<(), String> {
+    let generated = std::fs::read_to_string("apps/desktop/src/contracts/generated/casklet.ts")
+        .map_err(|error| error.to_string())?;
+    if generated == casklet_contracts::TYPESCRIPT {
+        Ok(())
+    } else {
+        Err("generated contracts differ; run cargo xtask generate-contracts".into())
+    }
 }
 
 fn check() -> Result<(), String> {
@@ -65,12 +75,96 @@ fn check() -> Result<(), String> {
         ],
     )?;
     run("cargo", &["test", "--workspace", "--all-features"])?;
-    run("cargo", &["build", "--workspace", "--all-features"])?;
+    // Feature profiles are separate invocations so Cargo feature unification cannot hide a gate bug.
+    run(
+        "cargo",
+        &[
+            "test",
+            "-p",
+            "casklet-cli",
+            "-p",
+            "casklet-desktop",
+            "--locked",
+        ],
+    )?;
+    run(
+        "cargo",
+        &[
+            "test",
+            "-p",
+            "casklet-cli",
+            "-p",
+            "casklet-desktop",
+            "--features",
+            "alpha-cleanup",
+            "--locked",
+        ],
+    )?;
+    // Windows cannot replace the running xtask.exe during its own quality gate.
+    run(
+        "cargo",
+        &[
+            "build",
+            "--workspace",
+            "--exclude",
+            "xtask",
+            "--all-features",
+        ],
+    )?;
     run_pnpm(&["format:check"])?;
     run_pnpm(&["lint"])?;
     run_pnpm(&["check"])?;
+    run_pnpm(&["test"])?;
     run_pnpm(&["build"])?;
-    generate_contracts()
+    check_contracts()
+}
+
+#[cfg(windows)]
+fn package(alpha: bool, allow_dirty: bool) -> Result<(), String> {
+    let syft =
+        env::var("SYFT_PATH").map_err(|_| "set SYFT_PATH to a verified syft.exe".to_string())?;
+    let mut args = vec![
+        "-NoProfile",
+        "-File",
+        "scripts/package-release.ps1",
+        "-SyftPath",
+        &syft,
+    ];
+    if alpha {
+        args.extend(["-Alpha", "-OutputDirectory", "release/alpha"]);
+    }
+    if allow_dirty {
+        args.push("-AllowDirty");
+    }
+    run("pwsh", &args)?;
+    run(
+        "pwsh",
+        &[
+            "-NoProfile",
+            "-File",
+            "scripts/verify-release.ps1",
+            "-OutputDirectory",
+            if alpha { "release/alpha" } else { "release" },
+        ],
+    )
+}
+
+#[cfg(not(windows))]
+fn package(_alpha: bool, _allow_dirty: bool) -> Result<(), String> {
+    Err("Release packaging requires Windows.".into())
+}
+
+#[cfg(windows)]
+fn verify_release() -> Result<(), String> {
+    run(
+        "pwsh",
+        &["-NoProfile", "-File", "scripts/verify-release.ps1"],
+    )
+}
+
+#[cfg(not(windows))]
+fn verify_release() -> Result<(), String> {
+    Err("Release verification requires Windows.".into())
 }
 
 fn main() -> ExitCode {
@@ -78,9 +172,11 @@ fn main() -> ExitCode {
         Some("bootstrap-check") => bootstrap_check(),
         Some("generate-contracts") => generate_contracts(),
         Some("check" | "test") => check(),
-        Some("test-integration") => { println!("Integration suites begin with their owning milestones."); Ok(()) },
-        Some("package" | "verify-release") => Err("Release packaging is gated until product artifacts exist.".into()),
-        _ => Err("usage: cargo xtask <bootstrap-check|generate-contracts|check|test|test-integration|package|verify-release>".into()),
+        Some("test-integration") => run("cargo", &["test", "-p", "casklet-infrastructure", "-p", "casklet-cli", "--all-features", "--locked"]),
+        Some("package") => package(false, false),
+        Some("package-alpha") => package(true, env::args().any(|arg| arg == "--allow-dirty")),
+        Some("verify-release") => verify_release(),
+        _ => Err("usage: cargo xtask <bootstrap-check|generate-contracts|check|test|test-integration|package|package-alpha [--allow-dirty]|verify-release>".into()),
     };
     match result {
         Ok(()) => ExitCode::SUCCESS,

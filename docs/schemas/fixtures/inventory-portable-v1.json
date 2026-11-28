@@ -1,0 +1,22 @@
+{
+  "schemaVersion": 1,
+  "profile": "portable",
+  "cask": { "name": "Sample", "state": "ACTIVE" },
+  "categories": [{ "key": "other", "name": "Other" }],
+  "resources": [
+    {
+      "name": "notes.txt",
+      "kind": "FILE",
+      "management": "MANAGED",
+      "containment": "INTERNAL",
+      "availability": "PRESENT",
+      "categoryKey": "other",
+      "sizeBytes": 12,
+      "sizeMeasurement": "EXACT",
+      "relativePath": "other/notes.txt"
+    }
+  ],
+  "warnings": [
+    "Inventory is informational and does not grant deletion authority."
+  ]
+}

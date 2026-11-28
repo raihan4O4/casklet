@@ -1,6 +1,7 @@
 {
   "name": "casklet",
   "private": true,
+  "license": "Apache-2.0",
   "engines": {
     "node": ">=24 <25",
     "pnpm": "12.4.2"
@@ -10,6 +11,7 @@
     "check": "corepack pnpm --filter @casklet/desktop check",
     "lint": "corepack pnpm --filter @casklet/desktop lint",
     "build": "corepack pnpm --filter @casklet/desktop build",
+    "test": "corepack pnpm --filter @casklet/desktop test",
     "format:check": "prettier --check .",
     "format": "prettier --write ."
   },

@@ -1,5 +1,14 @@
 packages:
   - apps/*
 
+allowBuilds:
+  esbuild: true
+
 onlyBuiltDependencies:
   - "@tauri-apps/cli"
+
+# Security patch for Svelte serialization until its direct dependency floor catches up.
+overrides:
+  devalue: "5.9.3"
+  # Patched indexed source-map validation (GHSA-68fv-2mgg-jv7q).
+  source-map-js: "1.2.2"

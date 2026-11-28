@@ -1,0 +1,121 @@
+# Casklet user guide and safety
+
+Casklet groups an activity's files and applications in a Cask. Create a Cask in the desktop app or with `casklet cask create <name>`. A Cask has a stable ID; its name can be reused. Development builds store data under `.casklet-dev`; release builds use `%LOCALAPPDATA%\\CaskletData` for the database and `%USERPROFILE%\\Casklets` for managed files.
+
+## Add and inspect resources
+
+To link software already installed on your PC, use **Applications → Add Application → Associate existing app**. Select the downloaded setup package when installing new software; the application's installed executable (for example, `chrome.exe`) is not its setup installer. Recognized installed executable paths are blocked before copying or launching, with a shortcut to find the existing application.
+
+If an earlier installation attempt left a Cask locked, open **Applications → View installation**. Close the installer/application and any processes it opened, confirm that they have finished, then choose **Close attempt and keep files**. This preserves existing files and software and releases the attempt's lock; it does not uninstall or undo anything. An actively running attempt must finish or reach its recovery state before preserved closure is available.
+
+The fixed main window opens to **Casks**, with search, sortable inventory, and **New Cask**. Selecting a row opens a separate desktop workspace; selecting it again focuses that workspace. Use its back arrow or close control to return to the inventory. Both windows provide minimize and close controls without maximize.
+
+Each workspace has **Overview**, **Files & Folders**, **Applications**, **Activity**, and **Settings**. The bottom action bar has **Add Items** and **Cleanup**. Cleanup opens the cleanup screen. Cask Settings edits the name and description and can archive a Cask without removing its resources. Global sidebar Settings provides database backup and diagnostics; global Activity includes interrupted operations and manifest recovery. Installed applications are discovered through the Installations page and associated from a Cask's Applications tab.
+
+Storage summaries show saved logical sizes, including references, separately from ownership and reclaimable estimates. Opening, focusing or polling a Cask reads saved metadata; it does not scan the referenced content. In Overview, **Refresh sizes** updates measurements while navigation remains available. New directory references have unknown size until measured; available Windows application size estimates are saved during inventory updates. Open a folder’s details and use **Refresh folder contents** to inspect changes. Saved sizes and availability can become stale; cleanup independently verifies current resources before any destructive action. Shared labels describe active associations and never imply ownership.
+
+Choose or drop one file or folder. Review **Reference** or **Manage at current location** before pressing **Add resource**. Reference leaves it in place and never grants deletion ownership. Copy and Move are temporarily disabled; existing managed resources and their recovery remain supported. Manage at current location leaves data where it is and records explicit cleanup authority after you confirm that it is dedicated to this Cask and is not needed elsewhere. Broad folders, links, application state, and overlapping registered resources cannot be adopted. Use Reference when ownership is uncertain. Resource rows show names and sizes; select an item to open a management overlay with availability, category, ownership, and an **Open location** button. Close or Escape returns to the unchanged list; when editing, Escape cancels the edit first. The button opens the folder itself for directories, or the containing folder for files, in Windows Explorer; it does not open or execute the file. Details stay collapsed after adding an item. Storage values distinguish managed, referenced, physical, and reclaimable estimates; unknown values are shown as unknown.
+
+Portable ZIPs are inspected before installation. WinGet packages require explicit review. Existing Windows applications are associated as references only. For MSI/EXE, choose **Install Application**, select the installer, then click **Install**. Inspection, managed copying, launch approval and supported detection happen internally. Windows handles the installer's requested UAC permission. Verified new MSI applications automatically appear in Applications with cleanup ownership. A single verified new EXE application becomes Casklet-owned automatically. Cleanup uses its registered MSI or supported direct EXE uninstaller; unsupported mechanisms are preserved for review. Preexisting, ambiguous, failed, reboot and legacy reference results never gain ownership. Failed/interrupted installation shows a short status. When the installer and its opened apps have finished, confirm this before using **Keep installed changes**; normal success needs no confirmation or preserved closure. An EXE that opens an app as a child may stay in progress until that app closes. CLI uses `casklet installer install <cask-id> <path> --accept-risk`; low-level inspect/register/launch/recovery commands remain available.
+
+## Add from File Explorer
+
+In an installed Windows build, right-click files or folders and choose **Show more options → Casklet**. The submenu shows the first five active Casks in creation order. **More casks…** opens a searchable list of every active Cask. Restore an archived Cask before adding items to it.
+
+Choosing a destination opens its existing review with the source prefilled. EXE/MSI files first offer **Install Application** or **Add Installer to Cask**. Installation opens the normal inspection/review; it still requires pressing Install. Adding the installer file uses the normal ownership/reference choice and never runs it.
+
+Explorer supports up to 32 selected items. Choose one destination for the batch, then review each item separately. Cancelling the destination chooser cancels that pending batch. Cancelling an individual review adds nothing for that item; earlier completed items remain added. Existing Casklet windows are reused, and an unfinished review keeps subsequent items waiting rather than replacing it.
+
+Reinstall Casklet if its Explorer entry is missing. Uninstall preserves your Cask data. Windows may require a restart to remove a shell library that Explorer still has loaded.
+
+## Export, recovery, and cleanup
+
+Export portable JSON for sharing or a readable report. Exports contain paths and application details, so inspect before sharing. The recovery area lists interrupted operations; inspect source, staging, and destination before choosing recovery or **Keep files and close**. Use **Back up database metadata** in Settings or `casklet diagnostics backup` to make a consistent local SQLite backup. It contains metadata only, never managed files. If startup reports database corruption, preserve the database and its backup and use local manifests for conservative recovery; do not replace the damaged file in place.
+
+Use the Archive checkbox in Cask Settings to hide a Cask from active work and later restore it. Archive preserves files, associations, and history. Open **Cleanup**, then use **Remove Cask** to permanently remove an empty Cask after confirmation. Remaining files, application dependencies, or unfinished work block removal. Removal retains audit/recovery metadata but never deletes resource bytes. CLI equivalents are `casklet cask archive <id>` and `casklet cask restore <id>`.
+
+The bottom **Cleanup** button opens the cleanup screen; it never creates a plan. Select **Whole Cask** or a category and a visible **Deletion method**, then **Create cleanup plan**. Changing the scope or deletion method clears the preview. Review item names and effects. **Review Cleanup** marks the exact preview **Reviewed**. In enabled builds, continue with **Approve Cleanup**, then confirm **Execute Cleanup**; permanent deletion needs an additional confirmation. Default builds show **Review only** up front and explain disabled approval/execution controls. Paths, IDs, reasons, and recovery evidence are in **Advanced details**. Creating a plan changes no files. Recent cleanups reload durable plans and reset review/confirmations. Interrupted plans reappear after reopening the Cask; inspect recovery locations before explicitly keeping unresolved items and closing the run. Closing does not restore quarantined data. Equivalent current plans are reused; review, approval, and execution are separate steps. Cleanup leaves the Cask intact until you separately confirm **Remove Cask**, which becomes available when no dependencies remain. Verified managed MSI uninstall previews, review, approval, and execution are in Cleanup, before file cleanup. Existing application associations and other provider options are reviewed in Applications. CLI removal uses `casklet cask remove <id> --yes`; inspect blockers with `casklet cask removal-status <id>`. CLI cleanup commands use `casklet cleanup create|list|get|approve|execute|close-uncertain`; `plan` remains an alias. Referenced, shared, changed, and uncertain items are preserved. Approved plans are revalidated immediately before execution. Recycle Bin recovery depends on the volume and Windows settings. Permanent deletion cannot be undone. Default builds keep destructive cleanup disabled. The Alpha profile enables file cleanup and verified managed MSI uninstall; WinGet uninstall remains disabled pending independent security review.
+
+To manage existing data without relocation, use `casklet resource adopt <cask-id> <path> --confirm-ownership`. External owned data supports Recycle Bin cleanup only. Back up resource bytes separately from database metadata. Machine manifests retain external paths; portable exports omit them. Manifest recovery restores unverified references, never deletion authority.
+
+## Privacy and limitations
+
+Casklet works locally without an account, cloud sync, or default telemetry. It stores paths, application metadata, and operation history on this machine. Diagnostics and exports can expose private paths; review them before sharing. Casklet does not sandbox applications, trace arbitrary installers, or guarantee complete cleanup of an application's external changes. Signed installers can still be harmful. Inaccessible or ambiguous items remain for manual review.
+
+## Troubleshooting
+
+- If a Cask or resource is missing, check the recovery area and manifest scan before changing files manually.
+- If an operation is uncertain, inspect all listed paths; preservation is the safe choice when identity cannot be confirmed.
+- If WinGet cannot find or verify a package, refresh provider inventory and verify the exact package ID and version.
+- If startup rejects the database, retain `%LOCALAPPDATA%\\CaskletData\\db` and `backups`; a fresh database must not be created over a corrupt one automatically.
+- Use **Save diagnostics** when reporting a failure, then inspect the bundle for private paths before sharing.
+
+Completed Activity can be cleared from the display without deleting operation journals; ongoing and recovery work remain visible. Cask removal uses a confirmation popup and immediately invalidates the library entry. Its empty storage directories are removed, while audit manifests move to `retired-casks` outside active storage. Unexpected files, staging, or quarantine remain in place with a warning recorded in the database. Overview storage/date details are collapsed by default. Applications has a pinned **Add Application** toolbar, search and ownership filters. New workflows open above the app list. Installer technical/history panels are removed; diagnostic journals remain available through CLI/API inspection.
+
+### Installer permissions and Cask membership
+
+Choose Install Application, select MSI/EXE, and optionally enable **Request administrator privileges** before choosing Install. Windows displays UAC for that installer; Casklet itself stays unelevated. A completed install with one verified matching new registration appears automatically in Applications as installed for this Cask. **Associate Existing App** is for outside applications and creates a reference.
+
+Verified new MSI and EXE applications appear as **Casklet-owned**. **Remove** opens a reviewed uninstall plan for that application. **Associate existing app** creates a **Reference**; **Remove link** leaves Windows software installed. Application cleanup detaches references first and uninstalls supported owners one at a time. Completed failures retain ownership and allow remaining queue items to proceed; uncertain results stop the queue. Inspect and close the results, then use the retry preview and approve it again. Shared, changed or unsupported installations are preserved. Explicit **Keep installed and detach** opts out of ownership without uninstalling. Whole Cask removal becomes available only after application and file cleanup leave no outstanding items or work. Missing or ambiguous detection remains visible for review and is never treated as confirmed ownership. Installer copies are hidden from Files & Folders; cleanup still considers their managed storage.
+
+## Appearance
+
+Under Accent color, choose a preset, open Custom color, or enter a six-digit HEX color. The live preview and all open Casklet windows update immediately; the color is saved on this computer. Text, icons and control outlines adjust for readability in both Light and Dark. Reset to default restores Casklet's default cobalt palette. Invalid HEX input leaves your last valid color unchanged. If saving fails, a notification explains that the color applies only to this session.
+
+Open Settings and choose Light or Dark under Appearance. The choice is saved on this computer and updates every open Casklet window. Light uses the supplied black logo; Dark uses the supplied white logo and layered dark-grey surfaces. Appearance does not change Cask data, storage, ownership or cleanup behavior. It is a local UI preference and is not part of database backups or Cask exports.
+
+## Folder changes
+
+Folder storage reflects current files, including nested additions, modifications and deletions made outside Casklet. While the desktop runs, metadata refreshes in the background; opening or focusing a workspace reconciles it again. Large trees use cached directory listings and an adaptive refresh interval. Expand a folder's details to inspect its current descendants; long listings are explicitly truncated without truncating the storage total.
+
+Owned folders cover later contents while the registered folder object remains verified. References and their descendants remain external; detachment never deletes them. If an older folder grant cannot verify a changed tree, use **Renew folder ownership** and confirm the dedicated-data consent again, or keep it referenced. Renewal keeps the resource ID and does not move data. CLI equivalents are `resource contents <resource-id>` and `resource adopt <cask-id> <folder-path> --confirm-ownership`.
+
+Cleanup always reviews a fresh current tree. Adding or changing contents after approval prevents that removal and requires a new reviewed plan. Failed or uncertain removal stays incomplete with recovery information; inspect both the original path and any recovery location before closing unresolved work. A completed plan that kept items explicitly says their data remains on disk. Removing an empty Cask remains a separate confirmation.
+
+If Explorer intake finds no active Casks, enter a name in **New Cask** and select **Create Cask**. Casklet continues with the original selection in the new Cask; choose Reference or explicitly consent to ownership before adding it. **More casks…** shows a searchable names-only list that loads automatically. You do not need to refresh or repeat the Explorer action.
+
+For direct Explorer intake, hover over **Casklet → your Cask**, then choose **Add as Reference** or **Add as Owned**. Owned declares that the selected data is dedicated to this activity and eligible for later reviewed cleanup; its location does not change. Casklet processes the selection in the background and reports completion or errors. Select a single EXE/MSI and choose **Install Application** to open installation review; the two file-management actions never run it. More casks and first-Cask creation continue through the existing selection and consent screens.
+
+### Change file ownership and use automatic categories
+
+Adding a file or folder that is already in a Cask keeps its current ownership and category, even if you select a different add mode. To change it, open Files & Folders, expand the item details, and choose **Change ownership**. Select **Owned by Cask** or **Reference**, then save. Ownership requires confirmation that the data is dedicated to the Cask. Changing policy never moves or deletes the item; folder contents inherit the policy. Old cleanup previews must be reviewed again after changes.
+
+New items default to **Automatic (file type)** using the existing categories. You can choose a category explicitly or edit it later. Installer files categorized as Applications are still ordinary content unless you separately start the application installation workflow.
+
+New Recycle Bin cleanup operations preserve the original filename, extension and restore location. Use Windows Restore to recover the item; restoration does not automatically recreate its Cask association or ownership. Items recycled by older versions under a quarantine name retain their historical Windows restore metadata.
+
+## Organizing categories and adding selections
+
+Overview includes a collapsed **Storage by category** disclosure for categories used by files and folders. Application sizes also contribute to the overall total; the Applications list shows each available saved size, marks estimates, and says when a size has not been measured. Refresh sizes performs explicit measurement. Unknown folder content is never treated as an empty folder. A separately referenced child keeps its item row but its bytes are included in its containing folder rather than counted twice.
+
+Files & Folders groups items by their assigned category, with a count, category icon and saved size. Groups start collapsed whenever you enter this view; expand the categories you need. Item icons follow their assigned category, and folder items retain a Folder label. Expand or collapse each group; select an item for its existing management overlay. Changing category updates the groups and storage breakdown. Cask Settings, Categories and Export Cask start collapsed each time Settings opens.
+
+Drop a mixed selection or choose multiple entries in Add Files/Add Folders. Review the selection once, choose Reference or Manage at current location, and keep Automatic category to categorize each item individually. Manage requires the existing dedicated-data acknowledgement. Partial results show added, already included/duplicate and failed counts, with failure reasons. Successful items are already available; retry works on the remaining failed paths. Existing item ownership/category stays under the existing core rules.
+
+Explorer's Casklet menu accepts up to 32 selected files/folders for Add as Owned or Add as Reference. Its choose-destination flow reviews the whole selection. A mixed EXE/file selection is resource intake, not an automatic installer queue; a single installer retains its explicit installation workflow.
+
+Closing the main window leaves open Cask windows usable. Launch Casklet again to reopen the main window; an already open Cask is reused. Close individual Cask windows normally. The process exits after the last window and any active background work finish.
+
+## Desktop navigation
+
+The main command header opens Casks, Installations, Activity and Settings. Each Cask opens in its own window with Overview, Files & Folders, Applications and Settings. Use Alt+1 through Alt+4 to select the corresponding section, or use the visible navigation buttons. These shortcuts pause while a modal is open. A keyboard skip link moves directly to the content.
+
+Cleanup stays in the Cask action footer. Review, Approve and Execute are separate stages; only the action for the current stage is shown. Approval never runs cleanup. Execution requires the displayed confirmations and fresh core revalidation. A review-only installation lets you inspect effects and shows no approval or execution action.
+
+The collection-workbench interface uses full-width navigation, leaving more room for Cask contents. Overview puts files and applications first, followed by saved storage and dates. The library retains card/list views and search/sort controls. In Files & Folders, search by item name, category or saved path. Matching groups open automatically. Search uses saved metadata and does not scan folders. Category totals during search describe the full category, including items outside the search. Clear search to return to the complete inventory. Resource editors show the filename once; cleanup item effects include saved source paths.
+
+## Library identity and direct application association
+
+The dashboard emphasizes Cask count and known size. Includes references means the size is logical associated content, not physical disk usage or reclaimable space. Search and card/list controls remain below the dashboard.
+
+Each Cask automatically gets a color from a balanced palette. Existing Casks get a default when opened or listed. Colors stay consistent after restarting and across open windows; larger libraries reuse colors. These are local appearance preferences, like theme/accent, and are not part of database backups or exported manifests. Cask names still identify the activity; color never signals ownership or cleanup eligibility.
+
+Under Installations, select Associate beside an application, choose an active Cask and confirm Associate. This creates a reference, leaving installation and ownership unchanged. Already associated Casks are disabled. Retry if a destination could not be checked; create a Cask if none are eligible. The row confirms the target after success, and an open target workspace updates its applications. Search within the chooser clears the previous selection so confirmation always targets a visible choice.
+
+## Choose a Cask icon or emoji
+
+In New Cask, optionally open Appearance before creating the Cask. Choose Icons or Emoji, search by name, select a symbol and optionally choose a color. The row previews your selection immediately. Automatic keeps Casklet's assigned color. You can skip this step and create a Cask with its usual default.
+
+To change an existing Cask, open its Settings and select Change appearance. Choose a new symbol/color, then Save appearance. Cancel appearance discards the draft. Clear returns to the collection icon and automatic color when you save. The library, Cask header and Cask choosers update together.
+
+Selections survive restarting Casklet and are saved locally with your appearance preferences. They are not included in database backups or portable Cask manifests. Existing Casks retain their assigned colors and default collection icon until customized. Emoji rendering follows the system font. Colors and symbols never grant ownership or cleanup permission.

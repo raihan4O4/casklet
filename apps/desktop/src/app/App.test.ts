@@ -1,0 +1,4049 @@
+import {
+  cleanup,
+  fireEvent,
+  render,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/svelte";
+import { afterEach, expect, test, vi } from "vitest";
+import App from "./App.svelte";
+import Workspace from "./Workspace.svelte";
+import ExplorerIntake from "./ExplorerIntake.svelte";
+import MsiCleanup from "./MsiCleanup.svelte";
+import ToastArea from "./ToastArea.svelte";
+import { clearNotices, notify } from "./notifications";
+import { revealWindow } from "./windowReady";
+import { caskColor } from "./format";
+import {
+  appearanceForCask,
+  caskAppearances,
+  DEFAULT_APPEARANCE,
+  saveCaskAppearance,
+} from "./caskAppearance";
+import { applicationRows } from "./applications";
+import { open } from "@tauri-apps/plugin-dialog";
+
+vi.stubGlobal("matchMedia", () => ({ matches: true }));
+vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) =>
+  setTimeout(() => callback(performance.now()), 0),
+);
+
+HTMLDialogElement.prototype.showModal = function () {
+  this.setAttribute("open", "");
+};
+HTMLDialogElement.prototype.close = function () {
+  this.removeAttribute("open");
+};
+
+const calls = vi.hoisted(() => ({
+  invoke: vi.fn(),
+  nativeTheme: vi.fn<(request: unknown) => Promise<void>>(async () => {}),
+  events: new Map<string, (event: { payload: unknown }) => void>(),
+  drop: null as
+    | null
+    | ((event: {
+        payload: {
+          type: string;
+          paths: string[];
+        };
+      }) => void),
+}));
+vi.mock("@tauri-apps/api/core", () => ({
+  invoke: (command: string, ...args: unknown[]) =>
+    command === "set_window_theme"
+      ? calls.nativeTheme(args[0])
+      : calls.invoke(command, ...args),
+}));
+vi.mock("@tauri-apps/api/event", () => ({
+  emit: vi.fn(async () => {}),
+  listen: vi.fn(
+    async (name: string, handler: (event: { payload: unknown }) => void) => {
+      if (!/^[a-zA-Z0-9_:/-]+$/.test(name))
+        throw new Error(`Invalid Tauri event: ${name}`);
+      calls.events.set(name, handler);
+      return () => {
+        calls.events.delete(name);
+      };
+    },
+  ),
+}));
+vi.mock("@tauri-apps/api/window", () => ({
+  getCurrentWindow: () => ({
+    title: async () => "Casklet",
+    minimize: vi.fn(),
+    close: vi.fn(),
+    onDragDropEvent: async (handler: typeof calls.drop) => {
+      calls.drop = handler;
+      return () => {
+        calls.drop = null;
+      };
+    },
+  }),
+}));
+vi.mock("@tauri-apps/plugin-dialog", () => ({ open: vi.fn(), save: vi.fn() }));
+
+afterEach(() => {
+  cleanup();
+  localStorage.clear();
+  caskAppearances.set({});
+  calls.nativeTheme.mockClear();
+  calls.events.clear();
+  clearNotices();
+  vi.useRealTimers();
+  vi.mocked(open).mockReset();
+  calls.invoke.mockReset();
+  calls.drop = null;
+});
+
+test("Explorer chooser searches every Cask and routes a destination beyond five", async () => {
+  const casks = Array.from({ length: 12 }, (_, index) => ({
+    id: `cask-${index}`,
+    name: `Project ${index}`,
+    state: "ACTIVE",
+    managedStorageRoot: `C:/Casks/${index}`,
+  }));
+  calls.invoke.mockImplementation(async (command) => {
+    if (command === "explorer_pending")
+      return { id: 42, path: "C:/資料/notes.txt", caskId: null, batchSize: 3 };
+    if (command === "list_casks") return casks;
+    return null;
+  });
+  render(ExplorerIntake);
+  await screen.findByRole("dialog", { name: "Choose a Cask" });
+  expect(screen.getAllByRole("radio")).toHaveLength(12);
+  expect(screen.getByRole("radio", { name: "Project 11" })).toBeTruthy();
+  expect(screen.queryByText("C:/Casks/11")).toBeNull();
+  expect(screen.queryByRole("button", { name: "Refresh" })).toBeNull();
+  expect(
+    screen.getByText("Choose where to review all 3 selected items."),
+  ).toBeTruthy();
+  await fireEvent.input(screen.getByLabelText("Search Casks"), {
+    target: { value: "Project 11" },
+  });
+  await fireEvent.click(screen.getByRole("radio", { name: /Project 11/ }));
+  await fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+  await waitFor(() =>
+    expect(calls.invoke).toHaveBeenCalledWith("explorer_route", {
+      id: 42,
+      caskId: "cask-11",
+    }),
+  );
+  expect(
+    calls.invoke.mock.calls.some(([command]) =>
+      ["add_resource", "adopt_resource", "install_application"].includes(
+        command,
+      ),
+    ),
+  ).toBe(false);
+});
+
+test("Explorer handles a deleted destination and cancellation without mutations", async () => {
+  calls.invoke.mockImplementation(async (command) => {
+    if (command === "explorer_pending")
+      return { id: 7, path: "C:/notes.txt", caskId: "deleted" };
+    if (command === "list_casks")
+      return [{ id: "other", name: "Other", state: "ACTIVE" }];
+    return null;
+  });
+  render(ExplorerIntake);
+  await screen.findByText(
+    "That Cask is no longer available. Choose another destination.",
+  );
+  await fireEvent(
+    await screen.findByRole("dialog"),
+    new Event("cancel", { cancelable: true }),
+  );
+  await waitFor(() =>
+    expect(calls.invoke).toHaveBeenCalledWith("explorer_ack", { id: 7 }),
+  );
+  expect(
+    calls.invoke.mock.calls.some(([command]) => command === "explorer_route"),
+  ).toBe(false);
+});
+
+test("Explorer direct destination skips the chooser and displays routing errors", async () => {
+  calls.invoke.mockImplementation(async (command) => {
+    if (command === "explorer_pending")
+      return { id: 8, path: "C:/missing.txt", caskId: "existing" };
+    if (command === "list_casks")
+      return [
+        {
+          id: "existing",
+          name: "Research",
+          state: "ACTIVE",
+          managedStorageRoot: "C:/Casks/a",
+        },
+      ];
+    if (command === "explorer_route")
+      throw "Cannot open the selected item. Check that it still exists.";
+    return null;
+  });
+  render(ExplorerIntake);
+  await screen.findByRole("alert");
+  expect(screen.getByRole("alert").textContent).toContain(
+    "Check that it still exists",
+  );
+  expect(calls.invoke).toHaveBeenCalledWith("explorer_route", {
+    id: 8,
+    caskId: "existing",
+  });
+});
+
+test.each([false, true])(
+  "Explorer resource review preserves explicit consent (installer: %s)",
+  async (isInstaller) => {
+    let pending = true;
+    const path = isInstaller ? "C:/資料/setup.exe" : "C:/資料/notes.txt";
+    ownershipWorkspace([], (command) => {
+      if (command === "explorer_pending")
+        return pending ? { id: 1, path, isInstaller } : null;
+      if (command === "explorer_ack") {
+        pending = false;
+        return null;
+      }
+      return undefined;
+    });
+    if (isInstaller) {
+      await screen.findByRole("region", { name: "Installer action" });
+      await fireEvent.click(
+        screen.getByRole("button", { name: "Add Installer to Cask" }),
+      );
+    }
+    const commit = await screen.findByRole("button", { name: "Add resource" });
+    expect((commit as HTMLButtonElement).disabled).toBe(true);
+    expect(screen.getAllByTitle(path).length).toBeGreaterThan(0);
+    expect(
+      calls.invoke.mock.calls.some(([command]) =>
+        [
+          "add_resource",
+          "adopt_resource",
+          "install_application",
+          "inspect_installer_artifact",
+        ].includes(command),
+      ),
+    ).toBe(false);
+    await fireEvent.click(
+      screen.getByRole("button", { name: "Close resource intake" }),
+    );
+  },
+);
+
+test("Explorer installation inspects the selected installer and waits for Install", async () => {
+  let pending = true;
+  ownershipWorkspace([], (command) => {
+    if (command === "explorer_pending")
+      return pending
+        ? { id: 2, path: "C:/setup.MSI", isInstaller: true }
+        : null;
+    if (command === "explorer_ack") {
+      pending = false;
+      return null;
+    }
+    if (command === "inspect_installer_artifact")
+      return {
+        productName: "Example",
+        signatureStatus: "UNSIGNED",
+        sha256: "digest",
+      };
+    return undefined;
+  });
+  await screen.findByRole("button", { name: "Install Application" });
+  await fireEvent.click(
+    screen.getByRole("button", { name: "Install Application" }),
+  );
+  await screen.findByRole("button", { name: "Install" });
+  expect(calls.invoke).toHaveBeenCalledWith("inspect_installer_artifact", {
+    request: { version: 1, path: "C:/setup.MSI" },
+  });
+  expect(
+    calls.invoke.mock.calls.some(
+      ([command]) => command === "install_application",
+    ),
+  ).toBe(false);
+});
+
+function ownershipWorkspace(
+  resources: object[] = [],
+  handler?: (
+    command: string,
+    args: { request?: Record<string, unknown> },
+  ) => unknown,
+  activity = false,
+) {
+  const cask = {
+    version: 1,
+    id: "ownership-cask",
+    name: "Ownership",
+    description: "",
+    state: "ACTIVE",
+    managedStorageRoot: "C:/Casklets/test",
+    createdAtMs: 1,
+    updatedAtMs: 1,
+    revision: 0,
+  };
+  calls.invoke.mockImplementation(async (command: string, args = {}) => {
+    const handled = handler?.(command, args);
+    if (handled !== undefined) return handled;
+    if (command === "cask_removal_status")
+      return {
+        version: 1,
+        canRemove: resources.length === 0,
+        resourceCount: resources.length,
+        applicationCount: 0,
+        unfinishedOperations: 0,
+      };
+    if (command === "get_cask") return cask;
+    if (command === "list_resources") return resources;
+    if (command === "list_categories")
+      return [{ version: 1, key: "other", name: "Other", isBuiltin: true }];
+    if (command === "list_casks") return [cask];
+    if (command === "removal_capability") return false;
+    if (command === "recovery_status")
+      return { version: 1, operations: [], pendingManifestCasks: [] };
+    if (command === "storage_summary")
+      return {
+        managedLogicalBytes: 0,
+        referencedLogicalBytes: 0,
+        physicalBytes: null,
+        reclaimableMinBytes: 0,
+        reclaimableMaxBytes: 0,
+        unknownEntries: 0,
+      };
+    return [];
+  });
+  render(ToastArea);
+  render(Workspace, activity ? { mode: "activity" } : { caskId: cask.id });
+  return cask;
+}
+
+async function resourceButton(name: string) {
+  const button = await screen.findByRole("button", {
+    name: `Details for ${name}`,
+    hidden: true,
+  });
+  const group = button.closest<HTMLDetailsElement>(".resource-category");
+  if (group && !group.open)
+    await fireEvent.click(group.querySelector("summary")!);
+  return button;
+}
+
+test("Overview shortcuts browse contents without creating plans or changing data", async () => {
+  ownershipWorkspace();
+  await screen.findByRole("heading", { name: "Ownership" });
+  await fireEvent.click(
+    screen.getByRole("button", { name: "Browse files and folders" }),
+  );
+  expect(
+    screen.getByRole("region", { name: "Resource inventory" }),
+  ).toBeTruthy();
+  await fireEvent.click(screen.getByRole("button", { name: "Overview" }));
+  await fireEvent.click(
+    screen.getByRole("button", { name: "Browse applications" }),
+  );
+  expect(
+    screen.getByRole("region", { name: "Cask applications" }),
+  ).toBeTruthy();
+  expect(
+    calls.invoke.mock.calls.some(([command]) =>
+      /^(create_|approve_|execute_|add_|adopt_|remove_)/.test(command),
+    ),
+  ).toBe(false);
+});
+
+test("collection layout and search controls preserve the selected Cask command", async () => {
+  calls.invoke.mockImplementation(async (command) => {
+    if (command === "cask_library")
+      return {
+        version: 1,
+        totalItems: 2,
+        managedBytes: 0,
+        referencedBytes: 0,
+        unknownEntries: 0,
+        casks: [
+          {
+            cask: {
+              version: 1,
+              id: "stable-id",
+              name: "Field notes",
+              description: "Research",
+              state: "ACTIVE",
+              createdAtMs: 1,
+              updatedAtMs: 1,
+              revision: 0,
+            },
+            itemCount: 2,
+            managedBytes: 0,
+            referencedBytes: 0,
+            unknownEntries: 0,
+          },
+        ],
+      };
+    if (command === "recovery_status")
+      return { version: 1, operations: [], pendingManifestCasks: [] };
+    return null;
+  });
+  render(App);
+  await screen.findByRole("button", { name: "Open Field notes" });
+  expect(
+    screen
+      .getByRole("button", { name: "Card view" })
+      .getAttribute("aria-pressed"),
+  ).toBe("true");
+  await fireEvent.click(screen.getByRole("button", { name: "List view" }));
+  expect(
+    screen
+      .getByRole("button", { name: "List view" })
+      .getAttribute("aria-pressed"),
+  ).toBe("true");
+  await fireEvent.input(screen.getByRole("textbox", { name: "Search casks" }), {
+    target: { value: "missing" },
+  });
+  expect(screen.queryByRole("button", { name: "Open Field notes" })).toBeNull();
+  await fireEvent.click(
+    screen.getByRole("button", { name: "Clear Cask search" }),
+  );
+  await fireEvent.click(
+    screen.getByRole("button", { name: "Open Field notes" }),
+  );
+  expect(calls.invoke).toHaveBeenCalledWith("open_cask_window", {
+    request: { version: 1, id: "stable-id" },
+  });
+});
+
+test("an empty Cask removes after confirmation without creating a cleanup plan", async () => {
+  const cask = ownershipWorkspace([], (command) =>
+    command === "remove_cask" ? null : undefined,
+  );
+  await screen.findByRole("heading", { name: "Ownership" });
+  expect(screen.queryByRole("button", { name: "Remove Cask" })).toBeNull();
+  await fireEvent.click(screen.getByRole("button", { name: "Cleanup" }));
+  const remove = await screen.findByRole("button", { name: "Remove Cask" });
+  await waitFor(() =>
+    expect((remove as HTMLButtonElement).disabled).toBe(false),
+  );
+  await fireEvent.click(remove);
+  const modal = screen.getByRole("dialog", {
+    name: "Permanently remove Cask?",
+  });
+  expect(modal.getAttribute("open")).not.toBeNull();
+  expect(document.activeElement).toBe(
+    within(modal).getByRole("button", { name: "Cancel" }),
+  );
+  expect(
+    calls.invoke.mock.calls.some(([command]) => command === "remove_cask"),
+  ).toBe(false);
+  await fireEvent.click(
+    within(screen.getByRole("dialog")).getByRole("button", {
+      name: "Remove Cask",
+    }),
+  );
+  await waitFor(() =>
+    expect(calls.invoke).toHaveBeenCalledWith("remove_cask", {
+      request: { version: 1, id: cask.id, expectedRevision: 0, confirm: true },
+    }),
+  );
+  expect(
+    calls.invoke.mock.calls.some(
+      ([command]) => command === "create_removal_plan",
+    ),
+  ).toBe(false);
+  await screen.findByText("Cask removed permanently.");
+  expect(screen.queryByRole("button", { name: "Archive Cask" })).toBeNull();
+});
+
+test("Overview metadata and resource choices stay compact", async () => {
+  ownershipWorkspace();
+  await screen.findByRole("heading", { name: "Ownership" });
+  const info = screen.getByRole("region", { name: "Cask information" });
+  expect(within(info).queryByText("Storage Location")).toBeNull();
+  expect(within(info).queryByRole("button", { name: "Open" })).toBeNull();
+  expect(within(info).getByText("Created")).toBeTruthy();
+  expect(within(info).getByText("Last Updated")).toBeTruthy();
+  expect(info.querySelectorAll("time")[0].getAttribute("datetime")).toBe(
+    new Date(1).toISOString(),
+  );
+  expect(screen.queryByText("Size on Disk")).toBeNull();
+  await fireEvent.click(screen.getByRole("button", { name: "Add Items" }));
+  expect(screen.getByRole("button", { name: "Add File" })).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Add Folder" })).toBeTruthy();
+  expect(screen.queryByRole("button", { name: "Add Reference" })).toBeNull();
+});
+
+test("Cask removal invalidates the library immediately and older queries cannot resurrect it", async () => {
+  const cask = {
+    version: 1,
+    id: "deleted",
+    name: "Deleted",
+    description: "",
+    state: "ACTIVE",
+    managedStorageRoot: "C:/Casklets/deleted",
+    createdAtMs: 1,
+    updatedAtMs: 1,
+    revision: 0,
+  };
+  const initial = {
+    version: 1,
+    totalItems: 0,
+    managedBytes: 0,
+    unknownEntries: 0,
+    storageRoot: "C:/Casklets",
+    casks: [
+      {
+        cask,
+        itemCount: 0,
+        fileCount: 0,
+        applicationCount: 0,
+        managedBytes: 0,
+        referencedBytes: 0,
+        unknownEntries: 0,
+      },
+    ],
+  };
+  let requests = 0;
+  let completeStale: ((value: typeof initial) => void) | undefined;
+  calls.invoke.mockImplementation(async (command) => {
+    if (command === "cask_library") {
+      requests++;
+      if (requests === 1) return initial;
+      if (requests === 2)
+        return new Promise((resolve) => {
+          completeStale = resolve;
+        });
+      return { ...initial, casks: [] };
+    }
+    if (command === "recovery_status")
+      return { version: 1, operations: [], pendingManifestCasks: [] };
+    return null;
+  });
+  render(App);
+  await screen.findByRole("button", { name: "Open Deleted" });
+  await waitFor(() => expect(calls.events.has("casks-removed")).toBe(true));
+  calls.events.get("casks-changed")?.({ payload: null });
+  await waitFor(() => expect(completeStale).toBeDefined());
+  calls.events.get("casks-removed")?.({ payload: "deleted" });
+  await waitFor(() =>
+    expect(screen.queryByRole("button", { name: "Open Deleted" })).toBeNull(),
+  );
+  completeStale?.(initial);
+  await waitFor(() =>
+    expect(screen.getByRole("heading", { name: "No Casks yet" })).toBeTruthy(),
+  );
+  expect(screen.queryByRole("button", { name: "Open Deleted" })).toBeNull();
+});
+
+test("installer diagnostics and history are absent while EXE limits remain clear", async () => {
+  const path = "C:/private/installers/setup.exe";
+  ownershipWorkspace([], (command) =>
+    command === "inspect_installer_artifact"
+      ? {
+          version: 1,
+          path,
+          format: "EXE",
+          sha256: "secret-hash",
+          sizeBytes: 12,
+          signatureStatus: "UNKNOWN",
+          signatureDetail: "PowerShell execution-policy detail",
+          signer: null,
+          productName: "Example setup",
+          publisher: null,
+          productVersion: null,
+          productCode: null,
+          warnings: ["Technical diagnostic"],
+        }
+      : undefined,
+  );
+  vi.mocked(open).mockResolvedValue(path);
+  await screen.findByRole("heading", { name: "Ownership" });
+  await fireEvent.click(screen.getByRole("button", { name: "Applications" }));
+  await fireEvent.click(
+    screen.getByRole("button", { name: "Add Application" }),
+  );
+  await fireEvent.click(
+    screen.getByRole("button", { name: /Install Application/ }),
+  );
+  await fireEvent.click(
+    screen.getByRole("button", { name: "Select MSI or EXE" }),
+  );
+  await screen.findByText("Example setup");
+  expect(
+    screen.getByText(/Cleanup uses the verified Windows uninstaller/i),
+  ).toBeTruthy();
+  expect(screen.queryByText(path)).toBeNull();
+  expect(screen.queryByText(/secret-hash/)).toBeNull();
+  expect(screen.queryByText(/PowerShell/)).toBeNull();
+  expect(screen.queryByText("Technical details")).toBeNull();
+  expect(screen.queryByText(/Advanced installer history/i)).toBeNull();
+});
+
+test("Select and Install uses one command and automatically refreshes Applications", async () => {
+  let installed = false;
+  const path = "C:/setup.msi";
+  ownershipWorkspace([], (command) => {
+    if (command === "inspect_installer_artifact")
+      return {
+        version: 1,
+        path,
+        format: "MSI",
+        sha256: "selected-hash",
+        sizeBytes: 1,
+        signatureStatus: "VALID",
+        signer: "Publisher",
+        productName: "Example MSI",
+        productCode: "{12345678-1234-1234-1234-123456789ABC}",
+        warnings: [],
+      };
+    if (command === "install_application") {
+      installed = true;
+      return {
+        version: 1,
+        id: "install-op",
+        caskId: "ownership-cask",
+        state: "CONFIRMED_ASSOCIATION",
+        confirmedInstallationId: "new-app",
+        exitCode: 0,
+        errorCode: null,
+        candidates: [],
+        warnings: [],
+      };
+    }
+    if (command === "list_associated_applications")
+      return installed
+        ? [
+            {
+              version: 1,
+              installationId: "new-app",
+              applicationId: "app",
+              name: "Installed Example",
+              availability: "PRESENT",
+              state: "PRESENT",
+              removalPolicy: "MANAGED_MSI",
+              scope: "USER",
+              publisher: "Publisher",
+              displayVersion: "1",
+              caskId: "ownership-cask",
+            },
+          ]
+        : [];
+    return undefined;
+  });
+  vi.mocked(open).mockResolvedValue(path);
+  await screen.findByRole("heading", { name: "Ownership" });
+  await fireEvent.click(screen.getByRole("button", { name: "Applications" }));
+  await fireEvent.click(
+    screen.getByRole("button", { name: "Add Application" }),
+  );
+  await fireEvent.click(
+    screen.getByRole("button", { name: /Install Application/ }),
+  );
+  await fireEvent.click(
+    screen.getByRole("button", { name: "Select MSI or EXE" }),
+  );
+  const install = await screen.findByRole("button", { name: "Install" });
+  expect(
+    calls.invoke.mock.calls.some(
+      ([command]) => command === "install_application",
+    ),
+  ).toBe(false);
+  await fireEvent.click(
+    screen.getByRole("checkbox", { name: "Request administrator privileges" }),
+  );
+  await fireEvent.click(install);
+  await screen.findByText("Installed Example");
+  expect(calls.invoke).toHaveBeenCalledWith("install_application", {
+    request: {
+      version: 1,
+      caskId: "ownership-cask",
+      path,
+      expectedSha256: "selected-hash",
+      acceptExecutionRisk: true,
+      allowElevation: true,
+    },
+  });
+  expect(
+    calls.invoke.mock.calls.filter(
+      ([command]) => command === "install_application",
+    ),
+  ).toHaveLength(1);
+  expect(
+    calls.invoke.mock.calls.some(([command]) =>
+      [
+        "register_installer_artifact",
+        "launch_installer_artifact",
+        "confirm_installer_candidate",
+        "close_installer_operation",
+      ].includes(command),
+    ),
+  ).toBe(false);
+  expect(screen.queryByText("Recovery required")).toBeNull();
+  expect(screen.queryByRole("button", { name: "Review launch" })).toBeNull();
+});
+
+function appFixture(
+  name: string,
+  id: string,
+  managed = false,
+): Parameters<typeof applicationRows>[1][number] {
+  return {
+    version: 1,
+    applicationId: `app-${id}`,
+    installationId: id,
+    name,
+    displayVersion: "1.0",
+    publisher: "Example Publisher",
+    scope: "USER",
+    sourceKey: "registry",
+    installLocation: null,
+    state: "PRESENT",
+    ambiguousName: false,
+    associatedCaskId: "ownership-cask",
+    provenance: "DETECTED_WINDOWS_REGISTRY",
+    removalPolicy: managed ? "MANAGED_MSI" : "DETACH_ONLY",
+  };
+}
+
+test("application presentation merges provider rows without inferring ownership from names", () => {
+  const app = appFixture("Example", "one");
+  const winget = {
+    version: 1,
+    id: "provider",
+    caskId: "ownership-cask",
+    packageId: "Example.App",
+    packageVersion: "1",
+    registryInstallationId: "one",
+    state: "INSTALLED",
+    provenance: "INSTALLED_BY_CASKLET",
+    canPlanUninstall: true,
+    warnings: [],
+  };
+  const merged = applicationRows([], [app], [winget]);
+  expect(merged).toHaveLength(1);
+  expect(merged[0]).toMatchObject({
+    name: "Example",
+    kind: "winget",
+    management: "managed",
+  });
+  expect(
+    applicationRows([], [app, appFixture("Example", "two")], []),
+  ).toHaveLength(2);
+  expect(applicationRows([], [app], [])[0].management).toBe("associated");
+  expect(
+    applicationRows(
+      [],
+      [],
+      [
+        { ...winget, registryInstallationId: "", id: "a" },
+        { ...winget, registryInstallationId: "", id: "b" },
+      ],
+    ),
+  ).toHaveLength(2);
+});
+
+test("Applications keeps Add above a large library and supports focused navigation and filters", async () => {
+  const apps = Array.from({ length: 10 }, (_, index) =>
+    appFixture(`App ${index}`, `id-${index}`, index % 2 === 0),
+  );
+  ownershipWorkspace([], (command) =>
+    command === "list_associated_applications" ? apps : undefined,
+  );
+  await screen.findByRole("heading", { name: "Ownership" });
+  await fireEvent.click(screen.getByRole("button", { name: "Applications" }));
+  const add = screen.getByRole("button", { name: "Add Application" });
+  const list = await screen.findByRole("list", { name: "Application list" });
+  expect(within(list).getAllByRole("listitem")).toHaveLength(10);
+  expect(
+    add.compareDocumentPosition(list) & Node.DOCUMENT_POSITION_FOLLOWING,
+  ).not.toBe(0);
+  await fireEvent.input(
+    screen.getByRole("textbox", { name: "Search Cask applications" }),
+    { target: { value: "App 7" } },
+  );
+  expect(
+    within(screen.getByRole("list", { name: "Application list" })).getAllByRole(
+      "listitem",
+    ),
+  ).toHaveLength(1);
+  await fireEvent.click(
+    within(
+      screen.getByRole("group", { name: "Filter applications" }),
+    ).getByRole("button", { name: "Owned" }),
+  );
+  expect(screen.getByText("No matching applications")).toBeTruthy();
+  await fireEvent.click(screen.getByRole("button", { name: "Reset filters" }));
+  expect(screen.getByText("App 7")).toBeTruthy();
+  await fireEvent.click(add);
+  const install = screen.getByRole("button", { name: /Install Application/ });
+  await waitFor(() => expect(document.activeElement).toBe(install));
+  await fireEvent.click(install);
+  await waitFor(() =>
+    expect(
+      document.activeElement?.classList.contains("application-workflow-panel"),
+    ).toBe(true),
+  );
+  const panel = screen.getByRole("region", { name: "Install Application" });
+  expect(
+    panel.compareDocumentPosition(
+      screen.getByRole("list", { name: "Application list" }),
+    ) & Node.DOCUMENT_POSITION_FOLLOWING,
+  ).not.toBe(0);
+  await fireEvent.click(
+    screen.getByRole("button", { name: "Close application workflow" }),
+  );
+  await waitFor(() => expect(document.activeElement).toBe(add));
+  expect(
+    screen.queryByRole("region", { name: "Install Application" }),
+  ).toBeNull();
+});
+
+test.each(["LAUNCH_UNCERTAIN"])(
+  "unconfirmed installation requires confirmation before preserved closure (%s)",
+  async (errorCode) => {
+    const operation = {
+      version: 1,
+      id: "private-operation-id",
+      artifactId: "artifact",
+      caskId: "ownership-cask",
+      state: "RECOVERY_REQUIRED",
+      exitCode: null,
+      errorCode,
+      confirmedInstallationId: null,
+      candidates: [],
+      startedAtMs: 1,
+      warnings: ["secret implementation detail"],
+    };
+    ownershipWorkspace([], (command) => {
+      if (command === "list_installer_operations") return [operation];
+      if (command === "get_installer_operation") return operation;
+      return undefined;
+    });
+    await screen.findByRole("heading", { name: "Ownership" });
+    await fireEvent.click(screen.getByRole("button", { name: "Applications" }));
+    await fireEvent.click(
+      await screen.findByRole("button", { name: "View installation" }),
+    );
+    expect(
+      screen.queryByText(
+        /private-operation-id|LAUNCH_UNCERTAIN|secret implementation/,
+      ),
+    ).toBeNull();
+    expect(screen.queryByText("Technical details")).toBeNull();
+    expect(
+      screen.getByText(
+        "Installation could not be confirmed. Check the Windows installer.",
+      ),
+    ).toBeTruthy();
+    expect(
+      screen.queryByRole("button", { name: "Keep installed changes" }),
+    ).toBeNull();
+    expect(
+      screen.queryByRole("checkbox", {
+        name: "The installer and any apps it opened have finished.",
+      }),
+    ).toBeNull();
+    expect(screen.queryByText(/Keeping changes leaves software/)).toBeNull();
+    expect(
+      screen
+        .getByRole("button", { name: "Close attempt and keep files" })
+        .hasAttribute("disabled"),
+    ).toBe(true);
+    expect(
+      calls.invoke.mock.calls.some(
+        ([command]) => command === "close_installer_operation",
+      ),
+    ).toBe(false);
+    expect(
+      calls.invoke.mock.calls.some(
+        ([command]) => command === "install_application",
+      ),
+    ).toBe(false);
+  },
+);
+
+test("clearing completed Activity preserves active and recovery work across reload", async () => {
+  const entries = [
+    "SUCCEEDED",
+    "RUNNING",
+    "RECOVERY_REQUIRED",
+    "CANCELLED",
+    "CLOSED_PRESERVED",
+  ].map((state, index) => ({
+    version: 1,
+    id: `op-${index}`,
+    caskId: "ownership-cask",
+    state,
+    step: `Step ${index}`,
+    updatedAtMs: 1,
+    startedAtMs: 1,
+    progressCompleted: 0,
+    progressTotal: null,
+    errorCode: null,
+    cancellationRequested: false,
+  }));
+  ownershipWorkspace(
+    [],
+    (command) => (command === "list_operations" ? entries : undefined),
+    true,
+  );
+  await screen.findByRole("heading", { name: "Recent activity" });
+  await screen.findByText("Step 0");
+  expect(
+    screen
+      .getByRole("button", { name: "Clear history" })
+      .hasAttribute("disabled"),
+  ).toBe(false);
+  await fireEvent.click(screen.getAllByText("Details")[0]);
+  expect(screen.getAllByText("Ownership").length).toBeGreaterThan(0);
+  await fireEvent.click(screen.getByRole("button", { name: "Clear history" }));
+  expect(
+    screen
+      .getByRole("button", { name: "Clear history" })
+      .hasAttribute("disabled"),
+  ).toBe(true);
+  expect(screen.queryByText("Step 0")).toBeNull();
+  expect(screen.getByText("Step 1")).toBeTruthy();
+  expect(screen.getByText("Step 2")).toBeTruthy();
+  expect(
+    calls.invoke.mock.calls.some(([command]) =>
+      /clear|delete.*operation/.test(command),
+    ),
+  ).toBe(false);
+  cleanup();
+  ownershipWorkspace(
+    [],
+    (command) => (command === "list_operations" ? entries : undefined),
+    true,
+  );
+  await screen.findByRole("heading", { name: "Recent activity" });
+  await screen.findByText("Step 1");
+  expect(screen.queryByText("Step 0")).toBeNull();
+});
+
+test("MSI application cleanup separates preview, review, approval and confirmed execution", async () => {
+  let plan = {
+    version: 1,
+    id: "msi-plan",
+    caskId: "test",
+    state: "DRAFT",
+    planHash: "hash",
+    expiresAtMs: Date.now() + 600000,
+    items: [
+      {
+        installationId: "msi",
+        name: "Managed app",
+        productCode: "{PRODUCT}",
+        evidenceSha256: "evidence",
+        action: "UNINSTALL",
+        state: "PENDING",
+      },
+    ],
+  };
+  calls.invoke.mockImplementation(async (command) => {
+    if (command === "latest_msi_cleanup") return null;
+    if (command === "approve_msi_cleanup")
+      plan = { ...plan, state: "APPROVED" };
+    if (command === "execute_msi_cleanup")
+      plan = {
+        ...plan,
+        state: "COMPLETE",
+        items: plan.items.map((item) => ({ ...item, state: "SUCCEEDED" })),
+      };
+    return plan;
+  });
+  render(MsiCleanup, {
+    caskId: "test",
+    enabled: true,
+    hasManaged: true,
+    onChanged: async () => {},
+  });
+  await fireEvent.click(
+    screen.getByRole("button", { name: "Preview application cleanup" }),
+  );
+  await screen.findByText("Managed app");
+  expect(
+    calls.invoke.mock.calls.some(
+      ([command]) => command === "execute_msi_cleanup",
+    ),
+  ).toBe(false);
+  await fireEvent.click(
+    screen.getByRole("button", { name: "Review applications" }),
+  );
+  await fireEvent.click(
+    screen.getByRole("button", { name: "Approve uninstall" }),
+  );
+  await waitFor(() =>
+    expect(
+      (
+        screen.getByRole("button", {
+          name: "Uninstall applications",
+        }) as HTMLButtonElement
+      ).disabled,
+    ).toBe(true),
+  );
+  await fireEvent.click(screen.getByLabelText(/I confirm uninstalling/));
+  await fireEvent.click(
+    screen.getByRole("button", { name: "Uninstall applications" }),
+  );
+  await screen.findByText("Uninstalled");
+  expect(calls.invoke).toHaveBeenCalledWith("execute_msi_cleanup", {
+    request: { version: 1, id: "msi-plan", planHash: "hash" },
+  });
+});
+
+test("in-place ownership needs explicit consent and uses the shared adoption command", async () => {
+  const resources: object[] = [];
+  ownershipWorkspace(resources, (command) => {
+    if (command !== "adopt_resource") return undefined;
+    const resource = {
+      id: "owned",
+      name: "project.txt",
+      caskId: "ownership-cask",
+      path: "D:/Projects/project.txt",
+      kind: "FILE",
+      management: "MANAGED",
+      ownership: "OWNED",
+      containment: "EXTERNAL",
+      availability: "PRESENT",
+      categoryKey: "other",
+      sizeBytes: 4,
+      sizeMeasurement: "EXACT",
+      unknownEntries: 0,
+    };
+    resources.push(resource);
+    return resource;
+  });
+  await screen.findByRole("heading", { name: "Ownership" });
+  await waitFor(() => expect(calls.drop).not.toBeNull());
+  calls.drop?.({
+    payload: { type: "drop", paths: ["D:/Projects/project.txt"] },
+  });
+  await fireEvent.click(
+    await screen.findByLabelText("Manage at current location"),
+  );
+  const add = screen.getByRole("button", { name: "Add resource" });
+  expect((add as HTMLButtonElement).disabled).toBe(true);
+  await fireEvent.click(
+    screen.getByLabelText(/This data is dedicated to this Cask/),
+  );
+  await fireEvent.click(add);
+  await waitFor(() =>
+    expect(calls.invoke).toHaveBeenCalledWith("adopt_resource", {
+      request: {
+        version: 1,
+        caskId: "ownership-cask",
+        sourcePath: "D:/Projects/project.txt",
+        categoryKey: "auto",
+        confirmOwnership: true,
+      },
+    }),
+  );
+  expect(
+    calls.invoke.mock.calls.some(([command]) => command === "add_resource"),
+  ).toBe(false);
+  const toggle = await resourceButton("project.txt");
+  expect(toggle.getAttribute("aria-haspopup")).toBe("dialog");
+  expect(screen.queryByText("D:/Projects/project.txt")).toBeNull();
+  await fireEvent.click(toggle);
+  const details = screen.getByRole("region", {
+    name: "Details for project.txt",
+  });
+  const overlay = screen.getByRole("dialog", {
+    name: "Management details for project.txt",
+  });
+  expect(overlay.hasAttribute("open")).toBe(true);
+  expect(overlay.contains(details)).toBe(true);
+
+  expect(within(details).queryByText("D:/Projects/project.txt")).toBeNull();
+  await fireEvent.click(
+    within(details).getByRole("button", { name: "Open location" }),
+  );
+  expect(calls.invoke).toHaveBeenCalledWith("open_resource_location", {
+    request: { version: 1, id: "owned" },
+  });
+  expect(within(details).queryByText("Cleanup authority")).toBeNull();
+  await fireEvent.click(
+    screen.getByRole("button", { name: "Close resource details" }),
+  );
+  expect(
+    screen.queryByRole("region", { name: "Details for project.txt" }),
+  ).toBeNull();
+  expect(screen.queryByText("D:/Projects/project.txt")).toBeNull();
+});
+
+test("cleanup review explains actions and blocks concurrent duplicate submissions", async () => {
+  const resource = {
+    id: "reference",
+    name: "keep.txt",
+    caskId: "ownership-cask",
+    path: "D:/keep.txt",
+    kind: "FILE",
+    management: "REFERENCED",
+    ownership: "REFERENCED",
+    containment: "EXTERNAL",
+    availability: "PRESENT",
+    categoryKey: "other",
+    sizeBytes: 4,
+    unknownEntries: 0,
+  };
+  let finish!: (value: unknown) => void;
+  const pending = new Promise((resolve) => {
+    finish = resolve;
+  });
+  ownershipWorkspace([resource], (command) =>
+    command === "create_removal_plan" ? pending : undefined,
+  );
+  await screen.findByRole("heading", { name: "Ownership" });
+  await fireEvent.click(await screen.findByRole("button", { name: "Cleanup" }));
+  expect(
+    calls.invoke.mock.calls.some(
+      ([command]) => command === "create_removal_plan",
+    ),
+  ).toBe(false);
+  expect(screen.queryByRole("button", { name: "Cleanup" })).toBeNull();
+  expect(await screen.findByText("Review only")).toBeTruthy();
+  await screen.findByRole("option", { name: "Other" });
+  await fireEvent.change(await screen.findByLabelText("Cleanup scope"), {
+    target: { value: "other" },
+  });
+  const create = await screen.findByRole("button", {
+    name: "Create cleanup plan",
+  });
+  await fireEvent.click(create);
+  await fireEvent.click(create);
+  expect(
+    calls.invoke.mock.calls.filter(
+      ([command]) => command === "create_removal_plan",
+    ),
+  ).toHaveLength(1);
+  finish({
+    version: 1,
+    id: "stable-plan",
+    planHash: "stable-hash",
+    caskId: "ownership-cask",
+    state: "DRAFT",
+    permanent: false,
+    cleanupOnly: true,
+    expiresAtMs: Date.now() + 60000,
+    items: [
+      {
+        id: "item",
+        resourceId: "reference",
+        name: "keep.txt",
+        path: "D:/keep.txt",
+        action: "DETACH",
+        reasonCode: "NO_DELETE_AUTHORITY",
+        state: "PENDING",
+        recoveryPath: null,
+      },
+    ],
+  });
+  await screen.findByRole("heading", { name: "Cleanup Review" });
+  const expand = screen.getByRole("button", { name: "Expand cleanup items" });
+  expect(expand.getAttribute("aria-expanded")).toBe("false");
+  expect(screen.queryByText(/Remove from this Cask; keep the data/)).toBeNull();
+  expect(screen.getByText("1 item kept")).toBeTruthy();
+  expect(
+    screen
+      .getByRole("button", { name: "Review Cleanup" })
+      .closest(".cleanup-review-panel"),
+  ).toBeNull();
+  await fireEvent.click(expand);
+  expect(screen.getByText(/Remove from this Cask; keep the data/)).toBeTruthy();
+  await fireEvent.click(
+    screen.getByRole("button", { name: "Collapse cleanup items" }),
+  );
+  expect(screen.queryByRole("button", { name: "Approve Cleanup" })).toBeNull();
+  expect(screen.getByText("Review only")).toBeTruthy();
+  await fireEvent.click(
+    await screen.findByRole("button", { name: "Review Cleanup" }),
+  );
+  expect(
+    screen.getByRole("status", { name: "Cleanup status: Reviewed" }),
+  ).toBeTruthy();
+  expect(screen.queryByRole("button", { name: "Review Cleanup" })).toBeNull();
+  expect(screen.queryByRole("button", { name: "Approve Cleanup" })).toBeNull();
+  expect(
+    screen.getByText(
+      "You can review the effects below. This build cannot approve or run cleanup.",
+    ),
+  ).toBeTruthy();
+  expect(
+    calls.invoke.mock.calls.some(
+      ([command]) => command === "execute_removal_plan",
+    ),
+  ).toBe(false);
+  const advanced = screen.getByText("Advanced details").closest("details")!;
+  expect(advanced.open).toBe(false);
+  expect(screen.getByText(/Plan ID: stable-plan/).closest("details")).toBe(
+    advanced,
+  );
+  expect(
+    screen
+      .getAllByText("D:/keep.txt")
+      .some((node) => node.closest("details") === advanced),
+  ).toBe(true);
+  expect(screen.queryByRole("button", { name: "Approve Cleanup" })).toBeNull();
+  expect(screen.queryByRole("button", { name: "Execute Cleanup" })).toBeNull();
+});
+
+test("settings creates a metadata-only backup through the shared command", async () => {
+  calls.invoke.mockImplementation(async (command: string) => {
+    if (command === "list_casks" || command === "list_operations") return [];
+    if (command === "recovery_status")
+      return { version: 1, operations: [], pendingManifestCasks: [] };
+    if (command === "backup_database")
+      return { version: 1, path: "C:/backup.db", sizeBytes: 4096 };
+    throw new Error(`Unexpected command: ${command}`);
+  });
+  render(ToastArea);
+  render(Workspace, { mode: "settings" });
+  await fireEvent.click(
+    screen.getByRole("button", { name: "Back up database metadata" }),
+  );
+  await waitFor(() =>
+    expect(calls.invoke).toHaveBeenCalledWith("backup_database", {
+      request: { version: 1 },
+    }),
+  );
+  expect((await screen.findByRole("status")).textContent).toContain(
+    "Managed Cask files are not included",
+  );
+});
+
+test("a dropped file waits for an explicit intake mode and Add action", async () => {
+  const cask = {
+    version: 1,
+    id: "cask-2",
+    name: "Work",
+    state: "ACTIVE",
+    managedStorageRoot: "C:/Casklets/cask-2",
+    createdAtMs: 1,
+    updatedAtMs: 1,
+    revision: 0,
+  };
+  const resource = {
+    version: 1,
+    id: "resource-1",
+    caskId: cask.id,
+    name: "notes.txt",
+    path: "C:/notes.txt",
+    kind: "FILE",
+    management: "REFERENCED",
+    containment: "EXTERNAL",
+    availability: "PRESENT",
+    categoryKey: "auto",
+    sizeBytes: 5,
+    sizeMeasurement: "EXACT",
+    unknownEntries: 0,
+  };
+  calls.invoke.mockImplementation(async (command: string) => {
+    if (command === "recovery_status")
+      return { version: 1, operations: [], pendingManifestCasks: [] };
+    if (command === "list_operations") return [];
+    if (command === "list_casks") return [cask];
+    if (command === "get_cask") return cask;
+    if (command === "list_resources") return [];
+    if (command === "list_categories")
+      return [{ version: 1, key: "other", name: "Other", isBuiltin: true }];
+    if (command === "storage_summary")
+      return {
+        managedLogicalBytes: 0,
+        referencedLogicalBytes: 0,
+        physicalBytes: null,
+        reclaimableMinBytes: 0,
+        reclaimableMaxBytes: 0,
+        unknownEntries: 0,
+      };
+    if (command === "add_resource") return resource;
+    throw new Error(`Unexpected command: ${command}`);
+  });
+  render(ToastArea);
+  render(Workspace, { caskId: "cask-2" });
+  await screen.findByRole("heading", { name: "Work" });
+  await waitFor(() => expect(calls.drop).not.toBeNull());
+  calls.drop?.({ payload: { type: "drop", paths: ["C:/notes.txt"] } });
+  const add = await screen.findByRole("button", { name: "Add resource" });
+  expect((add as HTMLButtonElement).disabled).toBe(true);
+  expect(
+    calls.invoke.mock.calls.some(([command]) => command === "add_resource"),
+  ).toBe(false);
+  await fireEvent.click(screen.getByLabelText("Reference at current location"));
+  await fireEvent.click(add);
+  await waitFor(() =>
+    expect(calls.invoke).toHaveBeenCalledWith("add_resource", {
+      request: {
+        version: 1,
+        caskId: "cask-2",
+        sourcePath: "C:/notes.txt",
+        mode: "reference",
+        categoryKey: "auto",
+      },
+    }),
+  );
+});
+
+test("creates a Cask and opens a native detail window without replacing the library", async () => {
+  const cask = {
+    version: 1,
+    id: "cask-1",
+    name: "Research",
+    description: "",
+    state: "ACTIVE",
+    managedStorageRoot: "C:/Casklets/cask-1",
+    createdAtMs: 1,
+    updatedAtMs: 1,
+    revision: 0,
+  };
+  let items: (typeof cask)[] = [];
+  calls.invoke.mockImplementation(async (command: string) => {
+    if (command === "cask_library")
+      return {
+        version: 1,
+        casks: items.map((cask) => ({
+          cask,
+          itemCount: 0,
+          fileCount: 0,
+          applicationCount: 0,
+          managedBytes: 0,
+          referencedBytes: 0,
+          unknownEntries: 0,
+        })),
+        totalItems: 0,
+        managedBytes: 0,
+        unknownEntries: 0,
+        storageRoot: "C:/Casklets",
+      };
+    if (command === "create_cask") {
+      items = [cask];
+      return cask;
+    }
+    if (command === "open_cask_window" || command === "window_ready") return;
+    throw new Error(`Unexpected command: ${command}`);
+  });
+  render(App);
+  await screen.findByText("No Casks yet");
+  await fireEvent.click(screen.getByRole("button", { name: "New Cask" }));
+  await fireEvent.input(screen.getByLabelText("Cask name"), {
+    target: { value: "Research" },
+  });
+  await fireEvent.click(screen.getByRole("button", { name: "Create Cask" }));
+  await waitFor(() =>
+    expect(calls.invoke).toHaveBeenCalledWith("open_cask_window", {
+      request: { version: 1, id: "cask-1" },
+    }),
+  );
+  expect(screen.getByRole("heading", { name: "Casks" })).toBeTruthy();
+  const row = await screen.findByRole("button", { name: "Open Research" });
+  await fireEvent.click(row);
+  expect(
+    screen.queryByRole("navigation", { name: "Cask sections" }),
+  ).toBeNull();
+  await fireEvent.input(screen.getByLabelText("Search casks"), {
+    target: { value: "Missing" },
+  });
+  expect(await screen.findByText("No matching Casks")).toBeTruthy();
+  expect(screen.queryByRole("button", { name: "Open Research" })).toBeNull();
+});
+
+test("shows interrupted work and requires an explicit recovery action", async () => {
+  const operation = {
+    version: 1,
+    id: "op-1",
+    caskId: "cask-1",
+    state: "RECOVERY_REQUIRED",
+    step: "RECONCILE",
+    progressCompleted: 1,
+    progressTotal: 5,
+    cancellationRequested: false,
+    errorCode: "INTERRUPTED",
+    updatedAtMs: 1,
+  };
+  let pending = true;
+  calls.invoke.mockImplementation(async (command: string) => {
+    if (command === "list_casks") return [];
+    if (command === "list_operations") return [operation];
+    if (command === "recovery_status")
+      return {
+        version: 1,
+        operations: pending ? [operation] : [],
+        pendingManifestCasks: [],
+      };
+    if (command === "inspect_recovery")
+      return {
+        version: 1,
+        operation,
+        mode: "MOVE",
+        sourcePath: "C:/source.txt",
+        sourceStatus: "MISSING",
+        stagingPath: "C:/stage.txt",
+        stagingStatus: "PRESENT_FILE",
+        finalPath: "C:/final.txt",
+        finalStatus: "MISSING",
+      };
+    if (command === "preserve_operation") {
+      pending = false;
+      return { ...operation, state: "CLOSED_PRESERVED" };
+    }
+    throw new Error(`Unexpected command: ${command}`);
+  });
+  render(ToastArea);
+  render(Workspace, { mode: "activity" });
+  await screen.findByText("Recovery needed");
+  await fireEvent.click(screen.getByRole("button", { name: "Inspect paths" }));
+  expect(await screen.findByText("C:/stage.txt (PRESENT_FILE)")).toBeTruthy();
+  await fireEvent.click(
+    screen.getByRole("button", { name: "Keep files and close" }),
+  );
+  await waitFor(() => expect(screen.queryByText("Recovery needed")).toBeNull());
+});
+
+test.each([
+  [false, false],
+  [true, false],
+  [false, true],
+])(
+  "cleanup execution requires review, approval, and explicit confirmation (permanent: %s, interrupted: %s)",
+  async (permanent, interrupted) => {
+    const cask = {
+      version: 1,
+      id: "cask-1",
+      name: "Work",
+      state: "ACTIVE",
+      managedStorageRoot: "C:/Casklets/cask-1",
+      createdAtMs: 1,
+      updatedAtMs: 1,
+      revision: 0,
+    };
+    const item = {
+      id: "item-1",
+      resourceId: "resource-1",
+      name: "notes.txt",
+      path: "C:/notes.txt",
+      action: permanent ? "DELETE_PERMANENTLY" : "TRASH",
+      reasonCode: "ELIGIBLE_MANAGED",
+      expectedSizeBytes: 5,
+      state: "PENDING",
+      resultCode: null,
+      recoveryPath: null,
+    };
+    const draft = {
+      version: 1,
+      id: "plan-1",
+      caskId: cask.id,
+      scope: "CASK",
+      categoryKey: "other",
+      permanent,
+      state: "DRAFT",
+      planHash: "hash-1",
+      runId: null,
+      createdAtMs: 1,
+      expiresAtMs: Date.now() + 100000,
+      items: [item],
+    };
+    calls.invoke.mockImplementation(async (command: string) => {
+      if (["list_portable_installations", "explorer_pending"].includes(command))
+        return [];
+      if (command === "removal_capability") return true;
+      if (command === "list_casks") return [cask];
+      if (command === "cask_removal_status")
+        return {
+          version: 1,
+          canRemove: false,
+          resourceCount: 1,
+          applicationCount: 0,
+          unfinishedOperations: 0,
+        };
+      if (command === "get_cask") return cask;
+      if (command === "recovery_status")
+        return { version: 1, operations: [], pendingManifestCasks: [] };
+      if (command === "list_resources")
+        return [
+          {
+            id: "resource-1",
+            name: "notes.txt",
+            caskId: cask.id,
+            kind: "FILE",
+            path: "C:/notes.txt",
+            management: "MANAGED",
+            containment: "INTERNAL",
+            availability: "PRESENT",
+            categoryKey: "other",
+            sizeBytes: 5,
+            sizeMeasurement: "EXACT",
+            unknownEntries: 0,
+            ownership: "OWNED",
+            provenance: "ADDED_BY_CASKLET",
+          },
+        ];
+      if (command === "list_categories")
+        return [{ version: 1, key: "other", name: "Other", isBuiltin: true }];
+      if (command === "list_operations") return [];
+      if (command === "storage_summary")
+        return {
+          managedLogicalBytes: 0,
+          referencedLogicalBytes: 0,
+          physicalBytes: null,
+          reclaimableMinBytes: 0,
+          reclaimableMaxBytes: 0,
+          unknownEntries: 0,
+        };
+      if (command === "create_removal_plan") return draft;
+      if (command === "approve_removal_plan")
+        return { ...draft, state: "APPROVED" };
+      if (command === "get_removal_plan")
+        return {
+          ...draft,
+          state: "PARTIAL",
+          runId: "run-1",
+          items: [{ ...item, state: "UNKNOWN", resultCode: "INTERRUPTED" }],
+        };
+      if (command === "execute_removal_plan" && interrupted)
+        return Promise.reject({
+          version: 1,
+          code: "RECOVERY_REQUIRED",
+          message: "Cleanup needs recovery",
+          correlationId: "test",
+        });
+      if (command === "execute_removal_plan")
+        return {
+          ...draft,
+          state: "COMPLETE",
+          runId: "run-1",
+          items: [{ ...item, state: "SUCCEEDED", resultCode: "TRASHED" }],
+        };
+      throw new Error(`Unexpected command: ${command}`);
+    });
+    render(ToastArea);
+    render(Workspace, { caskId: "cask-1" });
+    await screen.findByRole("heading", { name: "Work" });
+    await fireEvent.click(
+      await screen.findByRole("button", { name: "Cleanup" }),
+    );
+    if (permanent)
+      await fireEvent.click(
+        await screen.findByRole("radio", {
+          name: "Permanently delete eligible files",
+        }),
+      );
+    await screen.findByRole("option", { name: "Other" });
+    await fireEvent.change(screen.getByLabelText("Cleanup scope"), {
+      target: { value: "other" },
+    });
+    await fireEvent.click(
+      await screen.findByRole("button", { name: "Create cleanup plan" }),
+    );
+    expect(
+      screen.queryByRole("button", { name: "Approve Cleanup" }),
+    ).toBeNull();
+    expect(
+      screen.queryByRole("button", { name: "Execute Cleanup" }),
+    ).toBeNull();
+    await fireEvent.click(
+      screen.getByRole("button", { name: "Review Cleanup" }),
+    );
+    const approve = await screen.findByRole("button", {
+      name: "Approve Cleanup",
+    });
+    expect((approve as HTMLButtonElement).disabled).toBe(false);
+    await fireEvent.click(approve);
+    const execute = await screen.findByRole("button", {
+      name: "Execute Cleanup",
+    });
+    expect((execute as HTMLButtonElement).disabled).toBe(true);
+    expect(
+      calls.invoke.mock.calls.some(
+        ([command]) => command === "execute_removal_plan",
+      ),
+    ).toBe(false);
+    expect(screen.queryByLabelText("Type the plan ID to execute")).toBeNull();
+    await fireEvent.click(
+      screen.getByLabelText("I confirm the cleanup actions shown above"),
+    );
+    if (permanent) {
+      expect((execute as HTMLButtonElement).disabled).toBe(true);
+      await fireEvent.click(
+        screen.getByLabelText(
+          "I understand permanent deletion cannot be undone",
+        ),
+      );
+    }
+    await fireEvent.click(execute);
+    await waitFor(() =>
+      expect(calls.invoke).toHaveBeenCalledWith("execute_removal_plan", {
+        request: {
+          version: 1,
+          id: "plan-1",
+          planHash: "hash-1",
+          confirmPermanent: permanent,
+        },
+      }),
+    );
+    if (interrupted) {
+      await screen.findByRole("status", {
+        name: "Cleanup status: Needs attention",
+      });
+      expect(
+        screen.queryByRole("button", { name: "Execute Cleanup" }),
+      ).toBeNull();
+      expect(
+        (
+          screen.getByRole("button", {
+            name: "Create cleanup plan",
+          }) as HTMLButtonElement
+        ).disabled,
+      ).toBe(true);
+    }
+  },
+);
+
+test("global notifications replace keyed updates and expire without occupying content", async () => {
+  vi.useFakeTimers();
+  render(ToastArea);
+  notify("Resource added", "success", "operation");
+  await vi.advanceTimersByTimeAsync(0);
+  expect(screen.getByRole("status").textContent).toContain("Resource added");
+  notify("Changes saved", "success", "operation");
+  await vi.advanceTimersByTimeAsync(0);
+  expect(screen.getAllByRole("status")).toHaveLength(1);
+  expect(screen.getByRole("status").textContent).toContain("Changes saved");
+  await vi.advanceTimersByTimeAsync(4600);
+  expect(screen.queryByRole("status")).toBeNull();
+});
+
+test("window readiness waits for layout before requesting native visibility", async () => {
+  vi.useFakeTimers();
+  calls.invoke.mockResolvedValue(undefined);
+  const ready = revealWindow();
+  expect(calls.invoke).not.toHaveBeenCalled();
+  await vi.runAllTimersAsync();
+  await ready;
+  expect(calls.invoke).toHaveBeenCalledWith("window_ready");
+});
+
+test("sort direction toggles and Cask cards stay free of action menus", async () => {
+  calls.invoke.mockImplementation(async (command: string) => {
+    if (command === "window_ready") return;
+    if (command === "cask_library")
+      return {
+        version: 1,
+        totalItems: 3,
+        managedBytes: 30,
+        unknownEntries: 0,
+        storageRoot: "C:/Casklets",
+        casks: ["Alpha", "Beta"].map((name, index) => ({
+          cask: {
+            version: 1,
+            id: `cask-${index}`,
+            name,
+            description: "",
+            state: "ACTIVE",
+            managedStorageRoot: `C:/Casklets/${index}`,
+            createdAtMs: 1,
+            updatedAtMs: index + 1,
+            revision: 0,
+          },
+          itemCount: index + 1,
+          fileCount: index + 1,
+          applicationCount: 0,
+          managedBytes: (index + 1) * 10,
+          referencedBytes: 0,
+          unknownEntries: 0,
+        })),
+      };
+    throw new Error(`Unexpected command: ${command}`);
+  });
+  render(App);
+  await screen.findByRole("button", { name: "Open Alpha" });
+  const items = screen.getByRole("button", { name: /Items/ });
+  await fireEvent.click(items);
+  expect(items.getAttribute("data-direction")).toBe("ascending");
+  await fireEvent.click(items);
+  expect(items.getAttribute("data-direction")).toBe("descending");
+  expect(screen.queryByRole("button", { name: /Actions for/ })).toBeNull();
+  expect(screen.queryByRole("menu")).toBeNull();
+  await fireEvent.click(screen.getByRole("button", { name: "List view" }));
+  expect(screen.queryByRole("button", { name: /Actions for/ })).toBeNull();
+});
+
+test("Cask accents are stable and varied by identity", () => {
+  expect(caskColor("cask-1")).toBe(caskColor("cask-1"));
+  expect(
+    new Set(
+      Array.from({ length: 12 }, (_, index) => caskColor(`cask-${index}`)),
+    ).size,
+  ).toBeGreaterThan(3);
+});
+
+test("application-only Casks use the same cleanup selector", async () => {
+  ownershipWorkspace([], (command) => {
+    if (command === "cask_removal_status")
+      return {
+        version: 1,
+        canRemove: false,
+        resourceCount: 0,
+        applicationCount: 1,
+        unfinishedOperations: 0,
+      };
+    if (command === "list_associated_applications")
+      return [appFixture("Existing App", "ref")];
+    return undefined;
+  });
+  await screen.findByRole("heading", { name: "Ownership" });
+  await waitFor(() =>
+    expect(
+      calls.invoke.mock.calls.some(
+        ([command]) => command === "list_associated_applications",
+      ),
+    ).toBe(true),
+  );
+  await fireEvent.click(screen.getByRole("button", { name: "Cleanup" }));
+  await screen.findByLabelText("Cleanup scope");
+  expect(
+    screen.getByRole("button", { name: "Create cleanup plan" }),
+  ).toBeTruthy();
+  expect(screen.queryByText("Application cleanup")).toBeNull();
+  expect(screen.getByText("Review only")).toBeTruthy();
+  expect(
+    screen.getByText(/You can inspect a plan; no cleanup will run/),
+  ).toBeTruthy();
+  expect(screen.queryByRole("button", { name: "Remove Cask" })).toBeNull();
+});
+
+test("resource intake hides Copy and Move and Settings retains Archive without storage location", async () => {
+  ownershipWorkspace();
+  await screen.findByRole("heading", { name: "Ownership" });
+  await waitFor(() => expect(calls.drop).not.toBeNull());
+  calls.drop?.({ payload: { type: "drop", paths: ["D:/project.txt"] } });
+  await screen.findByLabelText("Reference at current location");
+  expect(screen.queryByRole("radio", { name: /^Copy/ })).toBeNull();
+  expect(screen.queryByRole("button", { name: "Cleanup" })).toBeNull();
+  expect(screen.queryByRole("radio", { name: /^Move/ })).toBeNull();
+  expect(screen.queryByRole("button", { name: "Archive Cask" })).toBeNull();
+  const nav = screen.getByRole("navigation", { name: "Cask sections" });
+  await fireEvent.click(within(nav).getByRole("button", { name: /Settings/ }));
+  expect(screen.getByLabelText("Archive this Cask")).toBeTruthy();
+  expect(screen.queryByLabelText("Storage location")).toBeNull();
+  // Reopening intake from a different tab must not toggle the retained review off.
+  await fireEvent.click(
+    within(nav).getByRole("button", { name: "Files & Folders" }),
+  );
+  expect(screen.getByLabelText("Reference at current location")).toBeTruthy();
+  expect(
+    screen.queryByRole("region", { name: "Resource inventory" }),
+  ).toBeNull();
+  await fireEvent.click(
+    screen.getByRole("button", { name: "Close Add Items" }),
+  );
+  expect(screen.queryByRole("region", { name: "Resource intake" })).toBeNull();
+  expect(screen.getByRole("button", { name: "Cleanup" })).toBeTruthy();
+  expect(
+    screen.getByRole("region", { name: "Resource inventory" }),
+  ).toBeTruthy();
+});
+
+test("deletion method is visible and changing it invalidates the reviewed preview", async () => {
+  ownershipWorkspace(
+    [
+      {
+        id: "resource",
+        name: "notes.txt",
+        kind: "FILE",
+        categoryKey: "other",
+        sizeBytes: 5,
+      },
+    ],
+    (command) =>
+      command === "create_removal_plan"
+        ? {
+            version: 1,
+            id: "permanent-plan",
+            caskId: "ownership-cask",
+            state: "DRAFT",
+            planHash: "permanent-hash",
+            permanent: true,
+            cleanupOnly: true,
+            expiresAtMs: Date.now() + 60000,
+            items: [
+              {
+                id: "item",
+                name: "notes.txt",
+                path: "C:/notes.txt",
+                action: "DELETE_PERMANENTLY",
+                reasonCode: "ELIGIBLE_MANAGED",
+                state: "PENDING",
+              },
+            ],
+          }
+        : undefined,
+  );
+  await screen.findByRole("heading", { name: "Ownership" });
+  await fireEvent.click(screen.getByRole("button", { name: "Cleanup" }));
+  const permanent = await screen.findByRole("radio", {
+    name: "Permanently delete eligible files",
+  });
+  expect(permanent.closest("details")).toBeNull();
+  await fireEvent.click(permanent);
+  expect(screen.getByText(/Cannot be undone/)).toBeTruthy();
+  await screen.findByRole("option", { name: "Other" });
+  await fireEvent.change(await screen.findByLabelText("Cleanup scope"), {
+    target: { value: "other" },
+  });
+  await fireEvent.click(
+    screen.getByRole("button", { name: "Create cleanup plan" }),
+  );
+  await screen.findByRole("heading", { name: "Cleanup Review" });
+  expect(calls.invoke).toHaveBeenCalledWith("create_removal_plan", {
+    request: {
+      version: 1,
+      caskId: "ownership-cask",
+      resourceIds: [],
+      categoryKey: "other",
+      permanent: true,
+    },
+  });
+  await fireEvent.click(
+    await screen.findByRole("button", { name: "Review Cleanup" }),
+  );
+  await fireEvent.click(
+    screen.getByRole("radio", { name: "Move to Recycle Bin" }),
+  );
+  expect(screen.queryByRole("heading", { name: "Cleanup Review" })).toBeNull();
+  expect(
+    calls.invoke.mock.calls.some(([command]) =>
+      ["approve_removal_plan", "execute_removal_plan"].includes(command),
+    ),
+  ).toBe(false);
+});
+
+test("interrupted cleanup is rediscovered and closure needs explicit preservation confirmation", async () => {
+  const partial = {
+    version: 1,
+    id: "interrupted",
+    caskId: "ownership-cask",
+    state: "PARTIAL",
+    scope: "CASK",
+    permanent: false,
+    cleanupOnly: true,
+    planHash: "hash",
+    runId: "run",
+    createdAtMs: 1,
+    expiresAtMs: Date.now() + 60000,
+    items: [
+      {
+        id: "item",
+        resourceId: "resource",
+        name: "notes.txt",
+        path: "D:/notes.txt",
+        action: "TRASH",
+        state: "UNKNOWN",
+        reasonCode: "ELIGIBLE_MANAGED",
+        recoveryPath: "D:/.casklet-removal-run-item",
+      },
+    ],
+  };
+  let closed = false;
+  ownershipWorkspace(
+    [
+      {
+        id: "resource",
+        name: "notes.txt",
+        kind: "FILE",
+        categoryKey: "other",
+        sizeBytes: 5,
+      },
+    ],
+    (command) => {
+      if (command === "removal_capability") return true;
+      if (command === "list_removal_plans")
+        return [{ ...partial, state: closed ? "COMPLETE" : "PARTIAL" }];
+      if (command === "close_uncertain_removal") {
+        closed = true;
+        return { ...partial, state: "COMPLETE" };
+      }
+      return undefined;
+    },
+  );
+  await screen.findByRole("heading", { name: "Ownership" });
+  await fireEvent.click(screen.getByRole("button", { name: "Cleanup" }));
+  await screen.findByRole("status", {
+    name: "Cleanup status: Needs attention",
+  });
+  const close = screen.getByRole("button", {
+    name: "Keep unresolved items and close cleanup",
+  });
+  expect((close as HTMLButtonElement).disabled).toBe(true);
+  expect(
+    (
+      screen.getByRole("button", {
+        name: "Create cleanup plan",
+      }) as HTMLButtonElement
+    ).disabled,
+  ).toBe(true);
+  const advanced = screen.getByText("Advanced details").closest("details")!;
+  await fireEvent.click(within(advanced).getByText("Advanced details"));
+  expect(
+    within(advanced).getByText("D:/.casklet-removal-run-item"),
+  ).toBeTruthy();
+  await fireEvent.click(
+    screen.getByLabelText(
+      "I inspected the recovery locations and will keep unresolved items",
+    ),
+  );
+  await fireEvent.click(close);
+  await waitFor(() =>
+    expect(calls.invoke).toHaveBeenCalledWith("close_uncertain_removal", {
+      request: { version: 1, runId: "run" },
+    }),
+  );
+  await screen.findByText(
+    "Cleanup closed. Unresolved items still need inspection.",
+  );
+  expect(
+    calls.invoke.mock.calls.some(
+      ([command]) => command === "execute_removal_plan",
+    ),
+  ).toBe(false);
+});
+
+test("an expired saved plan cannot be reviewed, approved, or executed", async () => {
+  const plan = {
+    version: 1,
+    id: "expired",
+    caskId: "ownership-cask",
+    state: "APPROVED",
+    scope: "CASK",
+    planHash: "hash",
+    permanent: false,
+    cleanupOnly: true,
+    createdAtMs: 1,
+    expiresAtMs: 2,
+    items: [
+      {
+        id: "item",
+        resourceId: "resource",
+        name: "notes.txt",
+        path: "D:/notes.txt",
+        action: "TRASH",
+        reasonCode: "ELIGIBLE_MANAGED",
+        state: "PENDING",
+      },
+    ],
+  };
+  ownershipWorkspace(
+    [
+      {
+        id: "resource",
+        name: "notes.txt",
+        kind: "FILE",
+        categoryKey: "other",
+        sizeBytes: 5,
+      },
+    ],
+    (command) => {
+      if (command === "list_removal_plans") return [plan];
+      if (command === "removal_capability") return true;
+      return undefined;
+    },
+  );
+  await screen.findByRole("heading", { name: "Ownership" });
+  await fireEvent.click(screen.getByRole("button", { name: "Cleanup" }));
+  await fireEvent.click(await screen.findByText("Recent cleanups"));
+  await fireEvent.click(
+    screen.getByRole("button", { name: /Approved.*1 items/ }),
+  );
+  await screen.findByRole("status", { name: "Cleanup status: Expired" });
+  expect(
+    screen
+      .getByRole("status", { name: "Cleanup status: Expired" })
+      .closest("details")
+      ?.querySelector("summary")?.textContent,
+  ).toBe("Recent cleanups");
+  for (const name of ["Review Cleanup", "Approve Cleanup", "Execute Cleanup"])
+    expect(screen.queryByRole("button", { name })).toBeNull();
+  expect(
+    screen.getByText("Plan expired. Create a new cleanup plan."),
+  ).toBeTruthy();
+  expect(
+    screen.queryByLabelText("I confirm the cleanup actions shown above"),
+  ).toBeNull();
+});
+
+test("installer artifacts stay out of Files and Cask-installed EXE provenance stays distinct", async () => {
+  const artifact = {
+    version: 1,
+    id: "installer-resource",
+    kind: "FILE",
+    name: "setup.exe",
+    path: "C:/Casklets/test/setup.exe",
+    management: "MANAGED",
+    containment: "INTERNAL",
+    availability: "PRESENT",
+    relationship: "OWNED",
+    removalPolicy: "DELETE_WHEN_UNREFERENCED",
+    categoryKey: "applications",
+    sizeBytes: 1,
+    sizeQuality: "EXACT",
+    revision: 0,
+  };
+  const exe = {
+    ...appFixture("Installed EXE", "exe-app"),
+    provenance: "INSTALLED_BY_CASKLET",
+    removalPolicy: "CASKLET_OWNED",
+  };
+  ownershipWorkspace([artifact], (command) => {
+    if (command === "list_installer_artifacts")
+      return [{ id: "artifact", resourceId: artifact.id }];
+    if (command === "list_associated_applications") return [exe];
+    if (command === "create_category_cleanup")
+      return {
+        version: 1,
+        caskId: "ownership-cask",
+        resources: null,
+        applications: {
+          version: 1,
+          id: "exe-plan",
+          caskId: "ownership-cask",
+          state: "DRAFT",
+          planHash: "hash",
+          expiresAtMs: Date.now() + 600000,
+          items: [
+            {
+              installationId: "exe-app",
+              name: "Installed EXE",
+              productCode: "registry",
+              evidenceSha256: "evidence",
+              uninstallerSha256: "exe-hash",
+              result: null,
+              action: "UNINSTALL",
+              state: "PENDING",
+            },
+          ],
+        },
+      };
+    return undefined;
+  });
+  await screen.findByRole("heading", { name: "Ownership" });
+  await waitFor(() =>
+    expect(calls.invoke).toHaveBeenCalledWith(
+      "list_installer_artifacts",
+      expect.anything(),
+    ),
+  );
+  await fireEvent.click(
+    screen.getByRole("button", { name: "Files & Folders" }),
+  );
+  expect(screen.queryByText("setup.exe")).toBeNull();
+  await fireEvent.click(screen.getByRole("button", { name: "Applications" }));
+  await screen.findByText("Installed EXE");
+  expect(screen.getByText("Casklet-owned")).toBeTruthy();
+  expect(
+    screen.getByRole("button", {
+      name: "Remove Installed EXE",
+    }),
+  ).toBeTruthy();
+  expect(applicationRows([], [exe], [])[0].management).toBe("managed");
+  expect(exe.removalPolicy).toBe("CASKLET_OWNED");
+  await fireEvent.click(
+    screen.getByRole("button", { name: "Remove Installed EXE" }),
+  );
+  await fireEvent.click(
+    await screen.findByRole("button", {
+      name: "Create cleanup plan",
+    }),
+  );
+  expect(calls.invoke).toHaveBeenCalledWith("create_category_cleanup", {
+    request: {
+      scope: {
+        version: 1,
+        caskId: "ownership-cask",
+        resourceIds: [],
+        categoryKey: "applications",
+        permanent: false,
+      },
+      installationId: "exe-app",
+    },
+  });
+  expect(
+    calls.invoke.mock.calls.some(
+      ([command]) => command === "disassociate_installed_application",
+    ),
+  ).toBe(false);
+});
+
+test("Cask storage includes current owned and reference applications", async () => {
+  const cask = {
+    version: 1,
+    id: "storage-cask",
+    name: "Storage test",
+    state: "ACTIVE",
+    managedStorageRoot: "C:/Casklets/storage",
+    createdAtMs: 1,
+    updatedAtMs: 1,
+    revision: 0,
+  };
+  calls.invoke.mockImplementation(async (command: string) => {
+    if (command === "get_cask") return cask;
+    if (command === "list_casks") return [cask];
+    if (command === "recovery_status")
+      return { version: 1, operations: [], pendingManifestCasks: [] };
+    if (command === "cask_removal_status")
+      return {
+        canRemove: false,
+        resourceCount: 0,
+        applicationCount: 2,
+        unfinishedOperations: 0,
+      };
+    if (command === "storage_summary")
+      return {
+        version: 1,
+        managedLogicalBytes: 1024,
+        referencedLogicalBytes: 1024,
+        ownedApplicationBytes: 2048,
+        referenceApplicationBytes: 4096,
+        estimatedApplications: 1,
+        unknownEntries: 0,
+        physicalBytes: null,
+        reclaimableMinBytes: 0,
+        reclaimableMaxBytes: 1024,
+      };
+    if (command === "removal_capability") return false;
+    return [];
+  });
+  render(Workspace, { caskId: cask.id });
+  await screen.findByRole("heading", { name: cask.name });
+  await screen.findByText("8 KB");
+  expect(screen.getByText("2 KB")).toBeTruthy();
+  expect(screen.getByText("5 KB")).toBeTruthy();
+  expect(screen.queryByText(/About this measurement/)).toBeNull();
+  expect(screen.getByText(/Storage by category/)).toBeTruthy();
+});
+
+test("cancelled installations have no attention action and Cask windows have no Activity tab", async () => {
+  ownershipWorkspace([], (command) =>
+    command === "list_installer_operations"
+      ? [
+          {
+            id: "cancelled",
+            state: "CANCELLED",
+            caskId: "ownership-cask",
+            candidates: [],
+          },
+        ]
+      : undefined,
+  );
+  await screen.findByRole("heading", { name: "Ownership" });
+  expect(screen.queryByRole("button", { name: "Activity" })).toBeNull();
+  await fireEvent.click(screen.getByRole("button", { name: "Applications" }));
+  expect(screen.queryByText("An installation needs attention.")).toBeNull();
+  expect(
+    screen.queryByRole("button", { name: "View installation" }),
+  ).toBeNull();
+});
+
+test.each(["CANCELLED", "CONFIRMED_ASSOCIATION", "RECOVERY_REQUIRED"])(
+  "main Activity describes installer outcome %s without misleading actions",
+  async (state) => {
+    const entry = {
+      version: 1,
+      id: "installer-history",
+      caskId: "ownership-cask",
+      state,
+      step: "INSTALL_APPLICATION",
+      updatedAtMs: 1,
+      progressCompleted: 0,
+      progressTotal: null,
+      cancellationRequested: false,
+      errorCode: state === "CANCELLED" ? "INSTALLER_CANCELLED_CONFIRMED" : null,
+    };
+    ownershipWorkspace(
+      [],
+      (command) => (command === "list_operations" ? [entry] : undefined),
+      true,
+    );
+    await screen.findByText("Install application");
+    await fireEvent.click(screen.getByText("Details"));
+    expect(screen.getByText("Ownership")).toBeTruthy();
+    if (state === "CANCELLED") {
+      expect(
+        screen.getByText("Application installation was cancelled by the user."),
+      ).toBeTruthy();
+      expect(
+        screen.queryByRole("button", { name: "View installation" }),
+      ).toBeNull();
+      expect(screen.queryByText("Installer cancelled confirmed")).toBeNull();
+    } else if (state === "CONFIRMED_ASSOCIATION") {
+      expect(
+        screen.getByText("Application installation completed successfully."),
+      ).toBeTruthy();
+      expect(
+        screen.queryByRole("button", { name: "View installation" }),
+      ).toBeNull();
+    } else {
+      expect(
+        screen.getByRole("button", { name: "View installation" }),
+      ).toBeTruthy();
+      expect(
+        screen
+          .getByRole("button", { name: "Clear history" })
+          .hasAttribute("disabled"),
+      ).toBe(true);
+    }
+  },
+);
+
+test.each(["C:/notes.txt", "C:/Projects"])(
+  "native drag feedback follows enter, over, leave and drop for %s",
+  async (path) => {
+    ownershipWorkspace();
+    await screen.findByRole("heading", { name: "Ownership" });
+    await waitFor(() => expect(calls.drop).not.toBeNull());
+    calls.drop?.({ payload: { type: "enter", paths: [path] } });
+    const hint = await screen.findByText(
+      "Drop a file or folder into Ownership",
+    );
+    expect(document.querySelector(".workspace.drag-active")).toBeTruthy();
+    calls.drop?.({ payload: { type: "over", paths: [] } });
+    expect(screen.getByText("Drop a file or folder into Ownership")).toBe(hint);
+    calls.drop?.({ payload: { type: "leave", paths: [] } });
+    await waitFor(() =>
+      expect(
+        screen.queryByText("Drop a file or folder into Ownership"),
+      ).toBeNull(),
+    );
+    calls.drop?.({ payload: { type: "enter", paths: [path] } });
+    await screen.findByText("Drop a file or folder into Ownership");
+    calls.drop?.({ payload: { type: "drop", paths: [path] } });
+    await screen.findByRole("button", { name: "Add resource" });
+    expect(
+      screen.queryByText("Drop a file or folder into Ownership"),
+    ).toBeNull();
+    expect(document.querySelector(".workspace.drag-active")).toBeNull();
+    expect(
+      calls.invoke.mock.calls.some(([command]) =>
+        ["add_resource", "adopt_resource"].includes(command),
+      ),
+    ).toBe(false);
+  },
+);
+test.each(["Escape", "blur"])(
+  "drag feedback resets after %s without opening intake",
+  async (cancellation) => {
+    ownershipWorkspace();
+    await screen.findByRole("heading", { name: "Ownership" });
+    await waitFor(() => expect(calls.drop).not.toBeNull());
+    calls.drop?.({ payload: { type: "enter", paths: ["C:/Folder"] } });
+    await screen.findByText("Drop a file or folder into Ownership");
+    if (cancellation === "Escape")
+      await fireEvent.keyDown(window, { key: "Escape" });
+    else await fireEvent.blur(window);
+    expect(
+      screen.queryByText("Drop a file or folder into Ownership"),
+    ).toBeNull();
+    expect(screen.queryByRole("button", { name: "Add resource" })).toBeNull();
+  },
+);
+test("multi-item drops open one consent review for the entire selection", async () => {
+  ownershipWorkspace();
+  await screen.findByRole("heading", { name: "Ownership" });
+  await waitFor(() => expect(calls.drop).not.toBeNull());
+  calls.drop?.({ payload: { type: "enter", paths: ["C:/file.txt"] } });
+  await screen.findByText("Drop a file or folder into Ownership");
+  calls.drop?.({
+    payload: { type: "drop", paths: ["C:/file.txt", "C:/Folder"] },
+  });
+  await screen.findByText("2 selected items");
+  expect(document.querySelector(".workspace.drag-active")).toBeNull();
+  expect(screen.getByRole("button", { name: "Add resource" })).toBeTruthy();
+});
+
+test("saved successful installer review confirms without rerunning and refreshes applications", async () => {
+  let confirmed = false;
+  const operation = {
+    version: 1,
+    id: "saved-install",
+    artifactId: "artifact",
+    caskId: "ownership-cask",
+    state: "REVIEW_REQUIRED",
+    exitCode: 0,
+    errorCode: null,
+    confirmedInstallationId: null,
+    startedAtMs: 1,
+    warnings: [],
+    candidates: [{ installationId: "reinstalled-app", confidence: "MEDIUM" }],
+  };
+  ownershipWorkspace([], (command) => {
+    if (command === "list_installer_operations") return [operation];
+    if (command === "claim_managed_msi") {
+      confirmed = true;
+      return null;
+    }
+    if (command === "get_installer_operation")
+      return {
+        ...operation,
+        state: "CONFIRMED_ASSOCIATION",
+        confirmedInstallationId: "reinstalled-app",
+      };
+    return undefined;
+  });
+  await screen.findByRole("heading", { name: "Ownership" });
+  await waitFor(() => expect(confirmed).toBe(true));
+  expect(calls.invoke).toHaveBeenCalledWith("claim_managed_msi", {
+    request: {
+      version: 1,
+      operationId: "saved-install",
+      installationId: "reinstalled-app",
+    },
+  });
+  expect(
+    calls.invoke.mock.calls.some(
+      ([command]) => command === "install_application",
+    ),
+  ).toBe(false);
+  await fireEvent.click(screen.getByRole("button", { name: "Applications" }));
+  await fireEvent.click(
+    screen.getByRole("button", { name: "Add Application" }),
+  );
+  await fireEvent.click(
+    screen.getByRole("button", { name: /Install Application/ }),
+  );
+  expect(
+    screen
+      .getByRole("button", { name: "Select MSI or EXE" })
+      .hasAttribute("disabled"),
+  ).toBe(false);
+});
+
+test.each(["applications", "", "documents"])(
+  "one cleanup selector scopes applications and files (%s)",
+  async (category) => {
+    const resources = [
+      {
+        id: "doc",
+        name: "notes.txt",
+        kind: "FILE",
+        categoryKey: "documents",
+        sizeBytes: 5,
+      },
+    ];
+    const file = {
+      version: 1,
+      id: "files",
+      caskId: "ownership-cask",
+      scope: "CASK",
+      categoryKey: null,
+      state: "DRAFT",
+      planHash: "file-hash",
+      runId: null,
+      permanent: false,
+      cleanupOnly: true,
+      createdAtMs: 1,
+      expiresAtMs: Date.now() + 60000,
+      items: [
+        {
+          id: "doc-item",
+          resourceId: "doc",
+          name: "notes.txt",
+          action: "DETACH",
+          reasonCode: "NO_DELETE_AUTHORITY",
+          state: "PENDING",
+          path: "C:/notes.txt",
+          expectedSizeBytes: 5,
+          resultCode: null,
+          recoveryPath: null,
+        },
+      ],
+    };
+    const apps = {
+      version: 1,
+      id: "apps",
+      caskId: "ownership-cask",
+      state: "DRAFT",
+      planHash: "app-hash",
+      expiresAtMs: Date.now() + 60000,
+      items: [
+        {
+          installationId: "owned",
+          name: "Owned App",
+          action: "UNINSTALL",
+          state: "PENDING",
+          result: null,
+        },
+        {
+          installationId: "reference",
+          name: "Reference App",
+          action: "DETACH",
+          state: "PENDING",
+          result: null,
+        },
+      ],
+    };
+    const plan = {
+      version: 1,
+      caskId: "ownership-cask",
+      resources: category === "applications" ? null : file,
+      applications: apps,
+    };
+    ownershipWorkspace(resources, (command) => {
+      if (command === "cask_removal_status")
+        return {
+          canRemove: false,
+          applicationCount: 2,
+          resourceCount: 1,
+          unfinishedOperations: 0,
+        };
+      if (command === "list_categories")
+        return [
+          { key: "applications", name: "Applications" },
+          { key: "documents", name: "Documents" },
+        ];
+      if (command === "list_associated_applications")
+        return [
+          appFixture("Owned App", "owned", true),
+          appFixture("Reference App", "reference"),
+        ];
+      if (command === "latest_msi_cleanup") return null;
+      if (command === "removal_capability") return true;
+      if (command === "create_category_cleanup") return plan;
+      if (command === "create_removal_plan") return file;
+      if (command === "approve_category_cleanup")
+        return {
+          ...plan,
+          resources: plan.resources ? { ...file, state: "APPROVED" } : null,
+          applications: { ...apps, state: "APPROVED" },
+        };
+      if (command === "execute_category_cleanup")
+        return {
+          ...plan,
+          resources: plan.resources ? { ...file, state: "COMPLETE" } : null,
+          applications: {
+            ...apps,
+            state: "COMPLETE",
+            items: apps.items.map((item) => ({ ...item, state: "SUCCEEDED" })),
+          },
+        };
+      return undefined;
+    });
+    await screen.findByRole("heading", { name: "Ownership" });
+    await fireEvent.click(screen.getByRole("button", { name: "Cleanup" }));
+    await screen.findByRole("option", { name: "Documents" });
+    await fireEvent.change(await screen.findByLabelText("Cleanup scope"), {
+      target: { value: category },
+    });
+    expect(screen.queryByText("Application cleanup")).toBeNull();
+    const create = screen.getByRole("button", { name: "Create cleanup plan" });
+    expect(create.hasAttribute("disabled")).toBe(false);
+    await fireEvent.click(create);
+    await screen.findByRole("heading", { name: "Cleanup Review" });
+    if (category === "documents") {
+      expect(
+        calls.invoke.mock.calls.some(
+          ([command]) => command === "create_category_cleanup",
+        ),
+      ).toBe(false);
+      expect(calls.invoke).toHaveBeenCalledWith("create_removal_plan", {
+        request: {
+          version: 1,
+          caskId: "ownership-cask",
+          resourceIds: [],
+          categoryKey: "documents",
+          permanent: false,
+        },
+      });
+      return;
+    }
+    expect(calls.invoke).toHaveBeenCalledWith("create_category_cleanup", {
+      request: {
+        scope: {
+          version: 1,
+          caskId: "ownership-cask",
+          resourceIds: [],
+          categoryKey: category || null,
+          permanent: false,
+        },
+        installationId: null,
+      },
+    });
+    await fireEvent.click(
+      screen.getByRole("button", { name: "Expand cleanup items" }),
+    );
+    expect(
+      screen.getByText("Remove reference; leave installed on Windows"),
+    ).toBeTruthy();
+    await fireEvent.click(
+      screen.getByRole("button", { name: "Review Cleanup" }),
+    );
+    await fireEvent.click(
+      screen.getByRole("button", { name: "Approve Cleanup" }),
+    );
+    await waitFor(() =>
+      expect(
+        screen.getByLabelText("I confirm the cleanup actions shown above"),
+      ).toBeTruthy(),
+    );
+    await fireEvent.click(
+      screen.getByLabelText("I confirm the cleanup actions shown above"),
+    );
+    await fireEvent.click(
+      screen.getByRole("button", { name: "Execute Cleanup" }),
+    );
+    await waitFor(() =>
+      expect(
+        calls.invoke.mock.calls.some(
+          ([command]) => command === "execute_category_cleanup",
+        ),
+      ).toBe(true),
+    );
+  },
+);
+
+test("interrupted application queue restores in unified cleanup and closes without replay", async () => {
+  const queue = {
+    version: 1,
+    id: "interrupted-queue",
+    caskId: "ownership-cask",
+    state: "PARTIAL",
+    planHash: "queue-hash",
+    expiresAtMs: 1,
+    items: [
+      {
+        installationId: "owned",
+        name: "Failed App",
+        action: "UNINSTALL",
+        state: "FAILED",
+        result: "UNINSTALL_EXIT_1",
+      },
+    ],
+  };
+  ownershipWorkspace([], (command) => {
+    if (command === "cask_removal_status")
+      return {
+        canRemove: false,
+        applicationCount: 1,
+        resourceCount: 0,
+        unfinishedOperations: 1,
+      };
+    if (command === "list_associated_applications")
+      return [appFixture("Failed App", "owned", true)];
+    if (command === "latest_msi_cleanup") return queue;
+    if (command === "removal_capability") return true;
+    if (command === "close_msi_cleanup")
+      return { ...queue, state: "CLOSED_PRESERVED" };
+    return undefined;
+  });
+  await screen.findByRole("heading", { name: "Ownership" });
+  await fireEvent.click(screen.getByRole("button", { name: "Cleanup" }));
+  const confirmation = await screen.findByLabelText(
+    "I inspected the applications and will preserve unresolved results",
+  );
+  await fireEvent.click(
+    screen.getByRole("button", { name: "Expand cleanup items" }),
+  );
+  expect(screen.getByText("Uninstall failed; ownership retained")).toBeTruthy();
+  const create = await screen.findByRole("button", {
+    name: "Create cleanup plan",
+  });
+  expect(create.hasAttribute("disabled")).toBe(true);
+  await fireEvent.click(confirmation);
+  await fireEvent.click(
+    screen.getByRole("button", {
+      name: "Keep unresolved items and close cleanup",
+    }),
+  );
+  await waitFor(() =>
+    expect(calls.invoke).toHaveBeenCalledWith("close_msi_cleanup", {
+      request: { version: 1, id: "interrupted-queue", planHash: "queue-hash" },
+    }),
+  );
+  expect(
+    calls.invoke.mock.calls.some(
+      ([command]) =>
+        command === "execute_category_cleanup" ||
+        command === "execute_msi_cleanup",
+    ),
+  ).toBe(false);
+});
+
+test.each([true, false])(
+  "folder content inherits parent status and refreshes only on request (owned=%s)",
+  async (owned) => {
+    let resource = {
+      version: 1,
+      id: "folder",
+      caskId: "ownership-cask",
+      name: "Project",
+      path: "D:/Project",
+      kind: "DIRECTORY",
+      management: owned ? "MANAGED" : "REFERENCED",
+      ownership: owned ? "OWNED" : "REFERENCED",
+      containment: "EXTERNAL",
+      provenance: owned ? "USER_ADOPTED" : "USER_REFERENCE",
+      availability: "PRESENT",
+      categoryKey: "other",
+      sizeBytes: 3,
+      sizeMeasurement: "CALCULATED",
+      unknownEntries: 0,
+      shared: false,
+    };
+    let entries = [{ relativePath: "initial.txt", kind: "FILE", sizeBytes: 3 }];
+    ownershipWorkspace([resource], (command) => {
+      if (command === "list_resources") return [{ ...resource }];
+      if (command === "resource_contents")
+        return {
+          resourceId: "folder",
+          ownership: resource.ownership,
+          availability: "PRESENT",
+          totalEntries: entries.length,
+          unknownEntries: 0,
+          entries,
+        };
+    });
+    await screen.findByRole("heading", { name: "Ownership" });
+    await fireEvent.click(
+      screen.getByRole("button", { name: "Files & Folders" }),
+    );
+    await fireEvent.click(await resourceButton("Project"));
+    await screen.findByText("initial.txt");
+    expect(
+      screen.getByText(
+        owned
+          ? /Contents inherit this folder’s ownership/
+          : /Contents are references/,
+      ),
+    ).toBeTruthy();
+    entries = [
+      ...entries,
+      { relativePath: "nested/later.txt", kind: "FILE", sizeBytes: 11 },
+    ];
+    resource = { ...resource, sizeBytes: 14 };
+    const inspections = calls.invoke.mock.calls.filter(
+      ([name]) => name === "resource_contents",
+    ).length;
+    await fireEvent(window, new Event("focus"));
+    await waitFor(() =>
+      expect(calls.invoke).toHaveBeenCalledWith(
+        "list_resources",
+        expect.anything(),
+      ),
+    );
+    expect(
+      calls.invoke.mock.calls.filter(([name]) => name === "resource_contents"),
+    ).toHaveLength(inspections);
+    await fireEvent.click(
+      screen.getByRole("button", { name: "Refresh folder contents" }),
+    );
+    await screen.findByText("nested/later.txt");
+    expect(calls.invoke).toHaveBeenCalledWith("resource_contents", {
+      request: { version: 1, id: "folder" },
+      refresh: true,
+    });
+    expect(
+      calls.invoke.mock.calls.some(([command]) =>
+        [
+          "adopt_resource",
+          "create_removal_plan",
+          "execute_removal_plan",
+        ].includes(command),
+      ),
+    ).toBe(false);
+    if (owned) {
+      await fireEvent.click(
+        screen.getByRole("button", { name: "Renew folder ownership" }),
+      );
+      const commit = screen.getByRole("button", { name: "Save ownership" });
+      expect(commit.hasAttribute("disabled")).toBe(true);
+      expect(
+        screen.getByLabelText(/This data is dedicated to this Cask/),
+      ).toBeTruthy();
+    } else
+      expect(
+        screen.queryByRole("button", { name: "Renew folder ownership" }),
+      ).toBeNull();
+  },
+);
+
+test("Known Cask size includes references and follows library changes and removal", async () => {
+  let managedBytes = 0;
+  let referencedBytes = 2048;
+  let unknownEntries = 0;
+  let removed = false;
+  calls.invoke.mockImplementation(async (command) => {
+    if (command === "cask_library")
+      return {
+        version: 1,
+        managedBytes,
+        unknownEntries,
+        totalItems: removed ? 0 : 1,
+        storageRoot: "C:/Casklets",
+        casks: removed
+          ? []
+          : [
+              {
+                cask: {
+                  version: 1,
+                  id: "storage",
+                  name: "Storage fixture",
+                  description: "",
+                  state: "ACTIVE",
+                  managedStorageRoot: "C:/Casklets/storage",
+                  createdAtMs: 1,
+                  updatedAtMs: 1,
+                  revision: 0,
+                },
+                itemCount: 1,
+                fileCount: 1,
+                applicationCount: 0,
+                managedBytes,
+                referencedBytes,
+                unknownEntries,
+              },
+            ],
+      };
+    if (command === "recovery_status")
+      return { version: 1, operations: [], pendingManifestCasks: [] };
+    return null;
+  });
+  render(App);
+  const counter = () => screen.getByText("Known Cask size").parentElement!;
+  await waitFor(() => expect(within(counter()).getByText("2 KB")).toBeTruthy());
+  expect(within(counter()).getByText("Includes references")).toBeTruthy();
+  await waitFor(() => expect(calls.events.has("casks-changed")).toBe(true));
+  managedBytes = 1024;
+  referencedBytes = 4096;
+  unknownEntries = 1;
+  calls.events.get("casks-changed")?.({ payload: null });
+  await waitFor(() => expect(within(counter()).getByText("5 KB")).toBeTruthy());
+  expect(
+    within(counter()).getByText("Includes references · incomplete"),
+  ).toBeTruthy();
+  removed = true;
+  calls.events.get("casks-removed")?.({ payload: "storage" });
+  await waitFor(() => expect(within(counter()).getByText("0 B")).toBeTruthy());
+});
+
+test("saved file cleanup approval targets the displayed plan despite a pending application queue", async () => {
+  const plan = {
+    version: 1,
+    id: "saved-files",
+    caskId: "ownership-cask",
+    state: "DRAFT",
+    scope: "CASK",
+    planHash: "file-hash",
+    permanent: false,
+    cleanupOnly: true,
+    createdAtMs: 1,
+    expiresAtMs: Date.now() + 60000,
+    items: [
+      {
+        id: "item",
+        resourceId: "reference",
+        name: "keep.txt",
+        path: "D:/keep.txt",
+        action: "DETACH",
+        reasonCode: "NO_DELETE_AUTHORITY",
+        state: "PENDING",
+      },
+    ],
+  };
+  ownershipWorkspace(
+    [
+      {
+        id: "reference",
+        name: "keep.txt",
+        kind: "FILE",
+        categoryKey: "other",
+        sizeBytes: 4,
+      },
+    ],
+    (command) => {
+      if (command === "removal_capability") return true;
+      if (command === "list_removal_plans") return [plan];
+      if (command === "latest_msi_cleanup")
+        return {
+          version: 1,
+          id: "pending-apps",
+          caskId: "ownership-cask",
+          state: "PARTIAL",
+          planHash: "app-hash",
+          expiresAtMs: 1,
+          items: [],
+        };
+      if (command === "approve_removal_plan")
+        return { ...plan, state: "APPROVED" };
+      return undefined;
+    },
+  );
+  await screen.findByRole("heading", { name: "Ownership" });
+  await fireEvent.click(screen.getByRole("button", { name: "Cleanup" }));
+  await fireEvent.click(await screen.findByText("Recent cleanups"));
+  await fireEvent.click(screen.getByRole("button", { name: /Draft.*1 items/ }));
+  expect(screen.queryByRole("button", { name: "Approve Cleanup" })).toBeNull();
+  await fireEvent.click(
+    await screen.findByRole("button", { name: "Review Cleanup" }),
+  );
+  const approve = await screen.findByRole("button", {
+    name: "Approve Cleanup",
+  });
+  expect((approve as HTMLButtonElement).disabled).toBe(false);
+  await fireEvent.click(approve);
+  await screen.findByRole("status", { name: "Cleanup status: Approved" });
+  expect(calls.invoke).toHaveBeenCalledWith("approve_removal_plan", {
+    request: { version: 1, id: "saved-files", planHash: "file-hash" },
+  });
+  expect(
+    calls.invoke.mock.calls.some(
+      ([command]) => command === "approve_category_cleanup",
+    ),
+  ).toBe(false);
+  expect(
+    calls.invoke.mock.calls.some(
+      ([command]) => command === "execute_removal_plan",
+    ),
+  ).toBe(false);
+});
+
+test("Explorer opens creation directly and resumes original Unicode folder consent in the new Cask", async () => {
+  const source = "D:/資料/selected folder";
+  let pending = true;
+  const cask = {
+    version: 1,
+    id: "ownership-cask",
+    name: "New research",
+    description: "",
+    state: "ACTIVE",
+    managedStorageRoot: "C:/Casklets/test",
+    createdAtMs: 1,
+    updatedAtMs: 1,
+    revision: 0,
+  };
+  calls.invoke.mockImplementation(async (command) => {
+    if (command === "explorer_pending")
+      return pending
+        ? { id: 91, path: source, caskId: null, batchSize: 2 }
+        : null;
+    if (command === "list_casks") return [];
+    if (command === "create_cask") return cask;
+    if (command === "explorer_route") {
+      pending = false;
+      return null;
+    }
+    return null;
+  });
+  const intake = render(ExplorerIntake);
+  await screen.findByRole("dialog", { name: "New Cask" });
+  expect(screen.queryByLabelText("Search Casks")).toBeNull();
+  expect(screen.queryByRole("button", { name: "Continue" })).toBeNull();
+  expect(screen.getByText(/all 2 selected items/)).toBeTruthy();
+  await fireEvent.input(screen.getByLabelText("Cask name"), {
+    target: { value: cask.name },
+  });
+  await fireEvent.click(screen.getByRole("button", { name: "Create Cask" }));
+  await waitFor(() =>
+    expect(calls.invoke).toHaveBeenCalledWith("explorer_route", {
+      id: 91,
+      caskId: cask.id,
+    }),
+  );
+  expect(calls.invoke).toHaveBeenCalledWith("create_cask", {
+    request: { version: 1, name: cask.name },
+  });
+  expect(
+    calls.invoke.mock.calls.some(([command]) => command === "explorer_ack"),
+  ).toBe(false);
+  intake.unmount();
+  // The destination window receives the same still-unconsumed source from the queue.
+  let queued = true;
+  ownershipWorkspace([], (command) => {
+    if (command === "explorer_pending")
+      return queued
+        ? { id: 91, path: source, caskId: cask.id, isInstaller: false }
+        : null;
+    if (command === "explorer_ack") {
+      queued = false;
+      return null;
+    }
+    if (command === "add_resource") return {};
+    return undefined;
+  });
+  await screen.findByLabelText("Reference at current location");
+  expect(screen.getByText(source)).toBeTruthy();
+  expect(
+    calls.invoke.mock.calls.some(([command]) => command === "add_resource"),
+  ).toBe(false);
+  await fireEvent.click(screen.getByLabelText("Reference at current location"));
+  await fireEvent.click(screen.getByRole("button", { name: "Add reference" }));
+  await waitFor(() =>
+    expect(calls.invoke).toHaveBeenCalledWith("add_resource", {
+      request: {
+        version: 1,
+        caskId: cask.id,
+        sourcePath: source,
+        mode: "reference",
+        categoryKey: "auto",
+      },
+    }),
+  );
+  await screen.findByText(
+    "1 added · 0 already included or duplicate · 0 failed.",
+  );
+});
+
+test("Explorer creation errors preserve selection and cancelling creation consumes only the pending batch", async () => {
+  calls.invoke.mockImplementation(async (command) => {
+    if (command === "explorer_pending")
+      return { id: 92, path: "C:/notes.txt", caskId: null };
+    if (command === "list_casks") return [];
+    if (command === "create_cask")
+      throw { message: "Cannot create the Cask. Check storage permissions." };
+    return null;
+  });
+  render(ExplorerIntake);
+  await screen.findByRole("dialog", { name: "New Cask" });
+  await fireEvent.input(screen.getByLabelText("Cask name"), {
+    target: { value: "Research" },
+  });
+  await fireEvent.click(screen.getByRole("button", { name: "Create Cask" }));
+  await screen.findByRole("alert");
+  expect((screen.getByLabelText("Cask name") as HTMLInputElement).value).toBe(
+    "Research",
+  );
+  expect(screen.getByText("notes.txt")).toBeTruthy();
+  expect(
+    calls.invoke.mock.calls.some(
+      ([command]) => command === "explorer_ack" || command === "explorer_route",
+    ),
+  ).toBe(false);
+  await fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+  await waitFor(() =>
+    expect(calls.invoke).toHaveBeenCalledWith("explorer_ack", { id: 92 }),
+  );
+});
+
+test("Explorer retries routing a created Cask without creating it twice and blocks Escape during creation", async () => {
+  let finish!: (value: unknown) => void;
+  const creation = new Promise((resolve) => {
+    finish = resolve;
+  });
+  let attempts = 0;
+  calls.invoke.mockImplementation(async (command) => {
+    if (command === "explorer_pending")
+      return { id: 93, path: "C:/notes.txt", caskId: null };
+    if (command === "list_casks") return [];
+    if (command === "create_cask") return creation;
+    if (command === "explorer_route" && ++attempts === 1)
+      throw "Cannot open the selected item. Check that it still exists.";
+    return null;
+  });
+  render(ExplorerIntake);
+  const dialog = await screen.findByRole("dialog", { name: "New Cask" });
+  await fireEvent.input(screen.getByLabelText("Cask name"), {
+    target: { value: "Created" },
+  });
+  await fireEvent.click(screen.getByRole("button", { name: "Create Cask" }));
+  await fireEvent(dialog, new Event("cancel", { cancelable: true }));
+  expect(
+    calls.invoke.mock.calls.some(([command]) => command === "explorer_ack"),
+  ).toBe(false);
+  finish({ id: "created", name: "Created", state: "ACTIVE" });
+  await screen.findByRole("dialog", { name: "Choose a Cask" });
+  await screen.findByText(/Check that it still exists/);
+  expect(
+    (screen.getByRole("radio", { name: "Created" }) as HTMLInputElement)
+      .checked,
+  ).toBe(true);
+  await fireEvent.click(screen.getByRole("button", { name: "Continue" }));
+  await waitFor(() =>
+    expect(
+      calls.invoke.mock.calls.filter(
+        ([command]) => command === "explorer_route",
+      ),
+    ).toHaveLength(2),
+  );
+  expect(
+    calls.invoke.mock.calls.filter(([command]) => command === "create_cask"),
+  ).toHaveLength(1);
+});
+
+test("Explorer chooser loads current names automatically on opening and focus", async () => {
+  let casks = [{ id: "first", name: "First", state: "ACTIVE" }];
+  calls.invoke.mockImplementation(async (command) => {
+    if (command === "explorer_pending")
+      return { id: 94, path: "C:/notes.txt", caskId: null };
+    if (command === "list_casks") return [...casks];
+    return null;
+  });
+  render(ExplorerIntake);
+  await screen.findByRole("radio", { name: "First" });
+  casks = [...casks, { id: "latest", name: "Latest", state: "ACTIVE" }];
+  await fireEvent(window, new Event("focus"));
+  await screen.findByRole("radio", { name: "Latest" });
+  expect(screen.queryByRole("button", { name: "Refresh" })).toBeNull();
+});
+
+test("Explorer retries failed destination loading without treating an in-flight query as an empty library", async () => {
+  let reads = 0;
+  let finish!: (value: unknown) => void;
+  const pendingList = new Promise((resolve) => {
+    finish = resolve;
+  });
+  calls.invoke.mockImplementation(async (command) => {
+    if (command === "explorer_pending")
+      return { id: 95, path: "C:/notes.txt", caskId: null };
+    if (command === "list_casks") {
+      if (++reads === 1) throw "Database busy";
+      return pendingList;
+    }
+    return null;
+  });
+  render(ExplorerIntake);
+  await screen.findByText("Unable to load Casks. Retrying automatically.");
+  expect(screen.queryByLabelText("Cask name")).toBeNull();
+  await fireEvent(window, new Event("focus"));
+  await waitFor(() => expect(reads).toBe(2));
+  await fireEvent(window, new Event("focus"));
+  expect(screen.queryByLabelText("Cask name")).toBeNull();
+  finish([{ id: "recovered", name: "Recovered", state: "ACTIVE" }]);
+  await screen.findByRole("radio", { name: "Recovered" });
+  expect(screen.queryByRole("alert")).toBeNull();
+  expect(
+    calls.invoke.mock.calls.some(([command]) => command === "create_cask"),
+  ).toBe(false);
+});
+
+test("Explorer Install Application opens inspection directly without executing or adding the installer file", async () => {
+  let pending = true;
+  ownershipWorkspace([], (command) => {
+    if (command === "explorer_pending")
+      return pending
+        ? {
+            id: 99,
+            path: "C:/資料/setup.MSI",
+            isInstaller: true,
+            installDirect: true,
+          }
+        : null;
+    if (command === "explorer_ack") {
+      pending = false;
+      return null;
+    }
+    if (command === "inspect_installer_artifact")
+      return {
+        version: 1,
+        path: "C:/資料/setup.MSI",
+        format: "MSI",
+        sizeBytes: 12,
+        sha256: "hash",
+        signatureStatus: "UNKNOWN",
+        warnings: [],
+      };
+    return undefined;
+  });
+  await waitFor(() =>
+    expect(calls.invoke).toHaveBeenCalledWith("inspect_installer_artifact", {
+      request: { version: 1, path: "C:/資料/setup.MSI" },
+    }),
+  );
+  expect(screen.queryByRole("region", { name: "Installer action" })).toBeNull();
+  expect(
+    calls.invoke.mock.calls.some(([command]) =>
+      ["add_resource", "adopt_resource", "install_application"].includes(
+        command,
+      ),
+    ),
+  ).toBe(false);
+});
+
+test.each([true, false])(
+  "ownership editor requires a dedicated save and preserves location (owned=%s)",
+  async (owned) => {
+    let resource = {
+      version: 1,
+      id: "policy-file",
+      caskId: "ownership-cask",
+      name: "Notes.txt",
+      path: "D:/Notes.txt",
+      kind: "FILE",
+      management: owned ? "MANAGED" : "REFERENCED",
+      ownership: owned ? "OWNED" : "REFERENCED",
+      containment: "EXTERNAL",
+      provenance: owned ? "USER_ADOPTED" : "USER_REFERENCE",
+      availability: "PRESENT",
+      categoryKey: "documents",
+      sizeBytes: 9,
+      sizeMeasurement: "EXACT",
+      unknownEntries: 0,
+      shared: false,
+    };
+    ownershipWorkspace([resource], (command, args) => {
+      if (command === "list_resources") return [{ ...resource }];
+      if (command === "set_resource_ownership") {
+        const request = args.request as { owned: boolean };
+        resource = {
+          ...resource,
+          ownership: request.owned ? "OWNED" : "REFERENCED",
+          management: request.owned ? "MANAGED" : "REFERENCED",
+        };
+        return { ...resource };
+      }
+    });
+    await screen.findByRole("heading", { name: "Ownership" });
+    await fireEvent.click(
+      screen.getByRole("button", { name: "Files & Folders" }),
+    );
+    await fireEvent.click(await resourceButton("Notes.txt"));
+    await fireEvent.click(
+      screen.getByRole("button", { name: "Change ownership" }),
+    );
+    const form = screen.getByRole("form", { name: "Change item ownership" });
+    expect(
+      calls.invoke.mock.calls.some(
+        ([command]) => command === "set_resource_ownership",
+      ),
+    ).toBe(false);
+    if (!owned) {
+      await fireEvent.click(
+        within(form).getByRole("radio", { name: /^Owned by Cask/ }),
+      );
+      expect(
+        screen
+          .getByRole("button", { name: "Save ownership" })
+          .hasAttribute("disabled"),
+      ).toBe(true);
+      await fireEvent.click(within(form).getByRole("checkbox"));
+    }
+    await fireEvent.keyDown(
+      within(form).getByRole("radio", { name: /^Owned by Cask/ }),
+      { key: "Escape" },
+    );
+    await waitFor(() =>
+      expect(document.activeElement).toBe(
+        screen.getByRole("button", { name: "Change ownership" }),
+      ),
+    );
+    expect(
+      calls.invoke.mock.calls.some(
+        ([command]) => command === "set_resource_ownership",
+      ),
+    ).toBe(false);
+    await fireEvent.click(
+      screen.getByRole("button", { name: "Change ownership" }),
+    );
+    await fireEvent.click(
+      screen.getByRole("radio", {
+        name: owned ? /^Reference/ : /^Owned by Cask/,
+      }),
+    );
+    if (!owned) await fireEvent.click(screen.getByRole("checkbox"));
+    await fireEvent.click(
+      screen.getByRole("button", { name: "Save ownership" }),
+    );
+    await waitFor(() =>
+      expect(calls.invoke).toHaveBeenCalledWith("set_resource_ownership", {
+        request: {
+          version: 1,
+          caskId: "ownership-cask",
+          resourceId: "policy-file",
+          expectedOwnership: owned ? "OWNED" : "REFERENCED",
+          owned: !owned,
+          confirmOwnership: !owned,
+        },
+      }),
+    );
+    await screen.findByText(
+      "Ownership updated. File contents and location are unchanged.",
+    );
+    expect(resource.ownership).toBe(owned ? "REFERENCED" : "OWNED");
+    expect(resource.path).toBe("D:/Notes.txt");
+    expect(resource.categoryKey).toBe("documents");
+  },
+);
+
+test("category creation blocks duplicate requests and retains input after failure", async () => {
+  let attempts = 0;
+  const currentCategories = [
+    { version: 1, key: "other", name: "Other", isBuiltin: true },
+  ];
+  let rejectCreate!: (reason: unknown) => void;
+  ownershipWorkspace([], (command) => {
+    if (command === "list_categories") return [...currentCategories];
+    if (command === "create_category") {
+      attempts++;
+      if (attempts === 1)
+        return new Promise((_, reject) => {
+          rejectCreate = reject;
+        });
+      const category = {
+        version: 1,
+        key: "research",
+        name: "Research",
+        isBuiltin: false,
+      };
+      currentCategories.push(category);
+      return category;
+    }
+  });
+  await screen.findByRole("heading", { name: "Ownership" });
+  await fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+  await fireEvent.click(
+    screen.getByRole("heading", { name: "Categories" }).closest("summary")!,
+  );
+  const input = screen.getByLabelText("New category") as HTMLInputElement;
+  const form = input.closest("form")!;
+  expect(
+    screen
+      .getByRole("button", { name: "Create category" })
+      .hasAttribute("disabled"),
+  ).toBe(true);
+  await fireEvent.input(input, { target: { value: "Research" } });
+  await fireEvent.submit(form);
+  await fireEvent.submit(form);
+  expect(attempts).toBe(1);
+  rejectCreate({ message: "Category could not be saved" });
+  await screen.findByText("Category could not be saved");
+  expect(input.value).toBe("Research");
+  await fireEvent.submit(form);
+  await waitFor(() =>
+    expect(
+      within(
+        screen.getByRole("list", { name: "Available categories" }),
+      ).getByText("Research"),
+    ).toBeTruthy(),
+  );
+  expect(attempts).toBe(2);
+  expect(input.value).toBe("");
+});
+
+test("category action shows the current category and saves only after explicit selection", async () => {
+  let resource = {
+    version: 1,
+    id: "category-file",
+    caskId: "ownership-cask",
+    name: "notes.txt",
+    path: "D:/notes.txt",
+    kind: "FILE",
+    categoryKey: "documents",
+    ownership: "REFERENCED",
+    management: "REFERENCED",
+    containment: "EXTERNAL",
+    availability: "PRESENT",
+    sizeBytes: 4,
+    sizeMeasurement: "EXACT",
+    unknownEntries: 0,
+    shared: false,
+    provenance: "USER_REFERENCE",
+  };
+  const other = {
+    ...resource,
+    id: "existing-project",
+    name: "project.txt",
+    categoryKey: "projects",
+  };
+  ownershipWorkspace([resource, other], (command, args) => {
+    if (command === "list_categories")
+      return [
+        { key: "documents", name: "Documents" },
+        { key: "projects", name: "Projects" },
+      ];
+    if (command === "list_resources") return [resource, other];
+    if (command === "categorize_resource") {
+      resource = {
+        ...resource,
+        categoryKey: String(args.request?.categoryKey),
+      };
+      return resource;
+    }
+  });
+  await screen.findByRole("heading", { name: "Ownership" });
+  await fireEvent.click(
+    screen.getByRole("button", { name: "Files & Folders" }),
+  );
+  await screen.findByRole("button", {
+    name: "Details for project.txt",
+    hidden: true,
+  });
+  const targetGroup = Array.from(
+    document.querySelectorAll<HTMLDetailsElement>(".resource-category"),
+  ).find((group) =>
+    group.querySelector("summary")?.textContent?.includes("Projects"),
+  )!;
+  targetGroup.open = false;
+  await fireEvent.click(await resourceButton("notes.txt"));
+  const originalGlyph = screen
+    .getByRole("button", { name: "Details for notes.txt" })
+    .querySelector("svg")?.outerHTML;
+  const details = screen.getByRole("region", { name: "Details for notes.txt" });
+  expect(within(details).getByText("Documents")).toBeTruthy();
+  expect(within(details).queryByRole("combobox")).toBeNull();
+  expect(within(details).queryByText("Cleanup authority")).toBeNull();
+  await fireEvent.click(
+    within(details).getByRole("button", { name: "Change Category" }),
+  );
+  const editor = screen.getByRole("form", { name: "Change item category" });
+  expect(
+    screen
+      .getByRole("button", { name: "Save category" })
+      .hasAttribute("disabled"),
+  ).toBe(true);
+  await fireEvent.change(within(editor).getByRole("combobox"), {
+    target: { value: "projects" },
+  });
+  await fireEvent.click(screen.getByRole("button", { name: "Cancel" }));
+  expect(
+    calls.invoke.mock.calls.some(
+      ([command]) => command === "categorize_resource",
+    ),
+  ).toBe(false);
+  await fireEvent.click(
+    within(details).getByRole("button", { name: "Change Category" }),
+  );
+  await fireEvent.change(screen.getByRole("combobox", { name: "Category" }), {
+    target: { value: "projects" },
+  });
+  await fireEvent.click(screen.getByRole("button", { name: "Save category" }));
+  await screen.findByText("Category updated.");
+  expect(calls.invoke).toHaveBeenCalledWith("categorize_resource", {
+    request: {
+      version: 1,
+      resourceId: "category-file",
+      categoryKey: "projects",
+    },
+  });
+  expect(resource.ownership).toBe("REFERENCED");
+  expect(
+    screen
+      .getByRole("button", { name: "Details for notes.txt", hidden: true })
+      .querySelector("svg")?.outerHTML,
+  ).not.toBe(originalGlyph);
+  expect(
+    screen.getByRole("dialog", { name: "Management details for notes.txt" }),
+  ).toBeTruthy();
+  expect(targetGroup.open).toBe(false);
+  await fireEvent.click(
+    screen.getByRole("button", { name: "Close resource details" }),
+  );
+  await waitFor(() => expect(targetGroup.open).toBe(true));
+  expect(document.activeElement?.id).toBe("resource-toggle-category-file");
+});
+
+test.each([
+  { failure: false, resume: false },
+  { failure: true, resume: false },
+  { failure: false, resume: true },
+])(
+  "whole-Cask cleanup retires only after success (%o)",
+  async ({ failure, resume }) => {
+    let retired = false;
+    const resource = {
+      id: "whole-ref",
+      name: "keep.txt",
+      path: "D:/keep.txt",
+      kind: "FILE",
+      categoryKey: "other",
+      management: "REFERENCED",
+      ownership: "REFERENCED",
+      containment: "EXTERNAL",
+      availability: "PRESENT",
+      sizeBytes: 4,
+    };
+    const files = {
+      version: 1,
+      id: "whole-files",
+      caskId: "ownership-cask",
+      scope: "CASK",
+      categoryKey: null,
+      cleanupOnly: true,
+      permanent: false,
+      state: "DRAFT",
+      planHash: "whole-hash",
+      runId: null,
+      createdAtMs: 1,
+      expiresAtMs: Date.now() + 60000,
+      items: [
+        {
+          id: "whole-step",
+          resourceId: resource.id,
+          name: resource.name,
+          path: resource.path,
+          action: "DETACH",
+          reasonCode: "REFERENCE",
+          state: "PENDING",
+          expectedSizeBytes: 4,
+          resultCode: null,
+          recoveryPath: null,
+        },
+      ],
+    };
+    let plan = {
+      version: 1,
+      caskId: "ownership-cask",
+      resources: files,
+      applications: null,
+      caskRemovalId: "whole-intent",
+      caskRemoved: false,
+    };
+    ownershipWorkspace([resource], (command) => {
+      if (command === "pending_whole_cask_cleanup") {
+        if (!resume) return null;
+        plan = {
+          ...plan,
+          resources: { ...files, state: "COMPLETE", expiresAtMs: 1 },
+        };
+        return plan;
+      }
+      if (command === "removal_capability") return true;
+      if (command === "create_category_cleanup") return plan;
+      if (command === "approve_category_cleanup") {
+        plan = { ...plan, resources: { ...files, state: "APPROVED" } };
+        return plan;
+      }
+      if (command === "execute_category_cleanup") {
+        if (failure) {
+          plan = { ...plan, resources: { ...files, state: "PARTIAL" } };
+          return plan;
+        }
+        retired = true;
+        plan = {
+          ...plan,
+          caskRemoved: true,
+          resources: { ...files, state: "COMPLETE" },
+        };
+        return plan;
+      }
+      if (command === "get_cask" && retired)
+        throw new Error("Removed Cask must not be queried again");
+    });
+    await screen.findByRole("heading", { name: "Ownership" });
+    await fireEvent.click(screen.getByRole("button", { name: "Cleanup" }));
+    if (!resume)
+      await fireEvent.click(
+        await screen.findByRole("button", { name: "Create cleanup plan" }),
+      );
+    await screen.findByText(
+      /After successful cleanup, this Cask will be permanently removed/,
+    );
+    await fireEvent.click(
+      screen.getByRole("button", { name: "Review Cleanup" }),
+    );
+    if (!resume)
+      await fireEvent.click(
+        screen.getByRole("button", { name: "Approve Cleanup" }),
+      );
+    await fireEvent.click(
+      await screen.findByLabelText(
+        /I confirm the cleanup actions shown above and removal/,
+      ),
+    );
+    await fireEvent.click(
+      screen.getByRole("button", { name: "Execute Cleanup" }),
+    );
+    if (failure) {
+      await screen.findByRole("status", {
+        name: "Cleanup status: Needs attention",
+      });
+      expect(screen.getByRole("heading", { name: "Ownership" })).toBeTruthy();
+    } else {
+      await screen.findByText("Cask removed permanently.");
+      expect(screen.queryByRole("heading", { name: "Ownership" })).toBeNull();
+    }
+    expect(
+      calls.invoke.mock.calls.some(([command]) => command === "remove_cask"),
+    ).toBe(false);
+    expect(retired).toBe(!failure);
+  },
+);
+
+test("associating an application releases the picker while storage measurement is still pending", async () => {
+  const app = appFixture("Photo editor", "photo");
+  app.sourceKey =
+    "HKCU64\\SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\IconPickerTest";
+  let linked = false;
+  let finishSummary: ((value: object) => void) | undefined;
+  ownershipWorkspace([], (command) => {
+    if (command === "search_installed_applications") return [app];
+    if (command === "application_icons")
+      return ["data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAAB"];
+    if (command === "associate_installed_application") {
+      linked = true;
+      return app;
+    }
+    if (command === "list_associated_applications") return linked ? [app] : [];
+    if (command === "storage_summary" && linked)
+      return new Promise((resolve) => {
+        finishSummary = resolve;
+      });
+    return undefined;
+  });
+  await screen.findByRole("heading", { name: "Ownership" });
+  await waitFor(() =>
+    expect(calls.invoke).toHaveBeenCalledWith(
+      "storage_summary",
+      expect.anything(),
+    ),
+  );
+  await fireEvent.click(screen.getByRole("button", { name: "Applications" }));
+  await fireEvent.click(
+    screen.getByRole("button", { name: "Add Application" }),
+  );
+  await fireEvent.click(
+    screen.getByRole("button", { name: /Associate existing app/ }),
+  );
+  await fireEvent.click(screen.getByRole("button", { name: "Search" }));
+  await waitFor(() =>
+    expect(
+      document.querySelector(".picker-results .application-icon img"),
+    ).not.toBeNull(),
+  );
+  expect(calls.invoke).toHaveBeenCalledWith("application_icons", {
+    sources: [{ kind: "registry", key: app.sourceKey }],
+  });
+  await fireEvent.click(
+    await screen.findByRole("button", { name: "Associate" }),
+  );
+  await waitFor(() =>
+    expect(
+      screen.getByRole("button", { name: "Search" }).hasAttribute("disabled"),
+    ).toBe(false),
+  );
+  expect(
+    screen.getByRole("button", { name: "Associated" }).hasAttribute("disabled"),
+  ).toBe(true);
+  expect(
+    screen
+      .getByRole("button", { name: "Refresh inventory" })
+      .hasAttribute("disabled"),
+  ).toBe(false);
+  expect(finishSummary).toBeTruthy();
+  await fireEvent.click(screen.getByRole("button", { name: "Search" }));
+  await waitFor(() =>
+    expect(
+      screen.getByRole("button", { name: "Search" }).hasAttribute("disabled"),
+    ).toBe(false),
+  );
+  finishSummary?.({
+    managedLogicalBytes: 0,
+    referencedLogicalBytes: 0,
+    reclaimableMinBytes: 0,
+    reclaimableMaxBytes: 0,
+    unknownEntries: 0,
+  });
+});
+
+test("opening and polling read saved metadata; explicit size refresh leaves navigation usable", async () => {
+  let finish: ((value: object) => void) | undefined;
+  ownershipWorkspace([], (command, args) => {
+    if (
+      command === "storage_summary" &&
+      "refresh" in args &&
+      args.refresh === true
+    )
+      return new Promise((resolve) => {
+        finish = resolve;
+      });
+    return undefined;
+  });
+  await screen.findByRole("heading", { name: "Ownership" });
+  await waitFor(() =>
+    expect(calls.invoke).toHaveBeenCalledWith(
+      "storage_summary",
+      expect.anything(),
+    ),
+  );
+  await fireEvent(window, new Event("focus"));
+  expect(
+    calls.invoke.mock.calls
+      .filter(([name]) => ["list_resources", "storage_summary"].includes(name))
+      .every(([, args]) => args.refresh !== true),
+  ).toBe(true);
+  await fireEvent.click(screen.getByRole("button", { name: "Refresh sizes" }));
+  await waitFor(() => expect(finish).toBeTruthy());
+  expect(
+    screen
+      .getByRole("button", { name: "Measuring sizes…" })
+      .hasAttribute("disabled"),
+  ).toBe(true);
+  await fireEvent.click(screen.getByRole("button", { name: "Applications" }));
+  expect(
+    screen.getByRole("region", { name: "Cask applications" }),
+  ).toBeTruthy();
+  finish?.({
+    managedLogicalBytes: 0,
+    referencedLogicalBytes: 0,
+    reclaimableMinBytes: 0,
+    reclaimableMaxBytes: 0,
+    unknownEntries: 0,
+  });
+  await screen.findByText("Saved sizes updated.");
+  await fireEvent.click(screen.getByRole("button", { name: "Overview" }));
+  expect(
+    screen
+      .getByRole("button", { name: "Refresh sizes" })
+      .hasAttribute("disabled"),
+  ).toBe(false);
+});
+
+test("resource overlay contains editor actions, cancels editing before closing, and restores item focus", async () => {
+  ownershipWorkspace([
+    {
+      id: "overlay-item",
+      sizeMeasurement: "EXACT",
+      containment: "EXTERNAL",
+      name: "Overlay.txt",
+      kind: "FILE",
+      path: "D:/Overlay.txt",
+      management: "REFERENCED",
+      ownership: "REFERENCED",
+      availability: "PRESENT",
+      categoryKey: "other",
+      sizeBytes: 4,
+    },
+  ]);
+  await screen.findByRole("heading", { name: "Ownership" });
+  await fireEvent.click(
+    screen.getByRole("button", { name: "Files & Folders" }),
+  );
+  const trigger = await resourceButton("Overlay.txt");
+  await fireEvent.click(trigger);
+  const overlay = screen.getByRole("dialog", {
+    name: "Management details for Overlay.txt",
+  });
+  await fireEvent.click(
+    within(overlay).getByRole("button", { name: "Change Category" }),
+  );
+  expect(
+    within(overlay).getByRole("button", { name: "Save category" }),
+  ).toBeTruthy();
+  await fireEvent(overlay, new Event("cancel", { cancelable: true }));
+  expect(overlay.hasAttribute("open")).toBe(true);
+  expect(within(overlay).queryByRole("combobox")).toBeNull();
+  await fireEvent(overlay, new Event("cancel", { cancelable: true }));
+  await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+  await waitFor(() => expect(document.activeElement).toBe(trigger));
+});
+
+test("installed application executable warning prevents install and routes to association", async () => {
+  ownershipWorkspace([], (command) => {
+    if (command === "inspect_installer_artifact")
+      return Promise.reject({
+        code: "INSTALLED_APPLICATION_EXECUTABLE",
+        message:
+          "This executable belongs to the installed application Chrome. Use Associate existing app instead. Nothing was launched.",
+      });
+    return undefined;
+  });
+  await screen.findByRole("heading", { name: "Ownership" });
+  await fireEvent.click(screen.getByRole("button", { name: "Applications" }));
+  await fireEvent.click(
+    screen.getByRole("button", { name: "Add Application" }),
+  );
+  await fireEvent.click(
+    screen.getByRole("button", { name: /^Install Application/ }),
+  );
+  vi.mocked(open).mockResolvedValueOnce("C:/Program Files/Chrome/chrome.exe");
+  await fireEvent.click(
+    screen.getByRole("button", { name: "Select MSI or EXE" }),
+  );
+  await screen.findByRole("alert");
+  expect(screen.queryByRole("button", { name: "Install" })).toBeNull();
+  expect(
+    calls.invoke.mock.calls.some(([name]) => name === "install_application"),
+  ).toBe(false);
+  await fireEvent.click(
+    screen.getByRole("button", { name: "Find installed application" }),
+  );
+  expect(
+    screen.getByRole("region", { name: "Existing Windows applications" }),
+  ).toBeTruthy();
+});
+
+test("confirmed preserved closure clears an existing uncertain installer attempt", async () => {
+  let closed = false;
+  const operation = {
+    version: 1,
+    id: "stuck-attempt",
+    caskId: "ownership-cask",
+    state: "RECOVERY_REQUIRED",
+    candidates: [],
+    errorCode: "LAUNCH_UNCERTAIN",
+    confirmedInstallationId: null,
+  };
+  ownershipWorkspace([], (command) => {
+    if (command === "list_installer_operations")
+      return [
+        { ...operation, state: closed ? "CLOSED_PRESERVED" : operation.state },
+      ];
+    if (command === "get_installer_operation")
+      return {
+        ...operation,
+        state: closed ? "CLOSED_PRESERVED" : operation.state,
+      };
+    if (command === "close_installer_operation") {
+      closed = true;
+      return null;
+    }
+    return undefined;
+  });
+  await screen.findByRole("heading", { name: "Ownership" });
+  await fireEvent.click(screen.getByRole("button", { name: "Applications" }));
+  await fireEvent.click(
+    await screen.findByRole("button", { name: "View installation" }),
+  );
+  const close = screen.getByRole("button", {
+    name: "Close attempt and keep files",
+  });
+  expect(close.hasAttribute("disabled")).toBe(true);
+  await fireEvent.click(
+    screen.getByRole("checkbox", {
+      name: "The installer or application and any processes it opened have finished.",
+    }),
+  );
+  await fireEvent.click(close);
+  await waitFor(() =>
+    expect(calls.invoke).toHaveBeenCalledWith("close_installer_operation", {
+      request: { version: 1, id: "stuck-attempt" },
+    }),
+  );
+  await screen.findByText(
+    "Installation attempt closed. Files and applications were kept; the Cask is available again.",
+  );
+  expect(
+    screen.queryByRole("button", { name: "Close attempt and keep files" }),
+  ).toBeNull();
+});
+
+test("Cask Settings disclosures reset to collapsed whenever Settings opens", async () => {
+  ownershipWorkspace();
+  await screen.findByRole("heading", { name: "Ownership" });
+  await fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+  const disclosures = Array.from(
+    document.querySelectorAll<HTMLDetailsElement>(".settings-disclosure"),
+  );
+  expect(disclosures).toHaveLength(3);
+  expect(disclosures.every((item) => !item.open)).toBe(true);
+  disclosures[0].open = true;
+  await fireEvent.click(screen.getByRole("button", { name: "Overview" }));
+  await fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+  expect(
+    Array.from(
+      document.querySelectorAll<HTMLDetailsElement>(".settings-disclosure"),
+    ).every((item) => !item.open),
+  ).toBe(true);
+});
+
+test.each([false, true])(
+  "native picker supports multiple items (folders=%s) and processes each with auto category",
+  async (directory) => {
+    const paths = directory
+      ? ["C:/One", "C:/Two"]
+      : ["C:/photo.png", "C:/video.mp4"];
+    vi.mocked(open).mockResolvedValueOnce(paths);
+    ownershipWorkspace([], (command, args) =>
+      command === "add_resource" ? { id: args.request?.sourcePath } : undefined,
+    );
+    await screen.findByRole("heading", { name: "Ownership" });
+    await fireEvent.click(screen.getByRole("button", { name: "Add Items" }));
+    await fireEvent.click(
+      screen.getByRole("button", {
+        name: directory ? "Add Folder" : "Add File",
+      }),
+    );
+    expect(open).toHaveBeenCalledWith({ multiple: true, directory });
+    await screen.findByText("2 selected items");
+    await fireEvent.click(
+      screen.getByLabelText("Reference at current location"),
+    );
+    await fireEvent.click(
+      screen.getByRole("button", { name: "Add reference" }),
+    );
+    await screen.findByText(
+      "2 added · 0 already included or duplicate · 0 failed.",
+    );
+    for (const path of paths)
+      expect(calls.invoke).toHaveBeenCalledWith("add_resource", {
+        request: {
+          version: 1,
+          caskId: "ownership-cask",
+          sourcePath: path,
+          mode: "reference",
+          categoryKey: "auto",
+        },
+      });
+  },
+);
+
+test("partial intake keeps failed paths and an honest retained result", async () => {
+  ownershipWorkspace([], (command, args) => {
+    if (command !== "add_resource") return undefined;
+    if (String(args.request?.sourcePath).includes("missing"))
+      return Promise.reject({ message: "File is unavailable" });
+    return { id: "added-image" };
+  });
+  await screen.findByRole("heading", { name: "Ownership" });
+  await waitFor(() => expect(calls.drop).not.toBeNull());
+  calls.drop?.({
+    payload: { type: "drop", paths: ["C:/image.png", "C:/missing.txt"] },
+  });
+  await screen.findByText("2 selected items");
+  await fireEvent.click(screen.getByLabelText("Reference at current location"));
+  await fireEvent.click(screen.getByRole("button", { name: "Add reference" }));
+  await screen.findByText(
+    "1 added \u00b7 0 already included or duplicate \u00b7 1 failed.",
+  );
+  expect(screen.getByText("File is unavailable")).toBeTruthy();
+  expect(
+    within(screen.getByRole("alert")).getByText("missing.txt"),
+  ).toBeTruthy();
+  expect(screen.queryByText("2 selected items")).toBeNull();
+  expect(
+    await screen.findByRole("button", { name: "Add reference" }),
+  ).toBeTruthy();
+});
+
+test("category shelves start closed, keep manual expansion during refresh and reset on reentry", async () => {
+  const resources = [
+    {
+      id: "image",
+      name: "photo.png",
+      path: "C:/photo.png",
+      categoryKey: "images",
+      kind: "FILE",
+      ownership: "REFERENCED",
+      management: "REFERENCED",
+      availability: "PRESENT",
+      sizeBytes: 10,
+      unknownEntries: 0,
+    },
+  ];
+  ownershipWorkspace(resources, (command) =>
+    command === "list_resources" ? [...resources] : undefined,
+  );
+  await screen.findByRole("heading", { name: "Ownership" });
+  await fireEvent.click(
+    screen.getByRole("button", { name: "Files & Folders" }),
+  );
+  await screen.findByRole("button", {
+    name: "Details for photo.png",
+    hidden: true,
+  });
+  const images =
+    document.querySelector<HTMLDetailsElement>(".resource-category")!;
+  expect(images.open).toBe(false);
+  await fireEvent.click(images.querySelector("summary")!);
+  expect(images.open).toBe(true);
+  resources.push({
+    ...resources[0],
+    id: "doc",
+    name: "notes.txt",
+    path: "C:/notes.txt",
+    categoryKey: "documents",
+  });
+  window.dispatchEvent(new Event("focus"));
+  await screen.findByRole("button", {
+    name: "Details for notes.txt",
+    hidden: true,
+  });
+  const documents = document
+    .getElementById("resource-toggle-doc")!
+    .closest<HTMLDetailsElement>(".resource-category")!;
+  expect(documents.open).toBe(false);
+  expect(images.open).toBe(true);
+  await fireEvent.click(screen.getByRole("button", { name: "Overview" }));
+  await fireEvent.click(
+    screen.getByRole("button", { name: "Files & Folders" }),
+  );
+  expect(
+    [
+      ...document.querySelectorAll<HTMLDetailsElement>(".resource-category"),
+    ].every((group) => !group.open),
+  ).toBe(true);
+});
+
+test("inventory search reveals matches by saved name, category and path without issuing core queries", async () => {
+  const resource = {
+    kind: "FILE",
+    ownership: "REFERENCED",
+    management: "REFERENCED",
+    availability: "PRESENT",
+    sizeBytes: 10,
+    unknownEntries: 0,
+  };
+  ownershipWorkspace([
+    {
+      ...resource,
+      id: "photo",
+      name: "photo.png",
+      path: "C:/Course/photo.png",
+      categoryKey: "images",
+    },
+    {
+      ...resource,
+      id: "notes",
+      name: "notes.txt",
+      path: "D:/Private/notes.txt",
+      categoryKey: "documents",
+    },
+  ]);
+  await screen.findByRole("heading", { name: "Ownership" });
+  await fireEvent.click(
+    screen.getByRole("button", { name: "Files & Folders" }),
+  );
+  const search = await screen.findByRole("textbox", {
+    name: "Search files and folders",
+  });
+  await waitFor(() =>
+    expect(screen.queryByText(/^Loading workspace/)).toBeNull(),
+  );
+  await waitFor(() =>
+    expect(
+      calls.invoke.mock.calls.some(
+        ([command]) => command === "explorer_pending",
+      ),
+    ).toBe(true),
+  );
+  const callCount = calls.invoke.mock.calls.length;
+  for (const query of ["PHOTO", "Images", "C:/Course"]) {
+    await fireEvent.input(search, { target: { value: query } });
+    expect(
+      screen.getByRole("button", { name: "Details for photo.png" }),
+    ).toBeTruthy();
+    expect(
+      screen.queryByRole("button", {
+        name: "Details for notes.txt",
+        hidden: true,
+      }),
+    ).toBeNull();
+    expect(screen.getByText("1 of 2 items")).toBeTruthy();
+  }
+  await fireEvent.input(search, { target: { value: "unmatched" } });
+  expect(screen.getByText("No matching files or folders")).toBeTruthy();
+  await fireEvent.click(
+    screen.getByRole("button", { name: "Clear resource search" }),
+  );
+  expect(document.querySelectorAll(".resource-category")).toHaveLength(2);
+  expect(
+    calls.invoke.mock.calls.slice(callCount).map(([command]) => command),
+  ).toEqual([]);
+});
+
+test("Settings footer resets and saves appearance-only drafts without updating metadata", async () => {
+  const cask = ownershipWorkspace();
+  await screen.findByRole("heading", { name: "Ownership" });
+  await fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+  await waitFor(() =>
+    expect(
+      (
+        screen.getByRole("button", {
+          name: "Save changes",
+        }) as HTMLButtonElement
+      ).disabled,
+    ).toBe(true),
+  );
+  async function chooseWhiteEmoji() {
+    await fireEvent.click(
+      screen.getByRole("button", { name: "Change appearance" }),
+    );
+    await fireEvent.click(screen.getByRole("button", { name: "Emoji" }));
+    await fireEvent.click(screen.getByRole("button", { name: "Art emoji" }));
+    await fireEvent.click(screen.getByRole("button", { name: "White color" }));
+  }
+  await chooseWhiteEmoji();
+  expect(
+    (screen.getByRole("button", { name: "Save changes" }) as HTMLButtonElement)
+      .disabled,
+  ).toBe(false);
+  expect(screen.queryByRole("button", { name: "Save appearance" })).toBeNull();
+  expect(
+    screen.queryByRole("button", { name: "Cancel appearance" }),
+  ).toBeNull();
+  expect(appearanceForCask(cask.id)).toEqual(DEFAULT_APPEARANCE);
+  await fireEvent.click(screen.getByRole("button", { name: "Reset changes" }));
+  expect(appearanceForCask(cask.id)).toEqual(DEFAULT_APPEARANCE);
+  expect(
+    (screen.getByRole("button", { name: "Save changes" }) as HTMLButtonElement)
+      .disabled,
+  ).toBe(true);
+  await chooseWhiteEmoji();
+  await fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+  await waitFor(() =>
+    expect(appearanceForCask(cask.id)).toEqual({
+      symbol: "emoji:🎨",
+      color: "#ffffff",
+    }),
+  );
+  expect(
+    calls.invoke.mock.calls.some(([command]) => command === "update_cask"),
+  ).toBe(false);
+  expect(
+    document.querySelector(".workspace-title .white-background"),
+  ).toBeTruthy();
+  expect(
+    (screen.getByRole("button", { name: "Save changes" }) as HTMLButtonElement)
+      .disabled,
+  ).toBe(true);
+});
+
+test("combined Settings save retains the appearance draft when metadata fails", async () => {
+  let fail = true;
+  const cask = ownershipWorkspace([], (command, args) => {
+    if (command === "update_cask") {
+      if (fail) throw new Error("Metadata save rejected");
+      return { ...cask, name: args.request!.name, revision: 1 };
+    }
+  });
+  await screen.findByRole("heading", { name: "Ownership" });
+  await fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+  await fireEvent.click(
+    screen.getByRole("button", { name: "Change appearance" }),
+  );
+  await fireEvent.click(screen.getByRole("button", { name: "White color" }));
+  await fireEvent.click(screen.getByText("Cask settings").closest("summary")!);
+  await fireEvent.input(screen.getByLabelText("Cask name"), {
+    target: { value: "Renamed" },
+  });
+  await fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+  await screen.findByText("Metadata save rejected");
+  expect(appearanceForCask(cask.id)).toEqual(DEFAULT_APPEARANCE);
+  expect(
+    document.querySelector(".appearance-trigger .white-background"),
+  ).toBeTruthy();
+  fail = false;
+  await fireEvent.click(screen.getByRole("button", { name: "Save changes" }));
+  await waitFor(() => expect(appearanceForCask(cask.id).color).toBe("#ffffff"));
+  expect(
+    (screen.getByRole("button", { name: "Save changes" }) as HTMLButtonElement)
+      .disabled,
+  ).toBe(true);
+});
+
+test("Reset changes restores the latest remotely saved appearance", async () => {
+  const cask = ownershipWorkspace();
+  await screen.findByRole("heading", { name: "Ownership" });
+  await fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+  saveCaskAppearance(cask.id, { symbol: "icon:terminal", color: null });
+  await waitFor(() =>
+    expect(
+      (
+        screen.getByRole("button", {
+          name: "Save changes",
+        }) as HTMLButtonElement
+      ).disabled,
+    ).toBe(true),
+  );
+  await fireEvent.click(
+    screen.getByRole("button", { name: "Change appearance" }),
+  );
+  await fireEvent.click(screen.getByRole("button", { name: "White color" }));
+  saveCaskAppearance(cask.id, { symbol: "icon:book", color: null });
+  await waitFor(() =>
+    expect(
+      document.querySelector(".appearance-trigger .white-background"),
+    ).toBeTruthy(),
+  );
+  await fireEvent.click(screen.getByRole("button", { name: "Reset changes" }));
+  expect(
+    document.querySelector(
+      '.cask-appearance-settings [data-cask-symbol="icon:book"]',
+    ),
+  ).toBeTruthy();
+  expect(
+    (screen.getByRole("button", { name: "Save changes" }) as HTMLButtonElement)
+      .disabled,
+  ).toBe(true);
+});

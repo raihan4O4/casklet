@@ -20,7 +20,7 @@ Associations are first-class because resources and installations may serve multi
 
 A Cask has an ID, editable name, stable storage slug, description, lifecycle state, managed-storage root, timestamps, and optimistic-concurrency revision. States are `CREATING`, `ACTIVE`, `ARCHIVED`, `DESTROYING`, `PARTIALLY_DESTROYED`, `DESTROYED`, and `RECOVERY_REQUIRED`.
 
-Names are non-empty but need not be globally unique. Storage paths are unique and do not move merely because a Cask is renamed. Archived Casks are read-only; destroyed Casks accept nothing new. Only one destructive operation may act on a Cask at once, and unresolved owned resources prevent a transition to `DESTROYED`. Destruction retains an inspectable tombstone until separately purged.
+Names are non-empty but need not be globally unique. Storage paths are unique and do not move merely because a Cask is renamed. Archived Casks are read-only; destroyed Casks accept nothing new. Only one destructive operation may act on a Cask at once, and unresolved owned resources prevent a transition to `DESTROYED`. Permanent empty-Cask removal retires it from user queries and restoration using a durable tombstone after atomic resource, application, and unfinished-operation checks. Historical journals and metadata directories remain; no resource bytes are deleted. Archive is reversible. See ADR 0020.
 
 ## Resources
 
@@ -32,6 +32,8 @@ A Resource represents a file-like object and records kind, display name, physica
 - Size records bytes, measurement quality (`EXACT`, `CALCULATED`, `ESTIMATED`, or `UNKNOWN`), and observation time.
 
 A ResourceAssociation relates one Cask to one Resource with `OWNED`, `REFERENCED`, or `DISCOVERED` relationship and one of `DELETE_WHEN_UNREFERENCED`, `DETACH_ONLY`, `ALWAYS_RETAIN`, or `ASK`. A removal policy is eligibility evidence, never permission to bypass safety checks.
+
+Ownership is independent of containment. Explicit in-place adoption records a local grant over one inspected file or bounded dedicated directory, without relocation (`MANAGED / EXTERNAL / OWNED`). It requires exact path and identity evidence, user consent, and no overlapping registered dependency. Copy and move remain implemented intake operations into managed storage, but generic user intake is temporarily disabled under ADR 0020. References and recovered manifests never grant deletion authority. See ADR 0019.
 
 ## Categories
 
@@ -64,6 +66,8 @@ An uncertain interruption becomes `RECOVERY_REQUIRED` or `UNKNOWN`, never assume
 
 A RemovalPlan is an immutable proposal based on observed state and a specific Cask revision. Each item identifies a target, proposed action, reason, risk, expected size, preconditions, and state. Plans expire or invalidate when relevant state changes.
 
+New cleanup plans affect resources only and preserve Cask lifecycle state. Archive/restore are separate reversible metadata commands. Equivalent current snapshots reuse a draft or approved plan. Historical legacy destruction plans retain their original semantics for audit and uncertain-run closure.
+
 Immediately before every destructive step, Casklet revalidates identity, path boundaries, associations, provider state, plan integrity, and current revision. Referenced, shared, broad, changed, inaccessible, ambiguous, or unverified targets are retained or blocked by default. No deletion or uninstall entry point bypasses this planner/executor.
 
 ## Storage accounting
@@ -94,3 +98,7 @@ Commands change state and queries only read it. This is a lightweight separation
 10. Logical, physical, and reclaimable storage remain distinct.
 
 The original `domain model.txt` remains as the Phase 3 source record during Milestone 0 and can be archived only after this normalization is reviewed.
+
+## Directory contents and authority (ADR 0030)
+
+A registered owned directory covers ordinary descendants added after consent while the root object remains verified. Referenced directory descendants inherit reference status and never deletion authority. Descendant listings and measurements are observations rather than new independently owned resources. Immutable removal plans bind current complete trees separately from original root authority. Root replacement, unknown descendants and other registered dependencies prevent disposal; mutation after review requires a new plan. Legacy changed tree-only grants need explicit renewal.

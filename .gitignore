@@ -3,6 +3,8 @@ node_modules/
 /.casklet-dev/
 /apps/desktop/dist/
 /apps/desktop/src-tauri/gen/
+/release/
+/.jury/
 *.log
 .DS_Store
 Thumbs.db

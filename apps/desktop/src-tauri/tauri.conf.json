@@ -1,7 +1,7 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
   "productName": "Casklet",
-  "version": "0.0.0",
+  "version": "0.1.0-alpha.1",
   "identifier": "app.casklet.dev",
   "build": {
     "beforeDevCommand": "corepack pnpm dev",
@@ -11,9 +11,44 @@
   },
   "app": {
     "security": {
-      "csp": "default-src 'self'; connect-src ipc: http://ipc.localhost; img-src 'self' asset: http://asset.localhost; style-src 'self' 'unsafe-inline'"
+      "csp": "default-src 'self'; connect-src ipc: http://ipc.localhost; img-src 'self' data: asset: http://asset.localhost; style-src 'self' 'unsafe-inline'"
     },
-    "windows": [{ "title": "Casklet", "width": 960, "height": 640 }]
+    "windows": [
+      {
+        "label": "main",
+        "title": "Casklet",
+        "width": 1024,
+        "height": 720,
+        "resizable": false,
+        "maximizable": false,
+        "minimizable": true,
+        "decorations": false,
+        "visible": false,
+        "backgroundColor": "#ffffff"
+      }
+    ]
   },
-  "bundle": { "active": true, "targets": "nsis", "icon": ["icons/icon.ico"] }
+  "bundle": {
+    "active": true,
+    "targets": "nsis",
+    "icon": ["icons/icon.ico"],
+    "license": "Apache-2.0",
+    "licenseFile": "../../../LICENSE",
+    "resources": {
+      "../../../target/application-icons-bundle/casklet-icons.exe": "application-icons/casklet-icons.exe",
+      "../../../target/explorer-bundle/": "explorer/",
+      "../../../NOTICE": "NOTICE",
+      "../../../LICENSES/Inter-OFL.txt": "licenses/Inter-OFL.txt",
+      "../../../LICENSES/Lucide-ISC.txt": "licenses/Lucide-ISC.txt",
+      "../../../LICENSES/Unicode-LICENSE.txt": "licenses/Unicode-LICENSE.txt",
+      "../../../LICENSES/README.md": "THIRD-PARTY-NOTICES.md"
+    },
+    "windows": {
+      "allowDowngrades": false,
+      "nsis": {
+        "installMode": "currentUser",
+        "installerHooks": "installer-hooks.nsh"
+      }
+    }
+  }
 }

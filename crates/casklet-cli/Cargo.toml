@@ -4,10 +4,26 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
+license.workspace = true
+
+[[bin]]
+name = "casklet"
+path = "src/main.rs"
+
+[features]
+# Explicit opt-in for user-authorized Alpha file cleanup; does not enable WinGet uninstall.
+alpha-cleanup = []
+reviewed-removal = ["casklet-application/reviewed-removal", "casklet-infrastructure/reviewed-removal"]
 
 [dependencies]
-casklet-application = { path = "../casklet-application", version = "=0.0.0" }
-casklet-infrastructure = { path = "../casklet-infrastructure", version = "=0.0.0" }
+casklet-application = { path = "../casklet-application", version = "=0.1.0-alpha.1" }
+casklet-contracts = { version = "0.1.0-alpha.1", path = "../casklet-contracts" }
+casklet-infrastructure = { path = "../casklet-infrastructure", version = "=0.1.0-alpha.1" }
+clap = { version = "=4.6.7", features = ["derive"] }
+serde_json = "1.0.151"
+terminal_size = "0.4.3"
+unicode-width = "0.2.2"
+uuid = { version = "1.26.1", features = ["v4"] }
 
 [lints]
 workspace = true
